@@ -1,0 +1,12 @@
+[package]
+name = "rusmlai"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+colored = "3.1.1"
+polars = { version = "0.54.4", features = ["lazy", "strings"] }
+serde = "1.0.228"
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+thiserror-context = "0.1.2"
