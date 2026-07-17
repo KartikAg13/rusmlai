@@ -10,9 +10,6 @@ use polars::{
 
 use crate::data::error::DataError;
 
-pub mod parse;
-pub mod read;
-
 pub struct Reader {
     pub path: PathBuf,
     pub read_options: CsvReadOptions,
@@ -26,6 +23,16 @@ impl Reader {
             read_options: CsvReadOptions::default(),
             parse_options: CsvParseOptions::default(),
         }
+    }
+
+    pub fn with_read_options(mut self, read: CsvReadOptions) -> Self {
+        self.read_options = read;
+        self
+    }
+
+    pub fn with_parse_options(mut self, parse: CsvParseOptions) -> Self {
+        self.parse_options = parse;
+        self
     }
 
     pub fn finish(self) -> Result<DataFrame, DataError> {

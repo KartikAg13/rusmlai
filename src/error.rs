@@ -13,9 +13,8 @@ impl_context!(RusMLAIError(RusMLAIErrorInner));
 
 #[macro_export]
 macro_rules! fatal {
-    ($err:expr) => {{
-        use colored::Colorize;
-        eprintln!("{}{}", "ERROR: ".red().bold(), format!("{:?}", $err).red());
-        panic!("rusmlai: aborting after fatal error (see message above)");
+    ($err:expr, $func_name:expr) => {{
+        eprintln!("ERROR: {}", format!("{:?}", $err));
+        panic!("Function: {}", $func_name);
     }};
 }
