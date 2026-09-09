@@ -5,17 +5,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
-use crate::data::{
-    constants::{CACHE_DIRECTORY, CACHE_EXTENSION},
-    dataset::metadata::{Metadata, info::ColumnInfo, stats::ColumnStats},
-    utils::file_fingerprint,
+use crate::{
+    dataset::utils::file_fingerprint,
+    metadata::{
+        Metadata,
+        constants::{CACHE_DIRECTORY, CACHE_EXTENSION},
+        info::ColumnInfo,
+        stats::ColumnStats,
+    },
 };
 
 #[derive(Serialize, Deserialize)]
 pub struct ColumnInfoDto {
-    pub name: String,
     pub dtype: String,
     pub null_count: usize,
     pub stats: Option<ColumnStats>,
@@ -28,13 +32,12 @@ pub struct MetadataDto {
     pub filepath: String,
     pub height: usize,
     pub width: usize,
-    pub columns: Vec<ColumnInfoDto>,
+    pub columns: IndexMap<String, ColumnInfoDto>,
 }
 
-impl From<ColumnInfo> for ColumnInfoDto {
-    fn from(info: ColumnInfo) -> Self {
+impl From<&ColumnInfo> for ColumnInfoDto {
+    fn from(info: &ColumnInfo) -> Self {
         Self {
-            name: info.name,
             dtype: info.dtype.to_string(),
             null_count: info.null_count,
             stats: info.stats.get().cloned(),
@@ -43,18 +46,22 @@ impl From<ColumnInfo> for ColumnInfoDto {
 }
 
 impl From<&Metadata> for MetadataDto {
-    fn from(data: &Metadata) -> Self {
+    fn from(metadata: &Metadata) -> Self {
         Self {
             source_size: 0,
             source_mtime: 0,
-            filepath: data.filepath.clone().unwrap().into_string().unwrap(),
-            height: data.height,
-            width: data.width,
-            columns: data
+            filepath: metadata
+                .filepath
+                .as_ref()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            height: metadata.height,
+            width: metadata.width,
+            columns: metadata
                 .columns
-                .clone()
-                .into_iter()
-                .map(|c| ColumnInfoDto::from((*c).clone()))
+                .iter()
+                .map(|(name, info)| (name.clone(), ColumnInfoDto::from(info.as_ref())))
                 .collect(),
         }
     }

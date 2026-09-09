@@ -3,22 +3,15 @@ use core::f64;
 use polars::{
     chunked_array::ops::{ChunkAgg, ChunkQuantile, ChunkVar},
     datatypes::{Float64Type, StringType, UInt32Type},
-    frame::DataFrame,
+    frame::{DataFrame, column::Column},
     prelude::{ChunkedArray, QuantileMethod, SeriesMethods},
     series::Series,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::data::error::DataError;
+use crate::dataset::error::DatasetError;
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct CategoricalStats {
-    pub unique_count: usize,
-    pub categories: Vec<(String, u64)>,
-    pub mode: String,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NumericStats {
     pub mean: f64,
     pub median: f64,
@@ -30,16 +23,34 @@ pub struct NumericStats {
     pub quantile_75: f64,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CategoricalStats {
+    pub unique_count: usize,
+    pub categories: Vec<(String, u64)>,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ColumnStats {
     Numeric(NumericStats),
     Categorical(CategoricalStats),
 }
 
-use polars::frame::column::Column;
-
 impl NumericStats {
-    pub fn compute_stats(column: &Column) -> Result<Self, DataError> {
+    pub fn new() -> Self {
+        Self {
+            mean: 0.0,
+            median: 0.0,
+            std: 0.0,
+            variance: 0.0,
+            min: 0.0,
+            max: 0.0,
+            quantile_25: 0.0,
+            quantile_75: 0.0,
+        }
+    }
+
+    pub fn compute_stats(column: &Column) -> Result<Self, DatasetError> {
         let series: Series = column
             .as_materialized_series()
             .cast(&polars::datatypes::DataType::Float64)?;
@@ -66,7 +77,15 @@ impl NumericStats {
 }
 
 impl CategoricalStats {
-    pub fn compute_stats(column: &Column) -> Result<Self, DataError> {
+    pub fn new() -> Self {
+        Self {
+            unique_count: 0,
+            categories: Vec::new(),
+            mode: "".to_string(),
+        }
+    }
+
+    pub fn compute_stats(column: &Column) -> Result<Self, DatasetError> {
         let counts: DataFrame =
             column
                 .as_materialized_series()

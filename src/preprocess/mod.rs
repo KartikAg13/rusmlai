@@ -1,4 +1,4 @@
-use crate::data::dataset::Dataset;
+use crate::dataset::Dataset;
 
 pub trait Transform {
     fn fit(&self, dataset: &Dataset);

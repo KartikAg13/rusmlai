@@ -1,33 +1,36 @@
 use comfy_table::{Table, presets::UTF8_FULL};
-use polars::frame::{DataFrame, column::Column};
+use indexmap::IndexMap;
+use polars::frame::DataFrame;
 use std::{ffi::OsString, path::Path, sync::Arc};
 
-use crate::data::dataset::{
-    Dataset,
+use crate::{
+    dataset::Dataset,
     metadata::{dto::MetadataDto, info::ColumnInfo, stats::ColumnStats},
 };
 
+pub mod constants;
 pub mod dto;
 pub mod info;
 pub mod stats;
 
+#[derive(Debug, Clone)]
 pub struct Metadata {
     pub filepath: Option<OsString>,
     pub height: usize,
     pub width: usize,
-    pub columns: Vec<Arc<ColumnInfo>>,
+    pub columns: IndexMap<String, Arc<ColumnInfo>>,
 }
 
 impl From<MetadataDto> for Metadata {
     fn from(dto: MetadataDto) -> Self {
         Self {
-            filepath: Some(OsString::from(dto.filepath)),
+            filepath: Some(dto.filepath.into()),
             height: dto.height,
             width: dto.width,
             columns: dto
                 .columns
                 .into_iter()
-                .map(|c| Arc::new(c.into()))
+                .map(|(name, info)| (name, Arc::new(info.into())))
                 .collect(),
         }
     }
@@ -36,11 +39,12 @@ impl From<MetadataDto> for Metadata {
 impl Metadata {
     pub fn new(dataframe: &DataFrame, path: impl AsRef<Path>) -> Self {
         let width: usize = dataframe.width();
-        let mut data: Vec<Arc<ColumnInfo>> = Vec::with_capacity(width);
+        let mut data: IndexMap<String, Arc<ColumnInfo>> = IndexMap::with_capacity(width);
         for column in dataframe.columns() {
-            let info: ColumnInfo = ColumnInfo::new(&column);
+            let name: String = column.name().to_string();
+            let info: ColumnInfo = ColumnInfo::new(column);
             info.initialize(column).unwrap();
-            data.push(Arc::new(info));
+            data.insert(name, Arc::new(info));
         }
         Self {
             filepath: Some(path.as_ref().as_os_str().to_os_string()),
@@ -58,35 +62,58 @@ impl Metadata {
         MetadataDto::try_write_cache(&self).unwrap()
     }
 
+    pub fn select(&self, selected: &[&str]) -> Metadata {
+        let columns = selected
+            .iter()
+            .filter_map(|name| {
+                self.columns
+                    .get(*name)
+                    .map(|info| ((*name).to_string(), Arc::clone(info)))
+            })
+            .collect();
+        Metadata {
+            filepath: self.filepath.clone(),
+            height: self.height,
+            width: selected.len(),
+            columns,
+        }
+    }
+
     pub fn after_transform(
         &self,
         new_dataset: &Dataset,
         affected_columns: Vec<String>,
         row_count_changed: bool,
     ) -> Metadata {
-        let columns: Vec<Arc<ColumnInfo>> = new_dataset
-            .df
-            .get_column_names()
+        let data: IndexMap<String, Arc<ColumnInfo>> = new_dataset
+            .dataframe
+            .columns()
             .iter()
-            .map(|name| {
-                let name_s: String = name.to_string();
-                let is_affected: bool = row_count_changed || affected_columns.contains(&name_s);
+            .map(|column| {
+                let name: String = column.name().to_string();
+                let is_affected: bool = row_count_changed || affected_columns.contains(&name);
 
-                if !is_affected {
-                    if let Some(existing) = self.columns.iter().find(|c| c.name == name_s) {
-                        return Arc::clone(existing);
-                    }
-                }
-                let column: &Column = new_dataset.df.column(name).unwrap();
-                Arc::new(ColumnInfo::new(column))
+                let info: Arc<ColumnInfo> = if !is_affected {
+                    self.columns.get(&name).map(Arc::clone).unwrap_or_else(|| {
+                        let info: ColumnInfo = ColumnInfo::new(column);
+                        info.initialize(column).unwrap();
+                        Arc::new(info)
+                    })
+                } else {
+                    let info: ColumnInfo = ColumnInfo::new(column);
+                    info.initialize(column).unwrap();
+                    Arc::new(info)
+                };
+
+                (name, info)
             })
             .collect();
 
         Metadata {
             filepath: None,
-            height: new_dataset.df.height(),
-            width: new_dataset.df.width(),
-            columns,
+            height: new_dataset.dataframe.height(),
+            width: new_dataset.dataframe.width(),
+            columns: data,
         }
     }
 
@@ -95,13 +122,13 @@ impl Metadata {
         table.load_preset(UTF8_FULL);
         table.set_header(vec!["#", "columns", "non-null count", "dtypes"]);
 
-        for (i, col) in self.columns.iter().enumerate() {
-            let non_null: usize = self.height - col.null_count;
+        for (i, (name, info)) in self.columns.iter().enumerate() {
+            let non_null: usize = self.height - info.null_count;
             table.add_row(vec![
                 i.to_string(),
-                col.name.clone(),
-                format!("{}", non_null),
-                format!("{:?}", col.dtype),
+                name.clone(),
+                non_null.to_string(),
+                format!("{:?}", info.dtype),
             ]);
         }
 
@@ -120,12 +147,12 @@ impl Metadata {
 
         let mut any_numeric: bool = false;
 
-        for col in &self.columns {
-            if let Some(ColumnStats::Numeric(s)) = col.stats.get() {
+        for (name, info) in &self.columns {
+            if let Some(ColumnStats::Numeric(s)) = info.stats.get() {
                 any_numeric = true;
-                let count: usize = self.height - col.null_count;
+                let count: usize = self.height - info.null_count;
                 table.add_row(vec![
-                    col.name.clone(),
+                    name.clone(),
                     count.to_string(),
                     format!("{:.4}", s.mean),
                     format!("{:.4}", s.std),
@@ -160,8 +187,8 @@ impl Metadata {
             "unique/top3",
         ]);
 
-        for col in &self.columns {
-            if skip.contains(&col.name.as_str()) {
+        for (name, info) in &self.columns {
+            if skip.contains(&name.as_str()) {
                 continue;
             }
             let (mean_mode, min_max, std_var, quantile, unique_top3): (
@@ -170,7 +197,7 @@ impl Metadata {
                 String,
                 String,
                 String,
-            ) = match col.stats.get() {
+            ) = match info.stats.get() {
                 None => ("-".into(), "-".into(), "-".into(), "-".into(), "-".into()),
                 Some(ColumnStats::Numeric(s)) => (
                     format!("mean = {:.2}\nmedian = {:.2}", s.mean, s.median),
@@ -203,9 +230,9 @@ impl Metadata {
                 }
             };
             table.add_row(vec![
-                col.name.clone(),
-                format!("{:?}", col.dtype),
-                col.null_count.to_string(),
+                name.clone(),
+                format!("{:?}", info.dtype),
+                info.null_count.to_string(),
                 mean_mode,
                 min_max,
                 std_var,

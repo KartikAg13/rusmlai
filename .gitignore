@@ -21,3 +21,10 @@ target
 #.idea/
 
 fixtures/
+.claude/
+.codex/
+.serena/
+.agents/
+analysis/
+docs/
+graphify-out/

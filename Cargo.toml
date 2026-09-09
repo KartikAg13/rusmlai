@@ -4,9 +4,47 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-comfy-table = { version = "7.2.2", default-features = false }
-polars = { version = "0.54.4", default-features = false, features = ["lazy", "strings", "temporal", "fmt_no_tty"] }
-serde = { version = "1.0.228", default-features = false}
-serde_json = { version = "1.0.150", default-features = false, features = ["std"] }
-thiserror = { version = "2.0.18", default-features = false }
-thiserror-context = { version = "0.1.2", default-features = false }
+comfy-table = {
+    version = "7.2.2",
+    default-features = false
+}
+
+indexmap = {
+    version = "2.14.0",
+    default-features = false,
+}
+
+polars = {
+    version = "0.55.2",
+    default-features = false,
+    features = ["csv", "fmt_no_tty", "lazy"]
+}
+
+serde = {
+    version = "1.0.228",
+    default-features = false,
+    features = ["derive", "std"]
+}
+
+serde_json = {
+    version = "1.0.150",
+    default-features = false,
+    features = ["std"]
+}
+
+thiserror = {
+    version = "2.0.18",
+    default-features = false
+}
+
+thiserror-context = {
+    version = "0.1.2",
+    default-features = false
+}
+
+[dev-dependencies]
+criterion = {
+    version = "0.5.1",
+    default-features = false,
+    features = ["cargo_bench_support", "html_reports", "plotters"]
+}

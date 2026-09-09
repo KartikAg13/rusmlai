@@ -2,20 +2,19 @@ use polars::{datatypes::DataType, frame::column::Column};
 use std::sync::OnceLock;
 
 use crate::{
-    data::{
-        dataset::metadata::{
-            dto::ColumnInfoDto,
-            stats::{CategoricalStats, ColumnStats, NumericStats},
-        },
-        error::DataError,
+    dataset::{
+        error::DatasetError,
         utils::{option_to_oncelock, parse_dtype},
     },
     fatal,
+    metadata::{
+        dto::ColumnInfoDto,
+        stats::{CategoricalStats, ColumnStats, NumericStats},
+    },
 };
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ColumnInfo {
-    pub name: String,
     pub dtype: DataType,
     pub null_count: usize,
 
@@ -25,14 +24,13 @@ pub struct ColumnInfo {
 impl ColumnInfo {
     pub fn new(column: &Column) -> Self {
         ColumnInfo {
-            name: column.name().to_string(),
             dtype: column.dtype().clone(),
             null_count: column.null_count(),
             stats: OnceLock::new(),
         }
     }
 
-    pub fn initialize(&self, column: &Column) -> Result<(), DataError> {
+    pub fn initialize(&self, column: &Column) -> Result<(), DatasetError> {
         if self.stats.get().is_none() {
             let computed: ColumnStats = if self.dtype.is_numeric() {
                 ColumnStats::Numeric(NumericStats::compute_stats(column)?)
@@ -50,7 +48,6 @@ impl ColumnInfo {
 impl From<ColumnInfoDto> for ColumnInfo {
     fn from(dto: ColumnInfoDto) -> Self {
         Self {
-            name: dto.name,
             dtype: parse_dtype(&dto.dtype)
                 .unwrap_or_else(|e| fatal!(e, "src/data/dataset/metadata/info.rs (fromw)")),
             null_count: dto.null_count,

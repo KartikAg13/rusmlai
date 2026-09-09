@@ -8,7 +8,7 @@ use polars::{
     },
 };
 
-use crate::data::error::DataError;
+use crate::dataset::error::DatasetError;
 
 pub struct Reader {
     pub path: PathBuf,
@@ -35,9 +35,16 @@ impl Reader {
         self
     }
 
-    pub fn finish(self) -> Result<DataFrame, DataError> {
+    pub fn finish(self) -> Result<DataFrame, DatasetError> {
         if !self.path.is_file() {
-            return Err(DataError::FileNotFound(self.path.display().to_string()));
+            let cwd: String = match std::env::current_dir() {
+                Ok(p) => p.display().to_string(),
+                Err(_) => "unknown".to_string(),
+            };
+            return Err(DatasetError::FileNotFound {
+                path: self.path.display().to_string(),
+                cwd: cwd,
+            });
         }
         Ok(self
             .read_options

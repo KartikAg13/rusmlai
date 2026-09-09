@@ -1,4 +1,4 @@
-use rusmlai::data::dataset::{Dataset, read_csv};
+use rusmlai::dataset::{Dataset, read_csv};
 
 fn main() {
     let dataset: Dataset = read_csv(
