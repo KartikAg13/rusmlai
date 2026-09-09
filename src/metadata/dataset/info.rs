@@ -8,8 +8,8 @@ use crate::{
     },
     fatal,
     metadata::{
+        dataset::stats::{CategoricalStats, ColumnStats, NumericStats},
         dto::ColumnInfoDto,
-        stats::{CategoricalStats, ColumnStats, NumericStats},
     },
 };
 

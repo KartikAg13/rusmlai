@@ -7,8 +7,8 @@ use crate::{
     fatal,
     metadata::{
         Metadata,
-        info::ColumnInfo,
-        stats::{CategoricalStats, ColumnStats, NumericStats},
+        dataset::info::ColumnInfo,
+        dataset::stats::{CategoricalStats, ColumnStats, NumericStats},
     },
 };
 
@@ -60,7 +60,7 @@ impl Dataset {
             return Err(DatasetError::EmptySelect);
         }
         for column in columns {
-            if !self.metadata.columns.contains_key(*column) {
+            if !self.metadata.dataset_cache.columns.contains_key(*column) {
                 return Err(DatasetError::ColumnNotFound {
                     requested: column.to_string(),
                     available: self.columns().join(","),
@@ -75,7 +75,7 @@ impl Dataset {
 
     fn try_drop(&self, columns: &[&str]) -> Result<Dataset, DatasetError> {
         for column in columns {
-            if !self.metadata.columns.contains_key(*column) {
+            if !self.metadata.dataset_cache.columns.contains_key(*column) {
                 return Err(DatasetError::ColumnNotFound {
                     requested: column.to_string(),
                     available: self.columns().join(","),
@@ -85,6 +85,7 @@ impl Dataset {
 
         let remaining: Vec<&str> = self
             .metadata
+            .dataset_cache
             .columns
             .keys()
             .map(String::as_str)
@@ -95,7 +96,13 @@ impl Dataset {
     }
 
     pub fn try_column_info(&self, column_name: &str) -> Result<&ColumnInfo, DatasetError> {
-        match self.metadata.columns.get(column_name).map(|c| c.as_ref()) {
+        match self
+            .metadata
+            .dataset_cache
+            .columns
+            .get(column_name)
+            .map(|c| c.as_ref())
+        {
             Some(c) => Ok(c),
             None => Err(DatasetError::ColumnNotFound {
                 requested: column_name.to_string(),
@@ -162,11 +169,17 @@ impl Dataset {
     }
 
     pub fn columns(&self) -> Vec<String> {
-        self.metadata.columns.keys().cloned().collect()
+        self.metadata
+            .dataset_cache
+            .columns
+            .keys()
+            .cloned()
+            .collect()
     }
 
     pub fn dtypes(&self) -> Vec<String> {
         self.metadata
+            .dataset_cache
             .columns
             .values()
             .map(|info| info.dtype.to_string())

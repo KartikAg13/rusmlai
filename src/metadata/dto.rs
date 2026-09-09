@@ -13,8 +13,8 @@ use crate::{
     metadata::{
         Metadata,
         constants::{CACHE_DIRECTORY, CACHE_EXTENSION},
-        info::ColumnInfo,
-        stats::ColumnStats,
+        dataset::info::ColumnInfo,
+        dataset::stats::ColumnStats,
     },
 };
 
@@ -59,6 +59,7 @@ impl From<&Metadata> for MetadataDto {
             height: metadata.height,
             width: metadata.width,
             columns: metadata
+                .dataset_cache
                 .columns
                 .iter()
                 .map(|(name, info)| (name.clone(), ColumnInfoDto::from(info.as_ref())))

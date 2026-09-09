@@ -5,20 +5,26 @@ use std::{ffi::OsString, path::Path, sync::Arc};
 
 use crate::{
     dataset::Dataset,
-    metadata::{dto::MetadataDto, info::ColumnInfo, stats::ColumnStats},
+    metadata::{
+        dataset::{DatasetCache, info::ColumnInfo, stats::ColumnStats},
+        dto::MetadataDto,
+        // plot::PlotCache,
+    },
 };
 
 pub mod constants;
+pub mod dataset;
 pub mod dto;
-pub mod info;
-pub mod stats;
+pub mod error;
+pub mod plot;
 
 #[derive(Debug, Clone)]
 pub struct Metadata {
     pub filepath: Option<OsString>,
     pub height: usize,
     pub width: usize,
-    pub columns: IndexMap<String, Arc<ColumnInfo>>,
+    pub dataset_cache: DatasetCache,
+    // pub plot_cache: PlotCache,
 }
 
 impl From<MetadataDto> for Metadata {
@@ -27,11 +33,12 @@ impl From<MetadataDto> for Metadata {
             filepath: Some(dto.filepath.into()),
             height: dto.height,
             width: dto.width,
-            columns: dto
-                .columns
-                .into_iter()
-                .map(|(name, info)| (name, Arc::new(info.into())))
-                .collect(),
+            dataset_cache: DatasetCache::new(
+                dto.columns
+                    .into_iter()
+                    .map(|(name, info)| (name, Arc::new(info.into())))
+                    .collect(),
+            ),
         }
     }
 }
@@ -50,7 +57,7 @@ impl Metadata {
             filepath: Some(path.as_ref().as_os_str().to_os_string()),
             height: dataframe.height(),
             width: width,
-            columns: data,
+            dataset_cache: DatasetCache::new(data),
         }
     }
 
@@ -66,7 +73,8 @@ impl Metadata {
         let columns = selected
             .iter()
             .filter_map(|name| {
-                self.columns
+                self.dataset_cache
+                    .columns
                     .get(*name)
                     .map(|info| ((*name).to_string(), Arc::clone(info)))
             })
@@ -75,7 +83,7 @@ impl Metadata {
             filepath: self.filepath.clone(),
             height: self.height,
             width: selected.len(),
-            columns,
+            dataset_cache: DatasetCache::new(columns),
         }
     }
 
@@ -94,11 +102,15 @@ impl Metadata {
                 let is_affected: bool = row_count_changed || affected_columns.contains(&name);
 
                 let info: Arc<ColumnInfo> = if !is_affected {
-                    self.columns.get(&name).map(Arc::clone).unwrap_or_else(|| {
-                        let info: ColumnInfo = ColumnInfo::new(column);
-                        info.initialize(column).unwrap();
-                        Arc::new(info)
-                    })
+                    self.dataset_cache
+                        .columns
+                        .get(&name)
+                        .map(Arc::clone)
+                        .unwrap_or_else(|| {
+                            let info: ColumnInfo = ColumnInfo::new(column);
+                            info.initialize(column).unwrap();
+                            Arc::new(info)
+                        })
                 } else {
                     let info: ColumnInfo = ColumnInfo::new(column);
                     info.initialize(column).unwrap();
@@ -113,7 +125,7 @@ impl Metadata {
             filepath: None,
             height: new_dataset.dataframe.height(),
             width: new_dataset.dataframe.width(),
-            columns: data,
+            dataset_cache: DatasetCache::new(data),
         }
     }
 
@@ -122,7 +134,7 @@ impl Metadata {
         table.load_preset(UTF8_FULL);
         table.set_header(vec!["#", "columns", "non-null count", "dtypes"]);
 
-        for (i, (name, info)) in self.columns.iter().enumerate() {
+        for (i, (name, info)) in self.dataset_cache.columns.iter().enumerate() {
             let non_null: usize = self.height - info.null_count;
             table.add_row(vec![
                 i.to_string(),
@@ -147,7 +159,7 @@ impl Metadata {
 
         let mut any_numeric: bool = false;
 
-        for (name, info) in &self.columns {
+        for (name, info) in &self.dataset_cache.columns {
             if let Some(ColumnStats::Numeric(s)) = info.stats.get() {
                 any_numeric = true;
                 let count: usize = self.height - info.null_count;
@@ -187,7 +199,7 @@ impl Metadata {
             "unique/top3",
         ]);
 
-        for (name, info) in &self.columns {
+        for (name, info) in &self.dataset_cache.columns {
             if skip.contains(&name.as_str()) {
                 continue;
             }
