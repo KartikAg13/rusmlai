@@ -1,17 +1,17 @@
 use core::f64;
+use std::cmp::Reverse;
 
-use polars::{
-    chunked_array::ops::{ChunkAgg, ChunkQuantile, ChunkVar},
-    datatypes::{Float64Type, StringType, UInt32Type},
-    frame::{DataFrame, column::Column},
-    prelude::{ChunkedArray, QuantileMethod, SeriesMethods},
-    series::Series,
-};
+use polars::datatypes::DataType;
+use polars::frame::{DataFrame, column::Column};
+use polars::lazy::dsl::Expr;
+use polars::lazy::frame::LazyFrame;
+use polars::prelude::{QuantileMethod, col, len, lit};
 use serde::{Deserialize, Serialize};
 
-use crate::dataset::error::DatasetError;
+use crate::metadata::error::MetadataError;
+use crate::metadata::utils::{column_to_lazy, unwrap_f64};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NumericStats {
     pub mean: f64,
     pub median: f64,
@@ -23,7 +23,7 @@ pub struct NumericStats {
     pub quantile_75: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CategoricalStats {
     pub unique_count: usize,
     pub categories: Vec<(String, u64)>,
@@ -37,78 +37,62 @@ pub enum ColumnStats {
 }
 
 impl NumericStats {
-    pub fn new() -> Self {
-        Self {
-            mean: 0.0,
-            median: 0.0,
-            std: 0.0,
-            variance: 0.0,
-            min: 0.0,
-            max: 0.0,
-            quantile_25: 0.0,
-            quantile_75: 0.0,
-        }
-    }
-
-    pub fn compute_stats(column: &Column) -> Result<Self, DatasetError> {
-        let series: Series = column
-            .as_materialized_series()
-            .cast(&polars::datatypes::DataType::Float64)?;
-
-        let values: &ChunkedArray<Float64Type> = series.f64()?;
-
+    pub fn compute_stats(column: &Column) -> Result<Self, MetadataError> {
+        let (name, lazy): (String, LazyFrame) = column_to_lazy(column)?;
+        let x: Expr = col(&name).cast(DataType::Float64);
+        let out: DataFrame = lazy
+            .select([
+                x.clone().mean().alias("mean"),
+                x.clone().median().alias("median"),
+                x.clone().std(1).alias("std"),
+                x.clone().var(1).alias("variance"),
+                x.clone().min().alias("min"),
+                x.clone().max().alias("max"),
+                x.clone()
+                    .quantile(lit(0.25), QuantileMethod::Linear)
+                    .alias("q25"),
+                x.quantile(lit(0.75), QuantileMethod::Linear).alias("q75"),
+            ])
+            .collect()?;
         Ok(Self {
-            mean: values.mean().unwrap_or(f64::NAN),
-            median: values.median().unwrap_or(f64::NAN),
-            std: values.std(1).unwrap_or(f64::NAN),
-            variance: values.var(1).unwrap_or(f64::NAN),
-            min: values.min().unwrap_or(f64::NAN),
-            max: values.max().unwrap_or(f64::NAN),
-            quantile_25: values
-                .quantile(0.25, QuantileMethod::Linear)
-                .unwrap()
-                .unwrap_or(f64::NAN),
-            quantile_75: values
-                .quantile(0.75, QuantileMethod::Linear)
-                .unwrap()
-                .unwrap_or(f64::NAN),
+            mean: unwrap_f64(&out, "mean")?,
+            median: unwrap_f64(&out, "median")?,
+            std: unwrap_f64(&out, "std")?,
+            variance: unwrap_f64(&out, "variance")?,
+            min: unwrap_f64(&out, "min")?,
+            max: unwrap_f64(&out, "max")?,
+            quantile_25: unwrap_f64(&out, "q25")?,
+            quantile_75: unwrap_f64(&out, "q75")?,
         })
     }
 }
 
 impl CategoricalStats {
-    pub fn new() -> Self {
-        Self {
-            unique_count: 0,
-            categories: Vec::new(),
-            mode: "".to_string(),
-        }
-    }
+    pub fn compute_stats(column: &Column) -> Result<Self, MetadataError> {
+        let (name, lazy): (String, LazyFrame) = column_to_lazy(column)?;
+        let counts: DataFrame = lazy
+            .drop_nulls(None)
+            .group_by_stable([col(&name)])
+            .agg([len().alias("count")])
+            .collect()?;
 
-    pub fn compute_stats(column: &Column) -> Result<Self, DatasetError> {
-        let counts: DataFrame =
-            column
-                .as_materialized_series()
-                .value_counts(true, false, "count".into(), false)?;
-
-        let names: &ChunkedArray<StringType> = counts.column(column.name())?.str()?;
-        let cnts: &ChunkedArray<UInt32Type> = counts.column("count")?.u32()?;
-
-        let mut category_counts: Vec<(String, u64)> = names
+        let labels: Column = counts.column(&name)?.cast(&DataType::String)?;
+        let n: Column = counts.column("count")?.cast(&DataType::UInt32)?;
+        let mut categories: Vec<(String, u64)> = labels
+            .str()?
             .iter()
-            .zip(cnts.iter())
-            .filter_map(|(n, c)| Some((n?.to_string(), c? as u64)))
+            .zip(n.u32()?.iter())
+            .filter_map(|(label, c)| Some((label?.to_string(), c? as u64)))
             .collect();
-
-        category_counts.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        categories.sort_unstable_by_key(|(_, c)| Reverse(*c));
 
         Ok(Self {
-            unique_count: category_counts.len(),
-            mode: category_counts
+            unique_count: categories.len(),
+            mode: categories
                 .first()
-                .map(|(name, _)| name.clone())
+                .map(|(s, _)| s.clone())
                 .unwrap_or_default(),
-            categories: category_counts,
+            categories,
         })
     }
 }

@@ -17,6 +17,7 @@ pub mod dataset;
 pub mod dto;
 pub mod error;
 pub mod plot;
+pub mod utils;
 
 #[derive(Debug, Clone)]
 pub struct Metadata {
