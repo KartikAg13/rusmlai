@@ -14,7 +14,6 @@ use crate::{
 
 pub mod error;
 pub mod reader;
-pub mod utils;
 
 pub struct Dataset {
     pub dataframe: DataFrame,

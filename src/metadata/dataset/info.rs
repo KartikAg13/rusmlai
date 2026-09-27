@@ -1,14 +1,12 @@
 use polars::{datatypes::DataType, frame::column::Column};
 use std::sync::OnceLock;
 
-use crate::{
-    dataset::utils::{option_to_oncelock, parse_dtype},
-    fatal,
-    metadata::{
-        dataset::stats::{CategoricalStats, ColumnStats, NumericStats},
-        dto::ColumnInfoDto,
-        error::MetadataError,
+use crate::metadata::{
+    dataset::{
+        dto::ColumnInfoDTO,
+        stats::{CategoricalStats, ColumnStats, NumericStats},
     },
+    error::MetadataError,
 };
 
 #[derive(Debug, Clone)]
@@ -43,13 +41,12 @@ impl ColumnInfo {
     }
 }
 
-impl From<ColumnInfoDto> for ColumnInfo {
-    fn from(dto: ColumnInfoDto) -> Self {
+impl From<&ColumnInfo> for ColumnInfoDTO {
+    fn from(value: &ColumnInfo) -> Self {
         Self {
-            dtype: parse_dtype(&dto.dtype)
-                .unwrap_or_else(|e| fatal!(e, "src/data/dataset/metadata/info.rs (from)")),
-            null_count: dto.null_count,
-            stats: option_to_oncelock(dto.stats),
+            dtype: value.dtype.to_string(),
+            null_count: value.null_count,
+            stats: value.stats.get().cloned(),
         }
     }
 }

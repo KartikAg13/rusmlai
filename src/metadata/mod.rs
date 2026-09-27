@@ -1,15 +1,10 @@
-use comfy_table::{Table, presets::UTF8_FULL};
 use indexmap::IndexMap;
 use polars::frame::DataFrame;
 use std::{ffi::OsString, path::Path, sync::Arc};
 
-use crate::{
-    dataset::Dataset,
-    metadata::{
-        dataset::{DatasetCache, info::ColumnInfo, stats::ColumnStats},
-        dto::MetadataDto,
-        // plot::PlotCache,
-    },
+use crate::metadata::{
+    dataset::{DatasetCache, dto::DatasetCacheDTO, info::ColumnInfo},
+    dto::MetadataDTO,
 };
 
 pub mod constants;
@@ -25,21 +20,22 @@ pub struct Metadata {
     pub height: usize,
     pub width: usize,
     pub dataset_cache: DatasetCache,
-    // pub plot_cache: PlotCache,
+    pub plot_cache: PlotCache,
 }
 
-impl From<MetadataDto> for Metadata {
-    fn from(dto: MetadataDto) -> Self {
+impl From<&Metadata> for MetadataDTO {
+    fn from(metadata: &Metadata) -> Self {
         Self {
-            filepath: Some(dto.filepath.into()),
-            height: dto.height,
-            width: dto.width,
-            dataset_cache: DatasetCache::new(
-                dto.columns
-                    .into_iter()
-                    .map(|(name, info)| (name, Arc::new(info.into())))
-                    .collect(),
-            ),
+            source_size: 0,
+            source_mtime: 0,
+            filepath: metadata
+                .filepath
+                .as_deref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            height: metadata.height,
+            width: metadata.width,
+            dataset_cache: DatasetCacheDTO::from(&metadata.dataset_cache),
         }
     }
 }
@@ -63,11 +59,11 @@ impl Metadata {
     }
 
     pub fn load_cache(path: impl AsRef<Path>) -> Option<Metadata> {
-        MetadataDto::try_load_cache(path)
+        DatasetCacheDTO::try_load_cache(path)
     }
 
     pub fn write_cache(&self) {
-        MetadataDto::try_write_cache(&self).unwrap()
+        DatasetCacheDTO::try_write_cache(&self).unwrap()
     }
 
     pub fn select(&self, selected: &[&str]) -> Metadata {
@@ -88,179 +84,25 @@ impl Metadata {
         }
     }
 
-    pub fn after_transform(
-        &self,
-        new_dataset: &Dataset,
-        affected_columns: Vec<String>,
-        row_count_changed: bool,
-    ) -> Metadata {
-        let data: IndexMap<String, Arc<ColumnInfo>> = new_dataset
-            .dataframe
-            .columns()
-            .iter()
-            .map(|column| {
-                let name: String = column.name().to_string();
-                let is_affected: bool = row_count_changed || affected_columns.contains(&name);
-
-                let info: Arc<ColumnInfo> = if !is_affected {
-                    self.dataset_cache
-                        .columns
-                        .get(&name)
-                        .map(Arc::clone)
-                        .unwrap_or_else(|| {
-                            let info: ColumnInfo = ColumnInfo::new(column);
-                            info.initialize(column).unwrap();
-                            Arc::new(info)
-                        })
-                } else {
-                    let info: ColumnInfo = ColumnInfo::new(column);
-                    info.initialize(column).unwrap();
-                    Arc::new(info)
-                };
-
-                (name, info)
-            })
-            .collect();
-
-        Metadata {
-            filepath: None,
-            height: new_dataset.dataframe.height(),
-            width: new_dataset.dataframe.width(),
-            dataset_cache: DatasetCache::new(data),
-        }
-    }
-
     pub fn try_info(&self) {
-        let mut table: Table = Table::new();
-        table.load_preset(UTF8_FULL);
-        table.set_header(vec!["#", "columns", "non-null count", "dtypes"]);
-
-        for (i, (name, info)) in self.dataset_cache.columns.iter().enumerate() {
-            let non_null: usize = self.height - info.null_count;
-            table.add_row(vec![
-                i.to_string(),
-                name.clone(),
-                non_null.to_string(),
-                format!("{:?}", info.dtype),
-            ]);
-        }
-
-        println!(
-            "Dataset: {} rows x {} columns\n{table}",
-            self.height, self.width
-        );
+        self.dataset_cache.info_table(self.height, self.width);
     }
 
     pub fn try_describe(&self) {
-        let mut table: Table = Table::new();
-        table.load_preset(UTF8_FULL);
-        table.set_header(vec![
-            "columns", "count", "mean", "std", "min", "25%", "50%", "75%", "max",
-        ]);
-
-        let mut any_numeric: bool = false;
-
-        for (name, info) in &self.dataset_cache.columns {
-            if let Some(ColumnStats::Numeric(s)) = info.stats.get() {
-                any_numeric = true;
-                let count: usize = self.height - info.null_count;
-                table.add_row(vec![
-                    name.clone(),
-                    count.to_string(),
-                    format!("{:.4}", s.mean),
-                    format!("{:.4}", s.std),
-                    format!("{:.4}", s.min),
-                    format!("{:.4}", s.quantile_25),
-                    format!("{:.4}", s.median),
-                    format!("{:.4}", s.quantile_75),
-                    format!("{:.4}", s.max),
-                ]);
-            }
-        }
-
-        if !any_numeric {
-            println!("No numeric columns with computed stats.");
-            return;
-        }
-
-        println!("{table}");
+        self.dataset_cache.describe_table(self.height);
     }
 
     pub fn try_metadata(&self, skip: &[&str]) {
-        let mut table: Table = Table::new();
-        table.load_preset(UTF8_FULL);
-        table.set_header(vec![
-            "columns",
-            "dtypes",
-            "nulls",
-            "mean/median/mode",
-            "min/max",
-            "std/variance",
-            "quantiles",
-            "unique/top3",
-        ]);
-
-        for (name, info) in &self.dataset_cache.columns {
-            if skip.contains(&name.as_str()) {
-                continue;
-            }
-            let (mean_mode, min_max, std_var, quantile, unique_top3): (
-                String,
-                String,
-                String,
-                String,
-                String,
-            ) = match info.stats.get() {
-                None => ("-".into(), "-".into(), "-".into(), "-".into(), "-".into()),
-                Some(ColumnStats::Numeric(s)) => (
-                    format!("mean = {:.2}\nmedian = {:.2}", s.mean, s.median),
-                    format!("min = {:.2}\nmax = {:.2}", s.min, s.max),
-                    format!("std = {:.2}\nvariance = {:.2}", s.std, s.variance),
-                    format!(
-                        "25% = {:.2}\n50% = {:.2}\n75% = {:.2}",
-                        s.quantile_25, s.median, s.quantile_75
-                    ),
-                    "-".to_string(),
-                ),
-                Some(ColumnStats::Categorical(s)) => {
-                    let top3: Vec<String> = s
-                        .categories
-                        .iter()
-                        .take(3)
-                        .map(|(name, count)| format!("'{name}': {count}"))
-                        .collect();
-                    (
-                        format!("mode = '{}'", s.mode),
-                        "-".to_string(),
-                        "-".to_string(),
-                        "-".to_string(),
-                        format!(
-                            "unique = {}\ntop3:\n  {}",
-                            s.unique_count,
-                            top3.join("\n  ")
-                        ),
-                    )
-                }
-            };
-            table.add_row(vec![
-                name.clone(),
-                format!("{:?}", info.dtype),
-                info.null_count.to_string(),
-                mean_mode,
-                min_max,
-                std_var,
-                quantile,
-                unique_top3,
-            ]);
-        }
-
-        println!(
-            "\nFilepath: {}",
-            self.filepath.clone().unwrap().into_string().unwrap()
-        );
-        println!(
-            "Dataset: {} rows x {} columns\n\n{table}",
-            self.height, self.width
+        self.dataset_cache.metadata_table(
+            skip,
+            self.filepath
+                .clone()
+                .unwrap()
+                .into_string()
+                .unwrap()
+                .as_str(),
+            self.height,
+            self.width,
         );
     }
 }
