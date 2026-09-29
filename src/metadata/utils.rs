@@ -1,7 +1,8 @@
 use std::{
-    fs::{self, Metadata},
-    io,
-    path::Path,
+    borrow::Cow,
+    fs::{self, Metadata, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
     sync::OnceLock,
     time::UNIX_EPOCH,
 };
@@ -11,8 +12,12 @@ use polars::{
     frame::{DataFrame, column::Column},
     lazy::frame::{IntoLazy, LazyFrame},
 };
+use serde::{Serialize, de::DeserializeOwned};
 
-use crate::metadata::error::MetadataError;
+use crate::metadata::{
+    constants::{CACHE_DIRECTORY, CACHE_EXTENSION},
+    error::MetadataError,
+};
 
 pub fn column_to_lazy(column: &Column) -> Result<(String, LazyFrame), MetadataError> {
     let name: String = column.name().clone().into_string();
@@ -27,15 +32,6 @@ pub fn unwrap_f64(frame: &DataFrame, name: &str) -> Result<f64, MetadataError> {
         .f64()?
         .get(0)
         .unwrap_or(f64::NAN))
-}
-
-pub fn parse_dtype(value: &str) -> Result<DataType, MetadataError> {
-    match value {
-        "i64" => Ok(DataType::Int64),
-        "f64" => Ok(DataType::Float64),
-        "str" => Ok(DataType::String),
-        _ => Err(MetadataError::UnsupportedDatatype(value.to_string())),
-    }
 }
 
 pub fn option_to_oncelock<T>(value: Option<T>) -> OnceLock<T> {
@@ -54,4 +50,44 @@ pub fn file_fingerprint(path: impl AsRef<Path>) -> io::Result<(u64, u64)> {
         .unwrap()
         .as_secs();
     Ok((meta.len(), mtime))
+}
+
+pub fn cache_path(csv: &Path, suffix: &str) -> PathBuf {
+    let stem: Cow<str> = csv.file_stem().unwrap_or_default().to_string_lossy();
+    csv.with_file_name(CACHE_DIRECTORY)
+        .join(format!("{stem}{suffix}.{CACHE_EXTENSION}"))
+}
+
+pub fn read_jsonl<T: DeserializeOwned>(path: &Path, fingerprint: (u64, u64)) -> Option<Vec<T>> {
+    let text: String = fs::read_to_string(path).ok()?;
+    let mut lines = text.lines();
+    if serde_json::from_str::<(u64, u64)>(lines.next()?).ok()? != fingerprint {
+        return None;
+    }
+    Some(
+        lines
+            .filter_map(|line| serde_json::from_str(line).ok())
+            .collect(),
+    )
+}
+
+pub fn write_jsonl<T: Serialize>(
+    path: &Path,
+    fingerprint: (u64, u64),
+    entries: &[T],
+) -> io::Result<()> {
+    fs::create_dir_all(path.parent().unwrap())?;
+    let mut out: String = serde_json::to_string(&fingerprint)? + "\n";
+    for entry in entries {
+        out += &(serde_json::to_string(entry)? + "\n");
+    }
+    fs::write(path, out)
+}
+
+pub fn append_jsonl<T: Serialize>(path: &Path, entry: &T) -> io::Result<()> {
+    let line: String = serde_json::to_string(entry)? + "\n";
+    OpenOptions::new()
+        .append(true)
+        .open(path)?
+        .write_all(line.as_bytes())
 }

@@ -7,11 +7,8 @@ use crate::{
     dataset::Dataset,
     metadata::{
         Metadata,
-        dataset::{
-            dto::{ColumnInfoDTO, DatasetCacheDTO},
-            info::ColumnInfo,
-            stats::ColumnStats,
-        },
+        dataset::{info::ColumnInfo, stats::ColumnStats},
+        plot::PlotCache,
     },
 };
 
@@ -24,21 +21,9 @@ pub struct DatasetCache {
     pub columns: IndexMap<String, Arc<ColumnInfo>>,
 }
 
-impl From<&DatasetCache> for DatasetCacheDTO {
-    fn from(value: &DatasetCache) -> Self {
-        Self {
-            columns: value
-                .columns
-                .iter()
-                .map(|(name, info)| (name.clone(), ColumnInfoDTO::from(info.as_ref())))
-                .collect(),
-        }
-    }
-}
-
 impl DatasetCache {
     pub fn new(columns: IndexMap<String, Arc<ColumnInfo>>) -> Self {
-        Self { columns: columns }
+        Self { columns }
     }
 
     pub fn after_transform(
@@ -76,6 +61,7 @@ impl DatasetCache {
             height: new_dataset.dataframe.height(),
             width: new_dataset.dataframe.width(),
             dataset_cache: DatasetCache::new(data),
+            plot_cache: PlotCache::default(),
         }
     }
 

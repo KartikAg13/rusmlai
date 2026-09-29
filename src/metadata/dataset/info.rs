@@ -44,7 +44,7 @@ impl ColumnInfo {
 impl From<&ColumnInfo> for ColumnInfoDTO {
     fn from(value: &ColumnInfo) -> Self {
         Self {
-            dtype: value.dtype.to_string(),
+            dtype: value.dtype.clone(),
             null_count: value.null_count,
             stats: value.stats.get().cloned(),
         }

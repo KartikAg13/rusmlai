@@ -1,21 +1,16 @@
-use std::cell::RefCell;
+use std::sync::{Arc, RwLock};
 
 use indexmap::IndexMap;
 
 use crate::plot::{result::PlotResult, spec::PlotSpec};
 
+#[derive(Default, Debug, Clone)]
 pub struct PlotCache {
-    pub entries: RefCell<IndexMap<PlotSpec, PlotResult>>,
+    pub entries: Arc<RwLock<IndexMap<PlotSpec, PlotResult>>>,
 }
 
 impl PlotCache {
-    pub fn new() -> Self {
-        Self {
-            entries: RefCell::new(IndexMap::new()),
-        }
-    }
-
-    pub fn get_or_insert(&self, spec: PlotSpec) -> PlotResult {
-        todo!()
+    pub fn new(entries: Arc<RwLock<IndexMap<PlotSpec, PlotResult>>>) -> Self {
+        Self { entries }
     }
 }

@@ -1,15 +1,22 @@
 use indexmap::IndexMap;
 use polars::frame::DataFrame;
-use std::{ffi::OsString, path::Path, sync::Arc};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+    sync::{Arc, RwLock},
+};
 
-use crate::metadata::{
-    dataset::{DatasetCache, dto::DatasetCacheDTO, info::ColumnInfo},
-    dto::MetadataDTO,
+use crate::{
+    metadata::{
+        dataset::{DatasetCache, dto::ColumnInfoDTO, info::ColumnInfo},
+        plot::PlotCache,
+        utils::{append_jsonl, cache_path, file_fingerprint, read_jsonl, write_jsonl},
+    },
+    plot::{result::PlotResult, spec::PlotSpec},
 };
 
 pub mod constants;
 pub mod dataset;
-pub mod dto;
 pub mod error;
 pub mod plot;
 pub mod utils;
@@ -21,23 +28,6 @@ pub struct Metadata {
     pub width: usize,
     pub dataset_cache: DatasetCache,
     pub plot_cache: PlotCache,
-}
-
-impl From<&Metadata> for MetadataDTO {
-    fn from(metadata: &Metadata) -> Self {
-        Self {
-            source_size: 0,
-            source_mtime: 0,
-            filepath: metadata
-                .filepath
-                .as_deref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            height: metadata.height,
-            width: metadata.width,
-            dataset_cache: DatasetCacheDTO::from(&metadata.dataset_cache),
-        }
-    }
 }
 
 impl Metadata {
@@ -53,17 +43,10 @@ impl Metadata {
         Self {
             filepath: Some(path.as_ref().as_os_str().to_os_string()),
             height: dataframe.height(),
-            width: width,
+            width,
             dataset_cache: DatasetCache::new(data),
+            plot_cache: PlotCache::default(),
         }
-    }
-
-    pub fn load_cache(path: impl AsRef<Path>) -> Option<Metadata> {
-        DatasetCacheDTO::try_load_cache(path)
-    }
-
-    pub fn write_cache(&self) {
-        DatasetCacheDTO::try_write_cache(&self).unwrap()
     }
 
     pub fn select(&self, selected: &[&str]) -> Metadata {
@@ -81,7 +64,74 @@ impl Metadata {
             height: self.height,
             width: selected.len(),
             dataset_cache: DatasetCache::new(columns),
+            plot_cache: PlotCache::new(Arc::clone(&self.plot_cache.entries)),
         }
+    }
+
+    pub fn load(dataframe: &DataFrame, path: &Path) -> Self {
+        let fingerprint: (u64, u64) = file_fingerprint(path).unwrap_or_default();
+        let columns_path: PathBuf = cache_path(path, "");
+        let plots_path: PathBuf = cache_path(path, ".plots");
+
+        let columns: Option<IndexMap<String, Arc<ColumnInfo>>> =
+            read_jsonl::<(String, ColumnInfoDTO)>(&columns_path, fingerprint)
+                .map(|rows| {
+                    rows.into_iter()
+                        .map(|(name, dto)| (name, Arc::new(dto.into())))
+                        .collect()
+                })
+                .filter(|c: &IndexMap<_, _>| c.len() == dataframe.width());
+        let mut metadata: Metadata = match columns {
+            Some(c) => Self {
+                filepath: Some(path.as_os_str().to_os_string()),
+                height: dataframe.height(),
+                width: dataframe.width(),
+                dataset_cache: DatasetCache::new(c),
+                plot_cache: PlotCache::default(),
+            },
+            None => {
+                let m: Metadata = Self::new(dataframe, path);
+                let rows: Vec<(&String, ColumnInfoDTO)> = m
+                    .dataset_cache
+                    .columns
+                    .iter()
+                    .map(|(n, i)| (n, ColumnInfoDTO::from(i.as_ref())))
+                    .collect();
+                let _ = write_jsonl(&columns_path, fingerprint, &rows);
+                m
+            }
+        };
+
+        match read_jsonl::<(PlotSpec, PlotResult)>(&plots_path, fingerprint) {
+            Some(entries) => {
+                metadata.plot_cache =
+                    PlotCache::new(Arc::new(RwLock::new(entries.into_iter().collect())))
+            }
+            None => {
+                let _ = write_jsonl::<()>(&plots_path, fingerprint, &[]);
+            }
+        }
+        metadata
+    }
+
+    pub fn plot<E>(
+        &self,
+        spec: PlotSpec,
+        compute: impl FnOnce() -> Result<PlotResult, E>,
+    ) -> Result<PlotResult, E> {
+        if let Some(hit) = self.plot_cache.entries.read().unwrap().get(&spec) {
+            return Ok(hit.clone());
+        }
+        let result: PlotResult = compute()?;
+        if let Some(path) = &self.filepath {
+            let _ = append_jsonl(&cache_path(Path::new(path), ".plots"), &(&spec, &result));
+        }
+        self.plot_cache
+            .entries
+            .write()
+            .unwrap()
+            .insert(spec, result.clone());
+        Ok(result)
     }
 
     pub fn try_info(&self) {

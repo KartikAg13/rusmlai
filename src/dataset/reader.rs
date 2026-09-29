@@ -43,7 +43,7 @@ impl Reader {
             };
             return Err(DatasetError::FileNotFound {
                 path: self.path.display().to_string(),
-                cwd: cwd,
+                cwd,
             });
         }
         Ok(self

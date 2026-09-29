@@ -12,9 +12,6 @@ pub enum DatasetError {
         available: String,
     },
 
-    #[error("unsupported datatype '{0}' found in metadata")]
-    UnsupportedDatatype(String),
-
     #[error("no columns passed to Dataset::select")]
     EmptySelect,
 

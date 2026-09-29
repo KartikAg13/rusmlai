@@ -24,33 +24,18 @@ impl Dataset {
     pub fn new(dataframe: DataFrame, path: impl AsRef<Path>) -> Self {
         let metadata: Metadata = Metadata::new(&dataframe, path);
         Self {
-            dataframe: dataframe,
-            metadata: metadata,
+            dataframe,
+            metadata,
         }
     }
 
     fn try_read_csv(path: impl AsRef<Path>) -> Result<Dataset, DatasetError> {
         let path: &Path = path.as_ref();
         let dataframe: DataFrame = Reader::new(path).finish()?;
-        let metadata: Metadata = match Metadata::load_cache(path) {
-            Some(m) => {
-                if m.width == dataframe.width() && m.height == dataframe.height() {
-                    m
-                } else {
-                    let m: Metadata = Metadata::new(&dataframe, path);
-                    let _ = m.write_cache();
-                    m
-                }
-            }
-            _ => {
-                let m: Metadata = Metadata::new(&dataframe, path);
-                let _ = m.write_cache();
-                m
-            }
-        };
+        let metadata: Metadata = Metadata::load(&dataframe, path);
         Ok(Dataset {
-            dataframe: dataframe,
-            metadata: metadata,
+            dataframe,
+            metadata,
         })
     }
 
