@@ -1,7 +1,10 @@
 use polars::error::PolarsError;
 use thiserror::Error;
 
+use crate::metadata::error::MetadataError;
+
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum DatasetError {
     #[error("file not found at '{path}' (current working directory: '{cwd}')")]
     FileNotFound { path: String, cwd: String },
@@ -26,6 +29,9 @@ pub enum DatasetError {
         column: String,
         actual_dtype: String,
     },
+
+    #[error(transparent)]
+    Metadata(#[from] MetadataError),
 
     #[error(transparent)]
     Polars(#[from] PolarsError),

@@ -1,6 +1,6 @@
 [package]
 name = "rusmlai"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 
 [dependencies]
@@ -35,11 +35,6 @@ serde_json = {
 
 thiserror = {
     version = "2.0.18",
-    default-features = false
-}
-
-thiserror-context = {
-    version = "0.1.2",
     default-features = false
 }
 

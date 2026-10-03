@@ -4,12 +4,16 @@ use std::{
     ffi::OsString,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, RwLock},
+    io,
+    sync::{Arc, PoisonError, RwLock},
 };
 
 use crate::{
+    display::TableView,
+    error::{OrFatal, warn},
     metadata::{
         constants::{DATASET_CACHE, PLOTS_CACHE},
+        error::MetadataError,
         dataset::{
             DatasetCache,
             dto::{ColumnInfoDTO, DatasetCacheDTO},
@@ -38,9 +42,14 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    #[track_caller]
     pub fn new(dataframe: &DataFrame, path: impl AsRef<Path>) -> Self {
+        Self::try_new(dataframe, path).or_fatal()
+    }
+
+    pub fn try_new(dataframe: &DataFrame, path: impl AsRef<Path>) -> Result<Self, MetadataError> {
         let width: usize = dataframe.width();
-        let stats: Vec<ColumnStats> = ColumnStats::compute_stats(dataframe).unwrap();
+        let stats: Vec<ColumnStats> = ColumnStats::compute_stats(dataframe)?;
         let data: IndexMap<String, Arc<ColumnInfo>> = dataframe
             .columns()
             .iter()
@@ -50,13 +59,13 @@ impl Metadata {
                 (column.name().to_string(), Arc::new(info))
             })
             .collect();
-        Self {
+        Ok(Self {
             filepath: Some(path.as_ref().as_os_str().to_os_string()),
             height: dataframe.height(),
             width,
             dataset_cache: DatasetCache::new(data),
             plot_cache: PlotCache::default(),
-        }
+        })
     }
 
     pub fn select(&self, selected: &[&str]) -> Metadata {
@@ -78,7 +87,12 @@ impl Metadata {
         }
     }
 
+    #[track_caller]
     pub fn load(dataframe: &DataFrame, path: &Path) -> Self {
+        Self::try_load(dataframe, path).or_fatal()
+    }
+
+    pub fn try_load(dataframe: &DataFrame, path: &Path) -> Result<Self, MetadataError> {
         let fingerprint: (u64, u64) = file_fingerprint(path).unwrap_or_default();
         let columns_path: PathBuf = cache_path(path, DATASET_CACHE);
         let plots_path: PathBuf = cache_path(path, PLOTS_CACHE);
@@ -102,7 +116,7 @@ impl Metadata {
                 plot_cache: PlotCache::default(),
             },
             None => {
-                let m: Metadata = Self::new(dataframe, path);
+                let m: Metadata = Self::try_new(dataframe, path)?;
                 let dto: DatasetCacheDTO = DatasetCacheDTO {
                     fingerprint,
                     columns: m
@@ -112,9 +126,15 @@ impl Metadata {
                         .map(|(n, i)| (n.clone(), ColumnInfoDTO::from(i.as_ref())))
                         .collect(),
                 };
-                let json: Vec<u8> = serde_json::to_vec_pretty(&dto).unwrap_or_default();
-                let _ = fs::create_dir_all(columns_path.parent().unwrap())
-                    .and_then(|()| fs::write(&columns_path, json));
+                let written: io::Result<()> = serde_json::to_vec_pretty(&dto)
+                    .map_err(io::Error::from)
+                    .and_then(|json| {
+                        fs::create_dir_all(columns_path.parent().unwrap())?;
+                        fs::write(&columns_path, json)
+                    });
+                if let Err(e) = written {
+                    warn(format_args!("could not write {}: {e}", columns_path.display()));
+                }
                 m
             }
         };
@@ -125,10 +145,12 @@ impl Metadata {
                     PlotCache::new(Arc::new(RwLock::new(entries.into_iter().collect())))
             }
             None => {
-                let _ = write_jsonl::<()>(&plots_path, fingerprint, &[]);
+                if let Err(e) = write_jsonl::<()>(&plots_path, fingerprint, &[]) {
+                    warn(format_args!("could not write {}: {e}", plots_path.display()));
+                }
             }
         }
-        metadata
+        Ok(metadata)
     }
 
     pub fn plot<E>(
@@ -136,35 +158,38 @@ impl Metadata {
         spec: PlotSpec,
         compute: impl FnOnce() -> Result<PlotResult, E>,
     ) -> Result<PlotResult, E> {
-        if let Some(hit) = self.plot_cache.entries.read().unwrap().get(&spec) {
+        let entries = &self.plot_cache.entries;
+        if let Some(hit) = entries.read().unwrap_or_else(PoisonError::into_inner).get(&spec) {
             return Ok(hit.clone());
         }
         let result: PlotResult = compute()?;
         if let Some(path) = &self.filepath {
-            let _ = append_jsonl(&cache_path(Path::new(path), PLOTS_CACHE), &(&spec, &result));
+            let plots_path: PathBuf = cache_path(Path::new(path), PLOTS_CACHE);
+            if let Err(e) = append_jsonl(&plots_path, &(&spec, &result)) {
+                warn(format_args!("could not update {}: {e}", plots_path.display()));
+            }
         }
-        self.plot_cache
-            .entries
+        entries
             .write()
-            .unwrap()
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(spec, result.clone());
         Ok(result)
     }
 
-    pub fn try_info(&self) {
-        self.dataset_cache.info_table(self.height, self.width);
+    pub fn try_info(&self) -> TableView {
+        self.dataset_cache.info_table(self.height, self.width)
     }
 
-    pub fn try_describe(&self) {
-        self.dataset_cache.describe_table(self.height);
+    pub fn try_describe(&self) -> TableView {
+        self.dataset_cache.describe_table(self.height)
     }
 
-    pub fn try_metadata(&self, skip: &[&str]) {
+    pub fn try_metadata(&self, skip: &[&str]) -> TableView {
         let path: String = self
             .filepath
             .as_deref()
             .map_or("-".into(), |p| p.to_string_lossy().into_owned());
         self.dataset_cache
-            .metadata_table(skip, &path, self.height, self.width);
+            .metadata_table(skip, &path, self.height, self.width)
     }
 }

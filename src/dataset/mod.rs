@@ -4,7 +4,8 @@ use polars::frame::DataFrame;
 
 use crate::{
     dataset::{error::DatasetError, reader::Reader},
-    fatal,
+    display::TableView,
+    error::OrFatal,
     metadata::{
         Metadata,
         dataset::info::ColumnInfo,
@@ -21,6 +22,7 @@ pub struct Dataset {
 }
 
 impl Dataset {
+    #[track_caller]
     pub fn new(dataframe: DataFrame, path: impl AsRef<Path>) -> Self {
         let metadata: Metadata = Metadata::new(&dataframe, path);
         Self {
@@ -32,7 +34,7 @@ impl Dataset {
     fn try_read_csv(path: impl AsRef<Path>) -> Result<Dataset, DatasetError> {
         let path: &Path = path.as_ref();
         let dataframe: DataFrame = Reader::new(path).finish()?;
-        let metadata: Metadata = Metadata::load(&dataframe, path);
+        let metadata: Metadata = Metadata::try_load(&dataframe, path)?;
         Ok(Dataset {
             dataframe,
             metadata,
@@ -121,15 +123,15 @@ impl Dataset {
     }
 
     pub fn metadata(&self, skip_columns: &[&str]) {
-        self.metadata.try_metadata(skip_columns);
+        self.metadata.try_metadata(skip_columns).show()
     }
 
     pub fn info(&self) {
-        self.metadata.try_info();
+        self.metadata.try_info().show()
     }
 
     pub fn describe(&self) {
-        self.metadata.try_describe();
+        self.metadata.try_describe().show()
     }
 
     pub fn shape(&self) -> (usize, usize) {
@@ -145,11 +147,11 @@ impl Dataset {
     }
 
     pub fn head(&self, n: usize) {
-        println!("{}", self.dataframe.head(Some(n)));
+        frame_view(&self.dataframe.head(Some(n))).show()
     }
 
     pub fn tail(&self, n: usize) {
-        println!("{}", self.dataframe.tail(Some(n)));
+        frame_view(&self.dataframe.tail(Some(n))).show()
     }
 
     pub fn columns(&self) -> Vec<String> {
@@ -170,17 +172,38 @@ impl Dataset {
             .collect()
     }
 
+    #[track_caller]
     pub fn select(&self, columns: &[&str]) -> Dataset {
-        self.try_select(columns)
-            .unwrap_or_else(|e| fatal!(e, "src/data/dataset/mod.rs (select)"))
+        self.try_select(columns).or_fatal()
     }
 
+    #[track_caller]
     pub fn drop(&self, columns: &[&str]) -> Dataset {
-        self.try_drop(columns)
-            .unwrap_or_else(|e| fatal!(e, "src/data/dataset/mod.rs (drop)"))
+        self.try_drop(columns).or_fatal()
     }
 }
 
+/// Rows of a (small) frame as a table, with Polars' `shape: (rows, cols)` caption.
+fn frame_view(frame: &DataFrame) -> TableView {
+    let headers: Vec<String> = frame
+        .get_column_names()
+        .iter()
+        .map(|name| name.to_string())
+        .collect();
+    let rows: Vec<Vec<String>> = (0..frame.height())
+        .map(|i| {
+            frame
+                .columns()
+                .iter()
+                .map(|c| c.get(i).map_or("?".into(), |v| v.str_value().into_owned()))
+                .collect()
+        })
+        .collect();
+    let caption: String = format!("shape: ({}, {})", frame.height(), frame.width());
+    TableView::new(&caption, &headers, &rows)
+}
+
+#[track_caller]
 pub fn read_csv(path: impl AsRef<Path>) -> Dataset {
-    Dataset::try_read_csv(path).unwrap_or_else(|e| fatal!(e, "src/data/dataset/mod.rs (read_csv)"))
+    Dataset::try_read_csv(path).or_fatal()
 }

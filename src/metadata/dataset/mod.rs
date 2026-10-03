@@ -1,14 +1,16 @@
 use std::sync::Arc;
 
-use comfy_table::{Table, presets::UTF8_FULL};
 use indexmap::IndexMap;
 use polars::frame::{DataFrame, column::Column};
 
 use crate::{
     dataset::Dataset,
+    display::TableView,
+    error::OrFatal,
     metadata::{
         Metadata,
         dataset::{info::ColumnInfo, stats::ColumnStats},
+        error::MetadataError,
         plot::PlotCache,
     },
 };
@@ -27,12 +29,23 @@ impl DatasetCache {
         Self { columns }
     }
 
+    #[track_caller]
     pub fn after_transform(
         &self,
         new_dataset: &Dataset,
         affected_columns: Vec<String>,
         row_count_changed: bool,
     ) -> Metadata {
+        self.try_after_transform(new_dataset, affected_columns, row_count_changed)
+            .or_fatal()
+    }
+
+    pub fn try_after_transform(
+        &self,
+        new_dataset: &Dataset,
+        affected_columns: Vec<String>,
+        row_count_changed: bool,
+    ) -> Result<Metadata, MetadataError> {
         let dataframe: &DataFrame = &new_dataset.dataframe;
         let stale: Vec<Column> = dataframe
             .columns()
@@ -49,8 +62,7 @@ impl DatasetCache {
         let mut fresh: IndexMap<String, ColumnStats> = names
             .into_iter()
             .zip(
-                ColumnStats::compute_stats(&DataFrame::new(dataframe.height(), stale).unwrap())
-                    .unwrap(),
+                ColumnStats::compute_stats(&DataFrame::new(dataframe.height(), stale)?)?,
             )
             .collect();
 
@@ -67,49 +79,44 @@ impl DatasetCache {
             })
             .collect();
 
-        Metadata {
+        Ok(Metadata {
             filepath: None,
             height: new_dataset.dataframe.height(),
             width: new_dataset.dataframe.width(),
             dataset_cache: DatasetCache::new(data),
             plot_cache: PlotCache::default(),
-        }
+        })
     }
 
-    pub fn info_table(&self, height: usize, width: usize) {
-        let mut table: Table = Table::new();
-        table.load_style(UTF8_FULL);
-        table.set_header(vec!["#", "columns", "non-null count", "dtypes"]);
-
-        for (i, (name, info)) in self.columns.iter().enumerate() {
-            let non_null: usize = height - info.null_count;
-            table.add_row(vec![
-                i.to_string(),
-                name.clone(),
-                non_null.to_string(),
-                format!("{:?}", info.dtype),
-            ]);
-        }
-
-        println!("Dataset: {} rows x {} columns\n{table}", height, width);
-    }
-
-    pub fn describe_table(&self, height: usize) {
-        let mut table: Table = Table::new();
-        table.load_style(UTF8_FULL);
-        table.set_header(vec![
-            "columns", "count", "mean", "std", "min", "25%", "50%", "75%", "max",
-        ]);
-
-        let mut any_numeric: bool = false;
-
-        for (name, info) in &self.columns {
-            if let Some(ColumnStats::Numeric(s)) = info.stats.get() {
-                any_numeric = true;
-                let count: usize = height - info.null_count;
-                table.add_row(vec![
+    pub fn info_table(&self, height: usize, width: usize) -> TableView {
+        let rows: Vec<Vec<String>> = self
+            .columns
+            .iter()
+            .enumerate()
+            .map(|(i, (name, info))| {
+                vec![
+                    i.to_string(),
                     name.clone(),
-                    count.to_string(),
+                    (height - info.null_count).to_string(),
+                    format!("{:?}", info.dtype),
+                ]
+            })
+            .collect();
+        TableView::new(
+            &format!("Dataset: {height} rows x {width} columns"),
+            &["#", "columns", "non-null count", "dtypes"].map(String::from),
+            &rows,
+        )
+    }
+
+    pub fn describe_table(&self, height: usize) -> TableView {
+        let rows: Vec<Vec<String>> = self
+            .columns
+            .iter()
+            .filter_map(|(name, info)| match info.stats.get() {
+                Some(ColumnStats::Numeric(s)) => Some(vec![
+                    name.clone(),
+                    (height - info.null_count).to_string(),
                     format!("{:.4}", s.mean),
                     format!("{:.4}", s.std),
                     format!("{:.4}", s.min),
@@ -117,32 +124,30 @@ impl DatasetCache {
                     format!("{:.4}", s.median),
                     format!("{:.4}", s.quantile_75),
                     format!("{:.4}", s.max),
-                ]);
-            }
-        }
-
-        if !any_numeric {
-            println!("No numeric columns with computed stats.");
-            return;
-        }
-
-        println!("{table}");
+                ]),
+                _ => None,
+            })
+            .collect();
+        let caption: &str = if rows.is_empty() {
+            "No numeric columns with computed stats."
+        } else {
+            ""
+        };
+        TableView::new(
+            caption,
+            &["columns", "count", "mean", "std", "min", "25%", "50%", "75%", "max"].map(String::from),
+            &rows,
+        )
     }
 
-    pub fn metadata_table(&self, skip: &[&str], filepath: &str, height: usize, width: usize) {
-        let mut table: Table = Table::new();
-        table.load_style(UTF8_FULL);
-        table.set_header(vec![
-            "columns",
-            "dtypes",
-            "nulls",
-            "mean/median/mode",
-            "min/max",
-            "std/variance",
-            "quantiles",
-            "unique/top3",
-        ]);
-
+    pub fn metadata_table(
+        &self,
+        skip: &[&str],
+        filepath: &str,
+        height: usize,
+        width: usize,
+    ) -> TableView {
+        let mut rows: Vec<Vec<String>> = Vec::new();
         for (name, info) in &self.columns {
             if skip.contains(&name.as_str()) {
                 continue;
@@ -185,7 +190,7 @@ impl DatasetCache {
                     )
                 }
             };
-            table.add_row(vec![
+            rows.push(vec![
                 name.clone(),
                 format!("{:?}", info.dtype),
                 info.null_count.to_string(),
@@ -196,8 +201,20 @@ impl DatasetCache {
                 unique_top3,
             ]);
         }
-
-        println!("\nFilepath: {}", filepath);
-        println!("Dataset: {} rows x {} columns\n\n{table}", height, width);
+        TableView::new(
+            &format!("Filepath: {filepath}\nDataset: {height} rows x {width} columns"),
+            &[
+                "columns",
+                "dtypes",
+                "nulls",
+                "mean/median/mode",
+                "min/max",
+                "std/variance",
+                "quantiles",
+                "unique/top3",
+            ]
+            .map(String::from),
+            &rows,
+        )
     }
 }
