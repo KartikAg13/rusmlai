@@ -1,11 +1,11 @@
-use polars::{datatypes::DataType, frame::column::Column};
+use polars::{
+    datatypes::DataType,
+    frame::{DataFrame, column::Column},
+};
 use std::sync::OnceLock;
 
 use crate::metadata::{
-    dataset::{
-        dto::ColumnInfoDTO,
-        stats::{CategoricalStats, ColumnStats, NumericStats},
-    },
+    dataset::{dto::ColumnInfoDTO, stats::ColumnStats},
     error::MetadataError,
 };
 
@@ -26,17 +26,19 @@ impl ColumnInfo {
         }
     }
 
+    pub fn with_stats(column: &Column, stats: ColumnStats) -> Self {
+        let info: ColumnInfo = ColumnInfo::new(column);
+        let _ = info.stats.set(stats);
+        info
+    }
+
     pub fn initialize(&self, column: &Column) -> Result<(), MetadataError> {
         if self.stats.get().is_none() {
-            let computed: ColumnStats = if self.dtype.is_numeric() {
-                ColumnStats::Numeric(NumericStats::compute_stats(column)?)
-            } else {
-                ColumnStats::Categorical(CategoricalStats::compute_stats(column)?)
-            };
-
-            let _ = self.stats.set(computed);
+            let dataframe: DataFrame = DataFrame::new(column.len(), vec![column.clone()])?;
+            if let Some(stats) = ColumnStats::compute_stats(&dataframe)?.pop() {
+                let _ = self.stats.set(stats);
+            }
         }
-
         Ok(())
     }
 }

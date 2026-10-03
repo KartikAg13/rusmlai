@@ -2,13 +2,20 @@ use indexmap::IndexMap;
 use polars::frame::DataFrame;
 use std::{
     ffi::OsString,
+    fs,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
 };
 
 use crate::{
     metadata::{
-        dataset::{DatasetCache, dto::ColumnInfoDTO, info::ColumnInfo},
+        constants::{DATASET_CACHE, PLOTS_CACHE},
+        dataset::{
+            DatasetCache,
+            dto::{ColumnInfoDTO, DatasetCacheDTO},
+            info::ColumnInfo,
+            stats::ColumnStats,
+        },
         plot::PlotCache,
         utils::{append_jsonl, cache_path, file_fingerprint, read_jsonl, write_jsonl},
     },
@@ -33,13 +40,16 @@ pub struct Metadata {
 impl Metadata {
     pub fn new(dataframe: &DataFrame, path: impl AsRef<Path>) -> Self {
         let width: usize = dataframe.width();
-        let mut data: IndexMap<String, Arc<ColumnInfo>> = IndexMap::with_capacity(width);
-        for column in dataframe.columns() {
-            let name: String = column.name().to_string();
-            let info: ColumnInfo = ColumnInfo::new(column);
-            info.initialize(column).unwrap();
-            data.insert(name, Arc::new(info));
-        }
+        let stats: Vec<ColumnStats> = ColumnStats::compute_stats(dataframe).unwrap();
+        let data: IndexMap<String, Arc<ColumnInfo>> = dataframe
+            .columns()
+            .iter()
+            .zip(stats)
+            .map(|(column, stats)| {
+                let info: ColumnInfo = ColumnInfo::with_stats(column, stats);
+                (column.name().to_string(), Arc::new(info))
+            })
+            .collect();
         Self {
             filepath: Some(path.as_ref().as_os_str().to_os_string()),
             height: dataframe.height(),
@@ -70,17 +80,19 @@ impl Metadata {
 
     pub fn load(dataframe: &DataFrame, path: &Path) -> Self {
         let fingerprint: (u64, u64) = file_fingerprint(path).unwrap_or_default();
-        let columns_path: PathBuf = cache_path(path, "");
-        let plots_path: PathBuf = cache_path(path, ".plots");
+        let columns_path: PathBuf = cache_path(path, DATASET_CACHE);
+        let plots_path: PathBuf = cache_path(path, PLOTS_CACHE);
 
-        let columns: Option<IndexMap<String, Arc<ColumnInfo>>> =
-            read_jsonl::<(String, ColumnInfoDTO)>(&columns_path, fingerprint)
-                .map(|rows| {
-                    rows.into_iter()
-                        .map(|(name, dto)| (name, Arc::new(dto.into())))
-                        .collect()
-                })
-                .filter(|c: &IndexMap<_, _>| c.len() == dataframe.width());
+        let columns: Option<IndexMap<String, Arc<ColumnInfo>>> = fs::read(&columns_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<DatasetCacheDTO>(&bytes).ok())
+            .filter(|dto| dto.fingerprint == fingerprint && dto.columns.len() == dataframe.width())
+            .map(|dto| {
+                dto.columns
+                    .into_iter()
+                    .map(|(name, d)| (name, Arc::new(d.into())))
+                    .collect()
+            });
         let mut metadata: Metadata = match columns {
             Some(c) => Self {
                 filepath: Some(path.as_os_str().to_os_string()),
@@ -91,13 +103,18 @@ impl Metadata {
             },
             None => {
                 let m: Metadata = Self::new(dataframe, path);
-                let rows: Vec<(&String, ColumnInfoDTO)> = m
-                    .dataset_cache
-                    .columns
-                    .iter()
-                    .map(|(n, i)| (n, ColumnInfoDTO::from(i.as_ref())))
-                    .collect();
-                let _ = write_jsonl(&columns_path, fingerprint, &rows);
+                let dto: DatasetCacheDTO = DatasetCacheDTO {
+                    fingerprint,
+                    columns: m
+                        .dataset_cache
+                        .columns
+                        .iter()
+                        .map(|(n, i)| (n.clone(), ColumnInfoDTO::from(i.as_ref())))
+                        .collect(),
+                };
+                let json: Vec<u8> = serde_json::to_vec_pretty(&dto).unwrap_or_default();
+                let _ = fs::create_dir_all(columns_path.parent().unwrap())
+                    .and_then(|()| fs::write(&columns_path, json));
                 m
             }
         };
@@ -124,7 +141,7 @@ impl Metadata {
         }
         let result: PlotResult = compute()?;
         if let Some(path) = &self.filepath {
-            let _ = append_jsonl(&cache_path(Path::new(path), ".plots"), &(&spec, &result));
+            let _ = append_jsonl(&cache_path(Path::new(path), PLOTS_CACHE), &(&spec, &result));
         }
         self.plot_cache
             .entries
@@ -143,16 +160,11 @@ impl Metadata {
     }
 
     pub fn try_metadata(&self, skip: &[&str]) {
-        self.dataset_cache.metadata_table(
-            skip,
-            self.filepath
-                .clone()
-                .unwrap()
-                .into_string()
-                .unwrap()
-                .as_str(),
-            self.height,
-            self.width,
-        );
+        let path: String = self
+            .filepath
+            .as_deref()
+            .map_or("-".into(), |p| p.to_string_lossy().into_owned());
+        self.dataset_cache
+            .metadata_table(skip, &path, self.height, self.width);
     }
 }

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use comfy_table::{Table, presets::UTF8_FULL};
 use indexmap::IndexMap;
+use polars::frame::{DataFrame, column::Column};
 
 use crate::{
     dataset::Dataset,
@@ -32,26 +33,36 @@ impl DatasetCache {
         affected_columns: Vec<String>,
         row_count_changed: bool,
     ) -> Metadata {
-        let data: IndexMap<String, Arc<ColumnInfo>> = new_dataset
-            .dataframe
+        let dataframe: &DataFrame = &new_dataset.dataframe;
+        let stale: Vec<Column> = dataframe
+            .columns()
+            .iter()
+            .filter(|column| {
+                let name: &str = column.name().as_str();
+                row_count_changed
+                    || affected_columns.iter().any(|a| a == name)
+                    || !self.columns.contains_key(name)
+            })
+            .cloned()
+            .collect();
+        let names: Vec<String> = stale.iter().map(|c| c.name().to_string()).collect();
+        let mut fresh: IndexMap<String, ColumnStats> = names
+            .into_iter()
+            .zip(
+                ColumnStats::compute_stats(&DataFrame::new(dataframe.height(), stale).unwrap())
+                    .unwrap(),
+            )
+            .collect();
+
+        let data: IndexMap<String, Arc<ColumnInfo>> = dataframe
             .columns()
             .iter()
             .map(|column| {
                 let name: String = column.name().to_string();
-                let is_affected: bool = row_count_changed || affected_columns.contains(&name);
-
-                let info: Arc<ColumnInfo> = if !is_affected {
-                    self.columns.get(&name).map(Arc::clone).unwrap_or_else(|| {
-                        let info: ColumnInfo = ColumnInfo::new(column);
-                        info.initialize(column).unwrap();
-                        Arc::new(info)
-                    })
-                } else {
-                    let info: ColumnInfo = ColumnInfo::new(column);
-                    info.initialize(column).unwrap();
-                    Arc::new(info)
+                let info: Arc<ColumnInfo> = match fresh.swap_remove(&name) {
+                    Some(stats) => Arc::new(ColumnInfo::with_stats(column, stats)),
+                    None => Arc::clone(&self.columns[&name]),
                 };
-
                 (name, info)
             })
             .collect();

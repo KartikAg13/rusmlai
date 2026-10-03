@@ -1,3 +1,4 @@
+use indexmap::IndexMap;
 use polars::datatypes::DataType;
 use serde::{Deserialize, Serialize};
 
@@ -5,6 +6,12 @@ use crate::metadata::{
     dataset::{info::ColumnInfo, stats::ColumnStats},
     utils::option_to_oncelock,
 };
+
+#[derive(Serialize, Deserialize)]
+pub struct DatasetCacheDTO {
+    pub fingerprint: (u64, u64),
+    pub columns: IndexMap<String, ColumnInfoDTO>,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct ColumnInfoDTO {

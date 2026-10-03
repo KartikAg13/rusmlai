@@ -12,6 +12,7 @@ comfy-table = {
 indexmap = {
     version = "2.14.0",
     default-features = false,
+    features = ['serde']
 }
 
 polars = {
@@ -48,3 +49,21 @@ criterion = {
     default-features = false,
     features = ["cargo_bench_support", "html_reports", "plotters"]
 }
+
+[lib]
+bench = false
+
+[profile.bench]
+debug = true
+
+[[bench]]
+name = "dataset"
+harness = false
+
+[[bench]]
+name = "metadata"
+harness = false
+
+[[bench]]
+name = "cache"
+harness = false

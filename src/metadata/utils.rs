@@ -7,23 +7,10 @@ use std::{
     time::UNIX_EPOCH,
 };
 
-use polars::{
-    datatypes::DataType,
-    frame::{DataFrame, column::Column},
-    lazy::frame::{IntoLazy, LazyFrame},
-};
+use polars::{datatypes::DataType, frame::DataFrame};
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::metadata::{
-    constants::{CACHE_DIRECTORY, CACHE_EXTENSION},
-    error::MetadataError,
-};
-
-pub fn column_to_lazy(column: &Column) -> Result<(String, LazyFrame), MetadataError> {
-    let name: String = column.name().clone().into_string();
-    let frame: DataFrame = DataFrame::new(column.len(), vec![column.clone()])?;
-    Ok((name, frame.lazy()))
-}
+use crate::metadata::{constants::CACHE_DIRECTORY, error::MetadataError};
 
 pub fn unwrap_f64(frame: &DataFrame, name: &str) -> Result<f64, MetadataError> {
     Ok(frame
@@ -55,7 +42,7 @@ pub fn file_fingerprint(path: impl AsRef<Path>) -> io::Result<(u64, u64)> {
 pub fn cache_path(csv: &Path, suffix: &str) -> PathBuf {
     let stem: Cow<str> = csv.file_stem().unwrap_or_default().to_string_lossy();
     csv.with_file_name(CACHE_DIRECTORY)
-        .join(format!("{stem}{suffix}.{CACHE_EXTENSION}"))
+        .join(format!("{stem}{suffix}"))
 }
 
 pub fn read_jsonl<T: DeserializeOwned>(path: &Path, fingerprint: (u64, u64)) -> Option<Vec<T>> {
