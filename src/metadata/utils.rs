@@ -68,7 +68,9 @@ pub fn write_jsonl<T: Serialize>(
     for entry in entries {
         out += &(serde_json::to_string(entry)? + "\n");
     }
-    fs::write(path, out)
+    fs::write(path, out)?;
+    print_saved(path);
+    Ok(())
 }
 
 pub fn append_jsonl<T: Serialize>(path: &Path, entry: &T) -> io::Result<()> {
@@ -76,5 +78,13 @@ pub fn append_jsonl<T: Serialize>(path: &Path, entry: &T) -> io::Result<()> {
     OpenOptions::new()
         .append(true)
         .open(path)?
-        .write_all(line.as_bytes())
+        .write_all(line.as_bytes())?;
+    print_saved(path);
+    Ok(())
+}
+
+/// Tells the user the full path of a file that was just created or updated.
+pub(crate) fn print_saved(path: &Path) {
+    let full: PathBuf = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    println!("[rusmlai] saved {}", full.display());
 }

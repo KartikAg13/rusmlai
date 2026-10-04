@@ -21,7 +21,9 @@ use crate::{
             stats::ColumnStats,
         },
         plot::PlotCache,
-        utils::{append_jsonl, cache_path, file_fingerprint, read_jsonl, write_jsonl},
+        utils::{
+            append_jsonl, cache_path, file_fingerprint, print_saved, read_jsonl, write_jsonl,
+        },
     },
     plot::{result::PlotResult, spec::PlotSpec},
 };
@@ -132,8 +134,9 @@ impl Metadata {
                         fs::create_dir_all(columns_path.parent().unwrap())?;
                         fs::write(&columns_path, json)
                     });
-                if let Err(e) = written {
-                    warn(format_args!("could not write {}: {e}", columns_path.display()));
+                match written {
+                    Ok(()) => print_saved(&columns_path),
+                    Err(e) => warn(format_args!("could not write {}: {e}", columns_path.display())),
                 }
                 m
             }

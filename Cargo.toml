@@ -48,8 +48,11 @@ criterion = {
 [lib]
 bench = false
 
+[profile.dev]
+split-debuginfo = "unpacked"
+
 [profile.bench]
-debug = true
+debug = "line-tables-only"
 
 [[bench]]
 name = "dataset"

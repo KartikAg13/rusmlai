@@ -21,7 +21,7 @@ pub fn source_csv() -> PathBuf {
         .unwrap_or_else(|| {
             PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/kaggle_playground-series-s6e1/train.csv"
+                "/tests/fixtures/train.csv"
             ))
         })
 }

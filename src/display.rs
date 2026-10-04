@@ -2,7 +2,9 @@
 //! Both print in a terminal and render inline in evcxr notebooks.
 
 use std::{
-    fmt, fs,
+    cell::Cell,
+    ffi::OsStr,
+    fmt, fs, io,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicUsize, Ordering},
@@ -10,42 +12,66 @@ use std::{
 
 use comfy_table::{Table, presets::UTF8_FULL};
 
-use crate::error::OrFatal;
+use crate::{
+    error::{OrFatal, warn},
+    metadata::{constants::CACHE_DIRECTORY, utils::print_saved},
+    plot::{chart::Chart, style::Style},
+};
 
-#[must_use = "call .show() or .save(path) to see the plot"]
+/// A chart. When it goes out of scope it shows itself in a notebook if nothing displayed it.
+/// In a program it saves itself to `metadata/plots/{title}.svg` (next to the CSV) unless
+/// `.save` or `.svg` was called.
 pub struct Figure {
-    svg: String,
+    pub(crate) chart: Chart,
+    pub(crate) style: Style,
+    folder: PathBuf,
+    displayed: Cell<bool>,
+    saved: Cell<bool>,
 }
 
 impl Figure {
-    pub fn new(svg: String) -> Self {
-        Self { svg }
+    pub(crate) fn new(chart: Chart, csv: Option<&OsStr>) -> Self {
+        let dir: &Path = csv
+            .and_then(|path| Path::new(path).parent())
+            .unwrap_or(Path::new(""));
+        Self {
+            chart,
+            style: Style::default(),
+            folder: dir.join(CACHE_DIRECTORY).join("plots"),
+            displayed: Cell::new(false),
+            saved: Cell::new(false),
+        }
     }
 
-    pub fn svg(&self) -> &str {
-        &self.svg
+    /// The chart as SVG, with its options on top of `set_theme` / `set_palette`.
+    /// Taking the text counts as handling the chart, so it is not auto-saved.
+    pub fn svg(&self) -> String {
+        self.saved.set(true);
+        self.render()
     }
 
-    /// Writes the SVG file. Never opens a viewer, so it is safe in loops.
+    /// Writes the SVG file (creating folders) in place of the auto-save. In a notebook it
+    /// also shows the chart. Never opens a viewer, so it is safe in loops.
     #[track_caller]
     pub fn save(&self, path: impl AsRef<Path>) {
-        let path: &Path = path.as_ref();
-        fs::write(path, &self.svg)
-            .map_err(|e| format!("could not save {}: {e}", path.display()))
-            .or_fatal();
+        self.write(path.as_ref()).or_fatal();
+        self.saved.set(true);
+        if in_notebook() {
+            self.evcxr_display();
+        }
     }
 
     /// Notebook: shows the chart inline. Program: writes a temp SVG and opens the system viewer.
     #[track_caller]
     pub fn show(&self) {
-        if std::env::var_os("EVCXR_IS_RUNTIME").is_some() {
+        if in_notebook() {
             return self.evcxr_display();
         }
         static SHOWN: AtomicUsize = AtomicUsize::new(0);
         let n: usize = SHOWN.fetch_add(1, Ordering::Relaxed);
         let path: PathBuf =
             std::env::temp_dir().join(format!("rusmlai-{}-{n}.svg", std::process::id()));
-        self.save(&path);
+        self.write(&path).or_fatal();
         let opener: &str = if cfg!(target_os = "macos") {
             "open"
         } else {
@@ -57,16 +83,57 @@ impl Figure {
     /// evcxr calls this on a cell's last expression. Inline HTML (not image/svg+xml)
     /// keeps the `<title>` hover tooltips working.
     pub fn evcxr_display(&self) {
+        self.displayed.set(true);
         println!(
             "EVCXR_BEGIN_CONTENT text/html\n{}\nEVCXR_END_CONTENT",
-            self.svg
+            self.render()
         );
     }
+
+    fn render(&self) -> String {
+        self.chart.render(&self.style.resolved())
+    }
+
+    fn write(&self, path: &Path) -> Result<(), String> {
+        let fail = |e: io::Error| format!("could not save {}: {e}", path.display());
+        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+            fs::create_dir_all(dir).map_err(fail)?;
+        }
+        fs::write(path, self.render()).map_err(fail)?;
+        print_saved(path);
+        Ok(())
+    }
+}
+
+impl Drop for Figure {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return; // a failed option (`.order(&["typo"])`) must not draw or write anything
+        }
+        if in_notebook() && !self.displayed.get() {
+            self.evcxr_display();
+        }
+        if !in_notebook() && !self.saved.get() {
+            let name: String = self
+                .chart
+                .title(&self.style.resolved())
+                .chars()
+                .filter(|c| c.is_alphanumeric() || " -_.".contains(*c))
+                .collect();
+            if let Err(e) = self.write(&self.folder.join(format!("{name}.svg"))) {
+                warn(e);
+            }
+        }
+    }
+}
+
+fn in_notebook() -> bool {
+    std::env::var_os("EVCXR_IS_RUNTIME").is_some()
 }
 
 impl fmt::Display for Figure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<Figure {} KB>", self.svg.len().div_ceil(1024))
+        write!(f, "<Figure: {}>", self.chart.name())
     }
 }
 
@@ -118,7 +185,7 @@ impl TableView {
 
     /// Prints the table: HTML inside an evcxr notebook, text everywhere else.
     pub fn show(&self) {
-        if std::env::var_os("EVCXR_IS_RUNTIME").is_some() {
+        if in_notebook() {
             self.evcxr_display();
         } else {
             println!("{self}");

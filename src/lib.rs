@@ -11,5 +11,6 @@ pub mod prelude {
     pub use crate::{
         dataset::{Dataset, read_csv},
         display::{Figure, TableView},
+        plot::style::{set_palette, set_theme},
     };
 }

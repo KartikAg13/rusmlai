@@ -30,5 +30,6 @@ docs/
 graphify-out/
 python/
 notebooks/
-plot*/
+/plot/
+/plots/
 CLAUDE.md
