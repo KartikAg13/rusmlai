@@ -1,6 +1,6 @@
 //! What a `Figure` draws: one variant per chart, with its texts, its numbers and its subtitle.
 
-use crate::plot::{bar, error::PlotError, result::PlotResult, style::Style};
+use crate::plot::{bar, dist, error::PlotError, result::PlotResult, style::Style};
 
 /// Default texts of a chart. `.title()`, `.xlabel()` and `.ylabel()` replace them.
 pub struct Texts {
@@ -27,6 +27,24 @@ pub enum Chart {
         result: PlotResult,
         subtitle: String,
     },
+    Hist {
+        texts: Texts,
+        result: PlotResult,
+        subtitle: String,
+    },
+    Box {
+        texts: Texts,
+        result: PlotResult,
+        subtitle: String,
+    },
+    /// Sampled rows: `points` are (x index, hue index, y).
+    Strip {
+        texts: Texts,
+        x_labels: Vec<String>,
+        hue_labels: Vec<String>,
+        points: Vec<(usize, usize, f64)>,
+        subtitle: String,
+    },
 }
 
 impl Chart {
@@ -34,11 +52,18 @@ impl Chart {
         match self {
             Chart::Bar { name, .. } => name,
             Chart::Pie { .. } => "pie",
+            Chart::Hist { .. } => "hist",
+            Chart::Box { .. } => "boxplot",
+            Chart::Strip { .. } => "stripplot",
         }
     }
 
     pub(crate) fn title(&self, style: &Style) -> String {
-        let (Chart::Bar { texts, .. } | Chart::Pie { texts, .. }) = self;
+        let (Chart::Bar { texts, .. }
+        | Chart::Pie { texts, .. }
+        | Chart::Hist { texts, .. }
+        | Chart::Box { texts, .. }
+        | Chart::Strip { texts, .. }) = self;
         style.title.clone().unwrap_or_else(|| texts.title.clone())
     }
 
@@ -55,6 +80,23 @@ impl Chart {
                 result,
                 subtitle,
             } => bar::render_pie(texts, result, subtitle, style),
+            Chart::Hist {
+                texts,
+                result,
+                subtitle,
+            } => dist::render_hist(texts, result, subtitle, style),
+            Chart::Box {
+                texts,
+                result,
+                subtitle,
+            } => dist::render_box(texts, result, subtitle, style),
+            Chart::Strip {
+                texts,
+                x_labels,
+                hue_labels,
+                points,
+                subtitle,
+            } => dist::render_strip(texts, x_labels, hue_labels, points, subtitle, style),
         }
     }
 
@@ -75,6 +117,10 @@ impl Chart {
                     | ".top"
                     | ".values"
             ),
+            Chart::Hist { .. } => !matches!(option, ".order" | ".top" | ".cmap" | ".xlim"),
+            Chart::Box { .. } | Chart::Strip { .. } => {
+                !matches!(option, ".values" | ".cmap" | ".xlim")
+            }
         };
         if allowed {
             Ok(())
@@ -88,11 +134,37 @@ impl Chart {
 
     /// Category names: the x labels (pie slices), or the hue labels (empty without a hue).
     pub(crate) fn categories(&self, hue: bool) -> &[String] {
-        let (Chart::Bar { result, .. } | Chart::Pie { result, .. }) = self;
-        match (result, hue) {
-            (PlotResult::Series { labels, .. }, false) => labels,
-            (PlotResult::Clustered { x_labels, .. }, false) => x_labels,
-            (PlotResult::Clustered { hue_labels, .. }, true) => hue_labels,
+        match (self, hue) {
+            (Chart::Bar { result, .. } | Chart::Pie { result, .. }, _) => match (result, hue) {
+                (PlotResult::Series { labels, .. }, false) => labels,
+                (PlotResult::Clustered { x_labels, .. }, false) => x_labels,
+                (PlotResult::Clustered { hue_labels, .. }, true) => hue_labels,
+                _ => &[],
+            },
+            (
+                Chart::Hist {
+                    texts,
+                    result: PlotResult::Hist { names, .. },
+                    ..
+                },
+                true,
+            ) if !texts.hue.is_empty() => names,
+            (
+                Chart::Box {
+                    result: PlotResult::Boxes { x_labels, .. },
+                    ..
+                },
+                false,
+            ) => x_labels,
+            (
+                Chart::Box {
+                    result: PlotResult::Boxes { hue_labels, .. },
+                    ..
+                },
+                true,
+            ) => hue_labels,
+            (Chart::Strip { x_labels, .. }, false) => x_labels,
+            (Chart::Strip { hue_labels, .. }, true) => hue_labels,
             _ => &[],
         }
     }

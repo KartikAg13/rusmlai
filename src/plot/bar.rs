@@ -18,9 +18,9 @@ use crate::{
     },
 };
 
-const TOP: usize = 30;
+pub(crate) const TOP: usize = 30;
 const PIE_TOP: usize = 8; // slices before "Other"
-const MAX_GROUPS: usize = 1000; // categories kept in the cache, so a huge column can't fill the file
+pub(crate) const MAX_GROUPS: usize = 1000; // categories kept in the cache, so a huge column can't fill the file
 const VALUE: &str = "__rusmlai_value";
 
 pub(crate) fn try_bar(
@@ -290,7 +290,11 @@ fn compute(dataset: &Dataset, spec: &BarSpec) -> Result<PlotResult, PlotError> {
 
 /// Category order: the metadata order (most frequent first, ties alphabetical) for text
 /// columns, ascending for numbers. At most `MAX_GROUPS`.
-fn labels(dataset: &Dataset, grouped: &DataFrame, column: &str) -> Result<Vec<String>, PlotError> {
+pub(crate) fn labels(
+    dataset: &Dataset,
+    grouped: &DataFrame,
+    column: &str,
+) -> Result<Vec<String>, PlotError> {
     let mut labels: Vec<String> = match dataset.try_categorical_stats(column) {
         Ok(stats) => stats.categories.into_iter().map(|(name, _)| name).collect(),
         Err(_) => {
@@ -307,7 +311,7 @@ fn labels(dataset: &Dataset, grouped: &DataFrame, column: &str) -> Result<Vec<St
 }
 
 /// A column as text, the same way the metadata names categories.
-fn strings(frame: &DataFrame, column: &str) -> Result<Vec<String>, PlotError> {
+pub(crate) fn strings(frame: &DataFrame, column: &str) -> Result<Vec<String>, PlotError> {
     Ok(frame
         .column(column)?
         .cast(&DataType::String)?
@@ -317,7 +321,7 @@ fn strings(frame: &DataFrame, column: &str) -> Result<Vec<String>, PlotError> {
         .collect())
 }
 
-fn index(labels: &[String]) -> HashMap<&str, usize> {
+pub(crate) fn index(labels: &[String]) -> HashMap<&str, usize> {
     labels
         .iter()
         .enumerate()
@@ -506,7 +510,7 @@ pub(crate) fn render(texts: &Texts, result: &PlotResult, subtitle: &str, style: 
 }
 
 /// Indices of the categories to draw: `.order` first (else the stored order), then at most `top`.
-fn pick(labels: &[String], order: Option<&[String]>, top: usize) -> Vec<usize> {
+pub(crate) fn pick(labels: &[String], order: Option<&[String]>, top: usize) -> Vec<usize> {
     match order {
         Some(order) => order
             .iter()

@@ -92,5 +92,10 @@ pub enum PlotSpec {
         hue: Option<String>,
         bins: usize,
     },
+    Boxplot {
+        x: String,
+        y: String,
+        hue: Option<String>,
+    },
     Corr,
 }

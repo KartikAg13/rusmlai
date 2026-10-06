@@ -1,5 +1,6 @@
 pub(crate) mod bar;
 pub mod chart;
+pub(crate) mod dist;
 pub mod error;
 pub mod result;
 pub mod spec;
@@ -52,5 +53,37 @@ impl Dataset {
 
     pub fn try_pie(&self, x: &str) -> Result<Figure, PlotError> {
         bar::try_pie(self, x)
+    }
+
+    /// Counts of `column` in `bins` equal bins, split by `hue`. (seaborn: `histplot`)
+    #[track_caller]
+    pub fn hist(&self, column: &str, hue: &str, bins: usize) -> Figure {
+        self.try_hist(column, hue, bins).or_fatal()
+    }
+
+    pub fn try_hist(&self, column: &str, hue: &str, bins: usize) -> Result<Figure, PlotError> {
+        dist::try_hist(self, column, hue, bins)
+    }
+
+    /// Min, q25, median, q75 and max of `y` per `x` category, split by `hue`.
+    /// `x = ""` draws one box from the cached stats. (seaborn: `boxplot`)
+    #[track_caller]
+    pub fn boxplot(&self, x: &str, y: &str, hue: &str) -> Figure {
+        self.try_boxplot(x, y, hue).or_fatal()
+    }
+
+    pub fn try_boxplot(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
+        dist::try_boxplot(self, x, y, hue)
+    }
+
+    /// About 2,000 sampled values of `y`, spread inside each `x` category and colored by
+    /// `hue`. (seaborn: `stripplot`)
+    #[track_caller]
+    pub fn stripplot(&self, x: &str, y: &str, hue: &str) -> Figure {
+        self.try_stripplot(x, y, hue).or_fatal()
+    }
+
+    pub fn try_stripplot(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
+        dist::try_stripplot(self, x, y, hue)
     }
 }

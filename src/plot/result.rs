@@ -25,11 +25,30 @@ pub enum PlotResult {
         names: Vec<String>,
         counts: Vec<Vec<f64>>,
     },
+    /// `boxes[x][hue]` = min, q25, median, q75, max. A missing group is all NaN.
+    Boxes {
+        x_labels: Vec<String>,
+        hue_labels: Vec<String>,
+        #[serde(deserialize_with = "nan_boxes")]
+        boxes: Vec<Vec<[f64; 5]>>,
+    },
 }
 
 fn nan_vec<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {
     let values: Vec<Option<f64>> = Vec::deserialize(d)?;
     Ok(values.into_iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+}
+
+fn nan_boxes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<[f64; 5]>>, D::Error> {
+    let rows: Vec<Vec<[Option<f64>; 5]>> = Vec::deserialize(d)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|five| five.map(|v| v.unwrap_or(f64::NAN)))
+                .collect()
+        })
+        .collect())
 }
 
 fn nan_grid<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Vec<f64>>, D::Error> {

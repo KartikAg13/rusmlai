@@ -18,6 +18,12 @@ pub enum PlotError {
     #[error("nothing to plot: no rows are left in {0} after nulls are dropped")]
     EmptyResult(String),
 
+    #[error("bins must be between 1 and 1000, got {0}")]
+    InvalidBins(usize),
+
+    #[error("hue needs an x column: pass x, or use the hue column as x")]
+    HueNeedsX,
+
     #[error("{option}(): {reason}")]
     InvalidOption {
         option: &'static str,
