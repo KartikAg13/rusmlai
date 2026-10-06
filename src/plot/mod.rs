@@ -32,4 +32,25 @@ impl Dataset {
     pub fn count(&self, x: &str, hue: &str) -> Figure {
         self.try_bar(x, "", hue, "").or_fatal()
     }
+
+    /// One bar per numeric column (`column = ""`, `estimator` default "mean"), or min, q25,
+    /// median, mean, q75, max and std of one column. From the cached stats.
+    #[track_caller]
+    pub fn describe_bar(&self, column: &str, estimator: &str) -> Figure {
+        self.try_describe_bar(column, estimator).or_fatal()
+    }
+
+    pub fn try_describe_bar(&self, column: &str, estimator: &str) -> Result<Figure, PlotError> {
+        bar::try_describe_bar(self, column, estimator)
+    }
+
+    /// The top 8 categories of `x` and "Other", from the cached counts. (matplotlib: `plt.pie`)
+    #[track_caller]
+    pub fn pie(&self, x: &str) -> Figure {
+        self.try_pie(x).or_fatal()
+    }
+
+    pub fn try_pie(&self, x: &str) -> Result<Figure, PlotError> {
+        bar::try_pie(self, x)
+    }
 }

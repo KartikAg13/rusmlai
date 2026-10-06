@@ -25,10 +25,17 @@ fn main() {
         .title("Exam difficulty by facility rating")
         .theme("light")
         .palette("colorblind")
-        .hue_order(&["easy", "moderate", "hard"]);
+        .hue_order(&["easy", "moderate", "hard"])
+        .show();
 
     // An explicit path replaces the auto-save.
     dataset
         .bar("internet_access", "study_hours", "", "mean")
         .save("tests/fixtures/metadata/plots/internet_vs_study_hours.svg");
+
+    dataset.pie("course");
+    dataset.pie("study_method").palette("colorblind").top(3);
+    dataset.describe_bar("", "mean");
+    dataset.describe_bar("exam_score", "");
+    dataset.describe_bar("study_hours", "count");
 }

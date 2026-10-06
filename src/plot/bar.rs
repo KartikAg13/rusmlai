@@ -1,4 +1,4 @@
-//! `bar` and `count`: compute the numbers (cached), then render them.
+//! `bar`, `count`, `describe_bar` and `pie`: compute the numbers, then render them.
 
 use std::collections::HashMap;
 
@@ -6,19 +6,20 @@ use polars::prelude::{DataFrame, DataType, Expr, IntoLazy, SortOptions, col, len
 
 use crate::{
     dataset::Dataset,
-    display::Figure,
-    metadata::dataset::stats::CategoricalStats,
+    display::{Figure, escape},
+    metadata::dataset::stats::{CategoricalStats, NumericStats},
     plot::{
-        chart::Chart,
+        chart::{Chart, Texts},
         error::PlotError,
         result::PlotResult,
-        spec::{BarSpec, PlotSpec},
+        spec::{BarSpec, Estimator, PlotSpec},
         style::Style,
         svg::{self, HEIGHT, MIN_CLUSTER_BAR, WIDTH, YScale},
     },
 };
 
 const TOP: usize = 30;
+const PIE_TOP: usize = 8; // slices before "Other"
 const MAX_GROUPS: usize = 1000; // categories kept in the cache, so a huge column can't fill the file
 const VALUE: &str = "__rusmlai_value";
 
@@ -70,12 +71,160 @@ pub(crate) fn try_bar(
         return Err(PlotError::EmptyResult(columns.join(", ")));
     }
 
-    let subtitle: String = subtitle(x_stats.as_ref(), spec.hue.as_deref());
     Ok(Figure::new(
         Chart::Bar {
-            spec,
+            name: if spec.y.is_none() { "count" } else { "bar" },
+            texts: bar_texts(&spec),
             result,
-            subtitle,
+            subtitle: subtitle(x_stats.as_ref(), spec.hue.as_deref()),
+        },
+        dataset.metadata.filepath.as_deref(),
+    ))
+}
+
+/// The old texts: `Bar: gender vs exam_score` / `Count: course vs count`.
+fn bar_texts(spec: &BarSpec) -> Texts {
+    let (title, y, value): (String, String, String) = match &spec.y {
+        Some(y) => (
+            format!("Bar: {} vs {y}", spec.x),
+            y.clone(),
+            format!("{} {y}", spec.estimator.as_str()),
+        ),
+        None => (
+            format!("Count: {} vs count", spec.x),
+            "count".to_string(),
+            "count".to_string(),
+        ),
+    };
+    Texts {
+        title,
+        x: spec.x.clone(),
+        y,
+        value,
+        hue: spec.hue.clone().unwrap_or_default(),
+    }
+}
+
+/// One bar per numeric column (`column = ""`, estimator default "mean"), or the summary
+/// stats of one column. Read from the cached stats: no pass over the data.
+pub(crate) fn try_describe_bar(
+    dataset: &Dataset,
+    column: &str,
+    estimator: &str,
+) -> Result<Figure, PlotError> {
+    let (texts, labels, values): (Texts, Vec<String>, Vec<f64>) = if column.is_empty() {
+        let est: Estimator = match estimator {
+            "" => Estimator::Mean,
+            name => Estimator::parse(name)?,
+        };
+        let mut labels: Vec<String> = Vec::new();
+        let mut values: Vec<f64> = Vec::new();
+        for name in dataset.columns() {
+            let Ok(stats) = dataset.try_numeric_stats(&name) else {
+                continue; // text column
+            };
+            values.push(stat(dataset, &name, &stats, est)?);
+            labels.push(name);
+        }
+        let texts: Texts = Texts {
+            title: format!("Describe: column vs {}", est.as_str()),
+            x: "column".to_string(),
+            y: est.as_str().to_string(),
+            value: est.as_str().to_string(),
+            hue: String::new(),
+        };
+        (texts, labels, values)
+    } else {
+        let s: NumericStats = dataset.try_numeric_stats(column)?;
+        let (labels, values): (Vec<String>, Vec<f64>) = match estimator {
+            "" => (
+                ["Min", "Q25", "Median", "Mean", "Q75", "Max", "Std"]
+                    .map(String::from)
+                    .to_vec(),
+                vec![
+                    s.min,
+                    s.quantile_25,
+                    s.median,
+                    s.mean,
+                    s.quantile_75,
+                    s.max,
+                    s.std,
+                ],
+            ),
+            name => {
+                let est: Estimator = Estimator::parse(name)?;
+                (
+                    vec![est.as_str().to_string()],
+                    vec![stat(dataset, column, &s, est)?],
+                )
+            }
+        };
+        let texts: Texts = Texts {
+            title: format!("Describe: statistic vs {column}"),
+            x: "statistic".to_string(),
+            y: column.to_string(),
+            value: column.to_string(),
+            hue: String::new(),
+        };
+        (texts, labels, values)
+    };
+    if !values.iter().any(|v| v.is_finite()) {
+        return Err(PlotError::EmptyResult(if column.is_empty() {
+            "the numeric columns".to_string()
+        } else {
+            column.to_string()
+        }));
+    }
+    Ok(Figure::new(
+        Chart::Bar {
+            name: "describe_bar",
+            texts,
+            result: PlotResult::Series { labels, values },
+            subtitle: "from cached column stats".to_string(),
+        },
+        dataset.metadata.filepath.as_deref(),
+    ))
+}
+
+fn stat(
+    dataset: &Dataset,
+    column: &str,
+    s: &NumericStats,
+    est: Estimator,
+) -> Result<f64, PlotError> {
+    Ok(match est {
+        Estimator::Mean => s.mean,
+        Estimator::Median => s.median,
+        Estimator::Min => s.min,
+        Estimator::Max => s.max,
+        Estimator::Std => s.std,
+        Estimator::Count => {
+            (dataset.metadata.height - dataset.try_column_info(column)?.null_count) as f64
+        }
+    })
+}
+
+/// Slices from the cached category counts: the top 8 plus "Other" by default.
+pub(crate) fn try_pie(dataset: &Dataset, x: &str) -> Result<Figure, PlotError> {
+    let stats: CategoricalStats = dataset.try_categorical_stats(x)?;
+    let top: &[(String, u64)] = &stats.categories[..stats.categories.len().min(MAX_GROUPS)];
+    if top.iter().all(|&(_, n)| n == 0) {
+        return Err(PlotError::EmptyResult(x.to_string()));
+    }
+    Ok(Figure::new(
+        Chart::Pie {
+            texts: Texts {
+                title: format!("Distribution: {x}"),
+                x: x.to_string(),
+                y: String::new(),
+                value: "count".to_string(),
+                hue: String::new(),
+            },
+            result: PlotResult::Series {
+                labels: top.iter().map(|(name, _)| name.clone()).collect(),
+                values: top.iter().map(|&(_, n)| n as f64).collect(),
+            },
+            subtitle: String::new(),
         },
         dataset.metadata.filepath.as_deref(),
     ))
@@ -195,15 +344,8 @@ fn subtitle(x: Option<&CategoricalStats>, hue: Option<&str>) -> String {
 }
 
 /// The old `render_simple` and `render_clustered` in one: a single series is one group.
-pub(crate) fn render(spec: &BarSpec, result: &PlotResult, subtitle: &str, style: &Style) -> String {
+pub(crate) fn render(texts: &Texts, result: &PlotResult, subtitle: &str, style: &Style) -> String {
     let theme = style.theme();
-    let count: bool = spec.y.is_none();
-    let y_name: &str = spec.y.as_deref().unwrap_or("count");
-    let what: String = if count {
-        "count".to_string()
-    } else {
-        format!("{} {y_name}", spec.estimator.as_str())
-    };
     let top: usize = style.top.unwrap_or(TOP);
 
     let (all, x_labels, hue_labels, grid): (usize, Vec<&String>, Vec<&String>, Vec<Vec<f64>>) =
@@ -236,7 +378,7 @@ pub(crate) fn render(spec: &BarSpec, result: &PlotResult, subtitle: &str, style:
             _ => unreachable!("bar charts hold Series or Clustered results"),
         };
 
-    let title: String = title(spec, style);
+    let title: String = style.title.clone().unwrap_or_else(|| texts.title.clone());
     let base_subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
     let subtitle: String = match (x_labels.len() < all, base_subtitle.is_empty()) {
         (true, true) => format!("showing {} of {all}", x_labels.len()),
@@ -291,9 +433,10 @@ pub(crate) fn render(spec: &BarSpec, result: &PlotResult, subtitle: &str, style:
                     (bar_w - 1.5).max(1.0),
                     style.group_color(j, hue),
                     format!(
-                        "{} = {label}\n{} = {hue}\n{what} = {}",
-                        spec.x,
-                        spec.hue.as_deref().unwrap_or(""),
+                        "{} = {label}\n{} = {hue}\n{} = {}",
+                        texts.x,
+                        texts.hue,
+                        texts.value,
                         svg::format_value(value)
                     ),
                 )
@@ -302,8 +445,9 @@ pub(crate) fn render(spec: &BarSpec, result: &PlotResult, subtitle: &str, style:
                     bar_w,
                     style.single_color(label),
                     format!(
-                        "{} = {label}\n{what} = {}",
-                        spec.x,
+                        "{} = {label}\n{} = {}",
+                        texts.x,
+                        texts.value,
                         svg::format_value(value)
                     ),
                 )
@@ -346,8 +490,8 @@ pub(crate) fn render(spec: &BarSpec, result: &PlotResult, subtitle: &str, style:
             pad_top + 8.0,
         );
     }
-    let x_name: &str = style.xlabel.as_deref().unwrap_or(&spec.x);
-    let y_axis: &str = style.ylabel.as_deref().unwrap_or(y_name);
+    let x_name: &str = style.xlabel.as_deref().unwrap_or(&texts.x);
+    let y_axis: &str = style.ylabel.as_deref().unwrap_or(&texts.y);
     svg::axis_names(
         &mut out,
         &theme,
@@ -361,14 +505,6 @@ pub(crate) fn render(spec: &BarSpec, result: &PlotResult, subtitle: &str, style:
     out
 }
 
-/// `.title()`, else the old `Bar: gender vs exam_score` / `Count: course vs count`.
-pub(crate) fn title(spec: &BarSpec, style: &Style) -> String {
-    style.title.clone().unwrap_or_else(|| match &spec.y {
-        Some(y) => format!("Bar: {} vs {y}", spec.x),
-        None => format!("Count: {} vs count", spec.x),
-    })
-}
-
 /// Indices of the categories to draw: `.order` first (else the stored order), then at most `top`.
 fn pick(labels: &[String], order: Option<&[String]>, top: usize) -> Vec<usize> {
     match order {
@@ -379,4 +515,87 @@ fn pick(labels: &[String], order: Option<&[String]>, top: usize) -> Vec<usize> {
             .collect(),
         None => (0..labels.len().min(top)).collect(),
     }
+}
+
+/// The old pie: slices on the left, a legend with counts and shares on the right.
+pub(crate) fn render_pie(
+    texts: &Texts,
+    result: &PlotResult,
+    subtitle: &str,
+    style: &Style,
+) -> String {
+    let PlotResult::Series { labels, values } = result else {
+        unreachable!("pie charts hold Series results");
+    };
+    let theme = style.theme();
+    let rows: Vec<usize> = pick(labels, style.order.as_deref(), style.top.unwrap_or(PIE_TOP));
+    let mut slices: Vec<(&str, f64)> = rows
+        .iter()
+        .map(|&i| (labels[i].as_str(), values[i]))
+        .collect();
+    let other: f64 = (0..labels.len())
+        .filter(|i| !rows.contains(i))
+        .map(|i| values[i])
+        .sum();
+    if other > 0.0 {
+        slices.push(("Other", other));
+    }
+    let total: f64 = slices.iter().map(|&(_, v)| v).sum::<f64>().max(1.0);
+
+    let (width, height): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
+    let (sx, sy): (f64, f64) = (width / WIDTH, height / HEIGHT);
+    let (cx, cy, r): (f64, f64, f64) = (250.0 * sx, 270.0 * sy, 130.0 * sx.min(sy));
+    let title: String = style.title.clone().unwrap_or_else(|| texts.title.clone());
+    let subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
+    let show_values: bool = style.values.unwrap_or(true);
+
+    let mut out: String = svg::card(&theme, &title, subtitle, width, height);
+    let mut angle: f64 = -std::f64::consts::FRAC_PI_2;
+    for (i, &(name, value)) in slices.iter().enumerate() {
+        let share: f64 = value / total;
+        let next: f64 = angle + share * std::f64::consts::TAU;
+        let color: String = style.group_color(i, name);
+        let hover: String = escape(&format!(
+            "{} = {name}\n{} = {} ({:.0}%)",
+            texts.x,
+            texts.value,
+            svg::format_value(value),
+            share * 100.0
+        ));
+        let bg: &str = theme.background;
+        if share >= 0.9999 {
+            // One slice: an arc from a point back to itself draws nothing, so draw the circle.
+            out.push_str(&format!(
+                r##"<circle cx="{cx}" cy="{cy}" r="{r}" fill="{color}"><title>{hover}</title></circle>"##
+            ));
+        } else {
+            let large: u8 = u8::from(share > 0.5);
+            let (x1, y1): (f64, f64) = (cx + r * angle.cos(), cy + r * angle.sin());
+            let (x2, y2): (f64, f64) = (cx + r * next.cos(), cy + r * next.sin());
+            out.push_str(&format!(
+                r##"<path d="M {cx} {cy} L {x1:.2} {y1:.2} A {r} {r} 0 {large} 1 {x2:.2} {y2:.2} Z" fill="{color}" stroke="{bg}" stroke-width="1.5"><title>{hover}</title></path>"##
+            ));
+        }
+        let row: f64 = 140.0 * sy + i as f64 * 28.0;
+        let text: String = if show_values {
+            format!(
+                "{name}  {}  ({:.0}%)",
+                svg::format_value(value),
+                share * 100.0
+            )
+        } else {
+            name.to_string()
+        };
+        out.push_str(&format!(
+            r##"<rect x="{}" y="{}" width="12" height="12" rx="2" fill="{color}"/><text x="{}" y="{row}" font-family="sans-serif" font-size="13" fill="{}">{}</text>"##,
+            430.0 * sx,
+            row - 10.0,
+            452.0 * sx,
+            theme.tick,
+            escape(&text)
+        ));
+        angle = next;
+    }
+    out.push_str("</svg>");
+    out
 }
