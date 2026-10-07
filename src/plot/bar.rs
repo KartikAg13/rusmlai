@@ -20,6 +20,8 @@ use crate::{
 
 pub(crate) const TOP: usize = 30;
 const PIE_TOP: usize = 8; // slices before "Other"
+// ponytail: categories past 1,000 are cut before caching, even ones .order names; filter the
+// query by .order if someone needs a rare one.
 pub(crate) const MAX_GROUPS: usize = 1000; // categories kept in the cache, so a huge column can't fill the file
 const VALUE: &str = "__rusmlai_value";
 
@@ -38,7 +40,7 @@ pub(crate) fn try_bar(
     if let Some(hue) = &spec.hue {
         dataset.try_column_info(hue)?;
     }
-    let x_stats: Option<CategoricalStats> = dataset.try_categorical_stats(&spec.x).ok();
+    let x_stats: Option<&CategoricalStats> = dataset.try_categorical_stats(&spec.x).ok();
 
     let result: PlotResult = match (&x_stats, &spec.y, &spec.hue) {
         // A plain count of a text column is already in the metadata: no group-by, no cache line.
@@ -76,7 +78,7 @@ pub(crate) fn try_bar(
             name: if spec.y.is_none() { "count" } else { "bar" },
             texts: bar_texts(&spec),
             result,
-            subtitle: subtitle(x_stats.as_ref(), spec.hue.as_deref()),
+            subtitle: subtitle(x_stats, spec.hue.as_deref()),
         },
         dataset.metadata.filepath.as_deref(),
     ))
@@ -123,7 +125,7 @@ pub(crate) fn try_describe_bar(
             let Ok(stats) = dataset.try_numeric_stats(&name) else {
                 continue; // text column
             };
-            values.push(stat(dataset, &name, &stats, est)?);
+            values.push(stat(dataset, &name, stats, est)?);
             labels.push(name);
         }
         let texts: Texts = Texts {
@@ -135,7 +137,7 @@ pub(crate) fn try_describe_bar(
         };
         (texts, labels, values)
     } else {
-        let s: NumericStats = dataset.try_numeric_stats(column)?;
+        let s: &NumericStats = dataset.try_numeric_stats(column)?;
         let (labels, values): (Vec<String>, Vec<f64>) = match estimator {
             "" => (
                 ["Min", "Q25", "Median", "Mean", "Q75", "Max", "Std"]
@@ -155,7 +157,7 @@ pub(crate) fn try_describe_bar(
                 let est: Estimator = Estimator::parse(name)?;
                 (
                     vec![est.as_str().to_string()],
-                    vec![stat(dataset, column, &s, est)?],
+                    vec![stat(dataset, column, s, est)?],
                 )
             }
         };
@@ -206,7 +208,7 @@ fn stat(
 
 /// Slices from the cached category counts: the top 8 plus "Other" by default.
 pub(crate) fn try_pie(dataset: &Dataset, x: &str) -> Result<Figure, PlotError> {
-    let stats: CategoricalStats = dataset.try_categorical_stats(x)?;
+    let stats: &CategoricalStats = dataset.try_categorical_stats(x)?;
     let top: &[(String, u64)] = &stats.categories[..stats.categories.len().min(MAX_GROUPS)];
     if top.iter().all(|&(_, n)| n == 0) {
         return Err(PlotError::EmptyResult(x.to_string()));
@@ -296,7 +298,12 @@ pub(crate) fn labels(
     column: &str,
 ) -> Result<Vec<String>, PlotError> {
     let mut labels: Vec<String> = match dataset.try_categorical_stats(column) {
-        Ok(stats) => stats.categories.into_iter().map(|(name, _)| name).collect(),
+        Ok(stats) => stats
+            .categories
+            .iter()
+            .take(MAX_GROUPS)
+            .map(|(name, _)| name.clone())
+            .collect(),
         Err(_) => {
             let sorted: DataFrame = grouped
                 .clone()

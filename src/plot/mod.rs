@@ -2,10 +2,12 @@ pub(crate) mod bar;
 pub mod chart;
 pub(crate) mod dist;
 pub mod error;
+pub(crate) mod heat;
 pub mod result;
 pub mod spec;
 pub mod style;
 pub(crate) mod svg;
+pub(crate) mod xy;
 
 use crate::{dataset::Dataset, display::Figure, error::OrFatal, plot::error::PlotError};
 
@@ -85,5 +87,63 @@ impl Dataset {
 
     pub fn try_stripplot(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
         dist::try_stripplot(self, x, y, hue)
+    }
+
+    /// `estimator(value)` for each pair of `x` and `y` categories; `value = ""` counts rows.
+    /// (seaborn: `heatmap` of a pivot table)
+    #[track_caller]
+    pub fn heatmap(&self, x: &str, y: &str, value: &str, estimator: &str) -> Figure {
+        self.try_heatmap(x, y, value, estimator).or_fatal()
+    }
+
+    pub fn try_heatmap(
+        &self,
+        x: &str,
+        y: &str,
+        value: &str,
+        estimator: &str,
+    ) -> Result<Figure, PlotError> {
+        heat::try_heatmap(self, x, y, value, estimator)
+    }
+
+    /// Pearson correlation of every pair of numeric columns. (seaborn: `heatmap(df.corr())`)
+    #[track_caller]
+    pub fn corrplot(&self) -> Figure {
+        self.try_corrplot().or_fatal()
+    }
+
+    pub fn try_corrplot(&self) -> Result<Figure, PlotError> {
+        heat::try_corrplot(self)
+    }
+
+    /// About 2,000 sampled rows of `y` against `x`, colored by `hue`. (seaborn: `scatterplot`)
+    #[track_caller]
+    pub fn scatter(&self, x: &str, y: &str, hue: &str) -> Figure {
+        self.try_scatter(x, y, hue).or_fatal()
+    }
+
+    pub fn try_scatter(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
+        xy::try_scatter(self, x, y, hue)
+    }
+
+    /// The mean of `y` at each `x`, sorted by `x`, one line per `hue` group.
+    /// (seaborn: `lineplot`)
+    #[track_caller]
+    pub fn line(&self, x: &str, y: &str, hue: &str) -> Figure {
+        self.try_line(x, y, hue).or_fatal()
+    }
+
+    pub fn try_line(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
+        xy::try_line(self, x, y, hue)
+    }
+
+    /// A scatter plus a least-squares line fitted on all rows. (seaborn: `regplot`)
+    #[track_caller]
+    pub fn regplot(&self, x: &str, y: &str, hue: &str) -> Figure {
+        self.try_regplot(x, y, hue).or_fatal()
+    }
+
+    pub fn try_regplot(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
+        xy::try_regplot(self, x, y, hue)
     }
 }

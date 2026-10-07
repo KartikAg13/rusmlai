@@ -5,7 +5,7 @@ use std::sync::{LazyLock, PoisonError, RwLock};
 use crate::{
     display::Figure,
     error::OrFatal,
-    plot::{chart::Chart, error::PlotError},
+    plot::{bar::MAX_GROUPS, chart::Chart, error::PlotError},
 };
 
 /// Colors of a card. `CLASSIC` is the original rusmlai look.
@@ -20,6 +20,12 @@ pub(crate) struct Theme {
     pub subtitle: &'static str,
     pub value: &'static str,
     pub palette: &'static [&'static str],
+    /// Heatmap colors: the low end, the middle of a diverging range, and negative values.
+    pub cell_low: &'static str,
+    pub cell_mid: &'static str,
+    pub negative: &'static str,
+    /// Regression line.
+    pub fit: &'static str,
 }
 
 pub(crate) const CLASSIC: Theme = Theme {
@@ -32,6 +38,10 @@ pub(crate) const CLASSIC: Theme = Theme {
     subtitle: "#E4E7EE",
     value: "#FFFFFF",
     palette: GREENS,
+    cell_low: "#0E2A20",
+    cell_mid: "#1A2A24",
+    negative: "#C44B4B",
+    fit: "#E8C547",
 };
 
 const LIGHT: Theme = Theme {
@@ -44,6 +54,10 @@ const LIGHT: Theme = Theme {
     subtitle: "#3A3F48",
     value: "#16181D",
     palette: GREENS,
+    cell_low: "#E3F2EB",
+    cell_mid: "#F1F3F2",
+    negative: "#C44B4B",
+    fit: "#B8860B",
 };
 
 const THEMES: &[(&str, Theme)] = &[("dark", CLASSIC), ("classic", CLASSIC), ("light", LIGHT)];
@@ -104,6 +118,65 @@ const PALETTES: &[(&str, &[&str])] = &[
     ),
 ];
 
+/// A heatmap color range: stops from low to high. A diverging range has its middle stop at 0.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Cmap {
+    pub stops: &'static [&'static str],
+    pub diverging: bool,
+}
+
+const CMAPS: &[(&str, Cmap)] = &[
+    (
+        "greens",
+        Cmap {
+            stops: &["#0E2A20", "#199E70"],
+            diverging: false,
+        },
+    ),
+    (
+        "viridis",
+        Cmap {
+            stops: &["#440154", "#3B528B", "#21908C", "#5DC863", "#FDE725"],
+            diverging: false,
+        },
+    ),
+    (
+        "magma",
+        Cmap {
+            stops: &["#000004", "#51127C", "#B73779", "#FC8961", "#FCFDBF"],
+            diverging: false,
+        },
+    ),
+    (
+        "blues",
+        Cmap {
+            stops: &["#F7FBFF", "#6BAED6", "#08306B"],
+            diverging: false,
+        },
+    ),
+    (
+        "redgreen",
+        Cmap {
+            stops: &["#C44B4B", "#1A2A24", "#199E70"],
+            diverging: true,
+        },
+    ),
+    (
+        "coolwarm",
+        Cmap {
+            stops: &["#3B4CC0", "#DDDDDD", "#B40426"],
+            diverging: true,
+        },
+    ),
+    (
+        "rdbu",
+        Cmap {
+            stops: &["#B2182B", "#F7F7F7", "#2166AC"],
+            diverging: true,
+        },
+    ),
+];
+
 /// Every chart option. `None` means "use the default".
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Style {
@@ -121,6 +194,8 @@ pub(crate) struct Style {
     pub top: Option<usize>,
     pub values: Option<bool>,
     pub ylim: Option<(f64, f64)>,
+    pub xlim: Option<(f64, f64)>,
+    pub cmap: Option<Cmap>,
 }
 
 static DEFAULTS: LazyLock<RwLock<Style>> = LazyLock::new(|| RwLock::new(Style::default()));
@@ -377,6 +452,32 @@ impl Figure {
             Ok(())
         })
     }
+
+    /// The range of the x axis on scatter, line and regplot charts. (matplotlib: `ax.set_xlim`)
+    #[track_caller]
+    pub fn xlim(self, low: f64, high: f64) -> Self {
+        self.set(".xlim", |s, _| {
+            let ok: bool = low.is_finite() && high.is_finite() && low < high;
+            if !ok {
+                return Err(invalid(
+                    ".xlim",
+                    format!("({low}, {high}) is not a range; low must be below high"),
+                ));
+            }
+            s.xlim = Some((low, high));
+            Ok(())
+        })
+    }
+
+    /// The color range of a heatmap: greens, viridis, magma, blues (low to high), or
+    /// redgreen, coolwarm, rdbu (negative to positive). (seaborn: `cmap=`)
+    #[track_caller]
+    pub fn cmap(self, name: &str) -> Self {
+        self.set(".cmap", |s, _| {
+            s.cmap = Some(lookup(CMAPS, ".cmap", name)?);
+            Ok(())
+        })
+    }
 }
 
 fn invalid(option: &'static str, reason: String) -> PlotError {
@@ -416,11 +517,16 @@ fn known(option: &'static str, name: &str, categories: &[String]) -> Result<(), 
     if categories.iter().any(|c| c == name) {
         return Ok(());
     }
-    let list: String = if categories.is_empty() {
-        "none".to_string()
-    } else {
-        categories.join(", ")
+    let mut list: String = match categories {
+        [] => "none".to_string(),
+        _ => categories[..categories.len().min(20)].join(", "),
     };
+    if categories.len() > 20 {
+        list += &format!(" and {} more", categories.len() - 20);
+    }
+    if categories.len() >= MAX_GROUPS {
+        list += &format!(". Charts keep only the first {MAX_GROUPS} categories");
+    }
     Err(invalid(
         option,
         format!("'{name}' is not a category of this chart. Categories: {list}"),

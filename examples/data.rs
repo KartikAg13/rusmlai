@@ -38,4 +38,12 @@ fn main() {
     dataset.describe_bar("", "mean");
     dataset.describe_bar("exam_score", "");
     dataset.describe_bar("study_hours", "count");
+
+    dataset.hist("exam_score", "", 30);
+    dataset.hist("study_hours", "gender", 12);
+    dataset.boxplot("", "exam_score", "");
+    dataset.boxplot("course", "exam_score", "");
+    dataset.boxplot("sleep_quality", "exam_score", "gender");
+    dataset.stripplot("course", "exam_score", "");
+    dataset.stripplot("sleep_quality", "exam_score", "internet_access");
 }

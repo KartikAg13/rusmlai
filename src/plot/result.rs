@@ -25,12 +25,14 @@ pub enum PlotResult {
         names: Vec<String>,
         counts: Vec<Vec<f64>>,
     },
-    /// `boxes[x][hue]` = min, q25, median, q75, max. A missing group is all NaN.
+    /// `boxes[x][hue]` = lower fence, q25, median, q75, upper fence (a missing group is all
+    /// NaN); `outliers[x][hue]` = the values past the fences, at most 100.
     Boxes {
         x_labels: Vec<String>,
         hue_labels: Vec<String>,
         #[serde(deserialize_with = "nan_boxes")]
         boxes: Vec<Vec<[f64; 5]>>,
+        outliers: Vec<Vec<Vec<f64>>>,
     },
 }
 

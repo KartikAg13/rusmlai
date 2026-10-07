@@ -12,7 +12,9 @@ pub enum PlotError {
     #[error("x must name a column")]
     EmptyX,
 
-    #[error("estimator '{0}' needs a y column. Pass y, or use count(x, hue) to count rows")]
+    #[error(
+        "estimator '{0}' needs a column of values to aggregate: pass one, or count rows instead"
+    )]
     EstimatorNeedsY(String),
 
     #[error("nothing to plot: no rows are left in {0} after nulls are dropped")]

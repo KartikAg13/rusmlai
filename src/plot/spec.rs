@@ -97,5 +97,8 @@ pub enum PlotSpec {
         y: String,
         hue: Option<String>,
     },
-    Corr,
+    /// The numeric columns go in the key, because `select` shares the plot cache.
+    Corrplot {
+        columns: Vec<String>,
+    },
 }

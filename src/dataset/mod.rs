@@ -97,29 +97,35 @@ impl Dataset {
         }
     }
 
-    pub fn try_numeric_stats(&self, column_name: &str) -> Result<NumericStats, DatasetError> {
-        let info: &ColumnInfo = self.try_column_info(column_name)?;
-        match info.stats.get().unwrap() {
+    pub fn try_numeric_stats(&self, column_name: &str) -> Result<&NumericStats, DatasetError> {
+        let (info, stats): (&ColumnInfo, &ColumnStats) = self.try_stats(column_name)?;
+        match stats {
             ColumnStats::Categorical(_) => Err(DatasetError::ColumnNotNumeric {
                 column: column_name.to_string(),
                 actual_dtype: info.dtype.to_string(),
             }),
-            ColumnStats::Numeric(n) => Ok(n.clone()),
+            ColumnStats::Numeric(n) => Ok(n),
         }
     }
 
     pub fn try_categorical_stats(
         &self,
         column_name: &str,
-    ) -> Result<CategoricalStats, DatasetError> {
-        let info: &ColumnInfo = self.try_column_info(column_name)?;
-        match info.stats.get().unwrap() {
+    ) -> Result<&CategoricalStats, DatasetError> {
+        let (info, stats): (&ColumnInfo, &ColumnStats) = self.try_stats(column_name)?;
+        match stats {
             ColumnStats::Numeric(_) => Err(DatasetError::ColumnNotCategorical {
                 column: column_name.to_string(),
                 actual_dtype: info.dtype.to_string(),
             }),
-            ColumnStats::Categorical(c) => Ok(c.clone()),
+            ColumnStats::Categorical(c) => Ok(c),
         }
+    }
+
+    /// The column's info and stats; stats that aren't there yet are computed now.
+    fn try_stats(&self, column_name: &str) -> Result<(&ColumnInfo, &ColumnStats), DatasetError> {
+        let info: &ColumnInfo = self.try_column_info(column_name)?;
+        Ok((info, info.ensure_stats(self.dataframe.column(column_name)?)?))
     }
 
     pub fn metadata(&self, skip_columns: &[&str]) {

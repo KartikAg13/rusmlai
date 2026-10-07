@@ -32,14 +32,14 @@ impl ColumnInfo {
         info
     }
 
-    pub fn initialize(&self, column: &Column) -> Result<(), MetadataError> {
-        if self.stats.get().is_none() {
-            let dataframe: DataFrame = DataFrame::new(column.len(), vec![column.clone()])?;
-            if let Some(stats) = ColumnStats::compute_stats(&dataframe)?.pop() {
-                let _ = self.stats.set(stats);
-            }
+    /// The column's stats, computed now if they aren't there yet.
+    pub fn ensure_stats(&self, column: &Column) -> Result<&ColumnStats, MetadataError> {
+        if let Some(stats) = self.stats.get() {
+            return Ok(stats);
         }
-        Ok(())
+        let dataframe: DataFrame = DataFrame::new(column.len(), vec![column.clone()])?;
+        let stats: ColumnStats = ColumnStats::compute_stats(&dataframe)?.remove(0);
+        Ok(self.stats.get_or_init(|| stats))
     }
 }
 
@@ -50,5 +50,18 @@ impl From<&ColumnInfo> for ColumnInfoDTO {
             null_count: value.null_count,
             stats: value.stats.get().cloned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_stats_computes_missing_stats() {
+        let column: Column = Column::new("x".into(), [1.0, 3.0, 2.0]);
+        let info: ColumnInfo = ColumnInfo::new(&column);
+        let stats: &ColumnStats = info.ensure_stats(&column).unwrap();
+        assert!(matches!(stats, ColumnStats::Numeric(s) if s.median == 2.0));
     }
 }

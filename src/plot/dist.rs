@@ -1,7 +1,13 @@
 //! `hist`, `boxplot` and `stripplot`: how a numeric column is spread out.
 
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{BuildHasher, BuildHasherDefault},
+};
+
 use polars::prelude::{
-    DataFrame, DataType, Expr, IdxSize, IntoLazy, QuantileMethod, col, len, lit, when,
+    DataFrame, DataType, Expr, IdxCa, IdxSize, IntoLazy, PlSmallStr, QuantileMethod, col, len,
+    lit, when,
 };
 
 use crate::{
@@ -20,10 +26,14 @@ use crate::{
 };
 
 const MAX_BINS: usize = 1000;
-const SAMPLE: usize = 2000; // points that stripplot draws
+const SAMPLE: usize = 2000; // points that stripplot, scatter and regplot draw
+// ponytail: at most 100 outliers per box, evenly spread by rank with both ends kept; raise it if
+// the dots look sparse.
+const MAX_OUTLIERS: usize = 100;
 const BIN: &str = "__rusmlai_bin";
 const COUNT: &str = "__rusmlai_count";
-const ROW: &str = "__rusmlai_row";
+const OUTLIERS: &str = "__rusmlai_outliers";
+const ALL: &str = "__rusmlai_all"; // the one x group of a box plot without x
 const FIVE: [&str; 5] = [
     "__rusmlai_min",
     "__rusmlai_q25",
@@ -43,7 +53,7 @@ pub(crate) fn try_hist(
     if !(1..=MAX_BINS).contains(&bins) {
         return Err(PlotError::InvalidBins(bins));
     }
-    let stats: NumericStats = dataset.try_numeric_stats(column)?;
+    let stats: &NumericStats = dataset.try_numeric_stats(column)?;
     let hue: Option<String> = optional(hue);
     if let Some(hue) = &hue {
         dataset.try_column_info(hue)?;
@@ -137,40 +147,25 @@ fn compute_hist(
     })
 }
 
-/// One box per `x` category (split by `hue`): min, q25, median, q75, max. With no `x`,
-/// a single box from the cached stats.
+/// One box per `x` category (split by `hue`), or one box with no `x`. Like seaborn, the
+/// whiskers stop at the last value within 1.5 × IQR of the box; values past them are points.
 pub(crate) fn try_boxplot(
     dataset: &Dataset,
     x: &str,
     y: &str,
     hue: &str,
 ) -> Result<Figure, PlotError> {
-    let stats: NumericStats = dataset.try_numeric_stats(y)?;
+    dataset.try_numeric_stats(y)?;
     let (x, hue): (Option<String>, Option<String>) = (optional(x), optional(hue));
     check_columns(dataset, x.as_deref(), hue.as_deref())?;
-    let result: PlotResult = match &x {
-        None => PlotResult::Boxes {
-            x_labels: vec![y.to_string()],
-            hue_labels: Vec::new(),
-            boxes: vec![vec![[
-                stats.min,
-                stats.quantile_25,
-                stats.median,
-                stats.quantile_75,
-                stats.max,
-            ]]],
-        },
-        Some(x) => {
-            let spec: PlotSpec = PlotSpec::Boxplot {
-                x: x.clone(),
-                y: y.to_string(),
-                hue: hue.clone(),
-            };
-            dataset
-                .metadata
-                .plot(spec, || compute_boxes(dataset, x, y, hue.as_deref()))?
-        }
+    let spec: PlotSpec = PlotSpec::Boxplot {
+        x: x.clone().unwrap_or_default(),
+        y: y.to_string(),
+        hue: hue.clone(),
     };
+    let result: PlotResult = dataset.metadata.plot(spec, || {
+        compute_boxes(dataset, x.as_deref(), y, hue.as_deref())
+    })?;
     let PlotResult::Boxes { boxes, .. } = &result else {
         unreachable!("box plots hold Boxes results");
     };
@@ -198,49 +193,73 @@ pub(crate) fn try_boxplot(
 
 fn compute_boxes(
     dataset: &Dataset,
-    x: &str,
+    x: Option<&str>,
     y: &str,
     hue: Option<&str>,
 ) -> Result<PlotResult, PlotError> {
-    let mut columns: Vec<Expr> = vec![col(x), col(y)];
-    let mut keys: Vec<Expr> = vec![col(x)];
+    let key: &str = x.unwrap_or(ALL);
+    let mut columns: Vec<Expr> = vec![col(y)];
+    let mut keys: Vec<Expr> = vec![col(key)];
+    columns.extend(x.map(col));
     if let Some(hue) = hue {
         columns.push(col(hue));
         keys.push(col(hue));
     }
+    let mut rows = dataset.dataframe.clone().lazy().select(columns).drop_nulls(None);
+    if x.is_none() {
+        rows = rows.with_column(lit(y).alias(ALL));
+    }
     let v = || col(y).cast(DataType::Float64);
-    let grouped: DataFrame = dataset
-        .dataframe
-        .clone()
-        .lazy()
-        .select(columns)
-        .drop_nulls(None)
+    let q = |p: f64| v().quantile(lit(p), QuantileMethod::Linear);
+    let reach: Expr = (q(0.75) - q(0.25)) * lit(1.5);
+    let inside: Expr = v()
+        .gt_eq(q(0.25) - reach.clone())
+        .and(v().lt_eq(q(0.75) + reach));
+    let grouped: DataFrame = rows
         .group_by(keys)
         .agg([
-            v().min().alias(FIVE[0]),
-            v().quantile(lit(0.25), QuantileMethod::Linear)
-                .alias(FIVE[1]),
+            v().filter(inside.clone()).min().alias(FIVE[0]),
+            q(0.25).alias(FIVE[1]),
             v().median().alias(FIVE[2]),
-            v().quantile(lit(0.75), QuantileMethod::Linear)
-                .alias(FIVE[3]),
-            v().max().alias(FIVE[4]),
+            q(0.75).alias(FIVE[3]),
+            v().filter(inside.clone()).max().alias(FIVE[4]),
+            v().filter(inside.not()).alias(OUTLIERS),
         ])
         .collect()?;
 
-    let x_labels: Vec<String> = labels(dataset, &grouped, x)?;
+    let x_labels: Vec<String> = match x {
+        Some(x) => labels(dataset, &grouped, x)?,
+        None => vec![y.to_string()],
+    };
     let hue_labels: Vec<String> = match hue {
         Some(hue) => labels(dataset, &grouped, hue)?,
         None => Vec::new(),
     };
-    let xs: Vec<String> = strings(&grouped, x)?;
+    let xs: Vec<String> = strings(&grouped, key)?;
     let hues: Option<Vec<String>> = hue.map(|hue| strings(&grouped, hue)).transpose()?;
     let five: Vec<Vec<f64>> = FIVE
         .iter()
         .map(|name| f64s(&grouped, name))
         .collect::<Result<_, _>>()?;
+    let mut past: Vec<Vec<f64>> = Vec::with_capacity(grouped.height());
+    for group in grouped.column(OUTLIERS)?.list()?.series_iter() {
+        let mut values: Vec<f64> = match group {
+            Some(values) => values.f64()?.iter().flatten().filter(|v| v.is_finite()).collect(),
+            None => Vec::new(),
+        };
+        values.sort_by(f64::total_cmp);
+        if values.len() > MAX_OUTLIERS {
+            let last: usize = values.len() - 1;
+            values = (0..MAX_OUTLIERS)
+                .map(|i| values[i * last / (MAX_OUTLIERS - 1)])
+                .collect();
+        }
+        past.push(values);
+    }
     let (x_index, hue_index) = (index(&x_labels), index(&hue_labels));
-    let mut boxes: Vec<Vec<[f64; 5]>> =
-        vec![vec![[f64::NAN; 5]; hue_labels.len().max(1)]; x_labels.len()];
+    let k: usize = hue_labels.len().max(1);
+    let mut boxes: Vec<Vec<[f64; 5]>> = vec![vec![[f64::NAN; 5]; k]; x_labels.len()];
+    let mut outliers: Vec<Vec<Vec<f64>>> = vec![vec![Vec::new(); k]; x_labels.len()];
     for row in 0..grouped.height() {
         let Some(&i) = x_index.get(xs[row].as_str()) else {
             continue;
@@ -253,11 +272,13 @@ fn compute_boxes(
             None => 0,
         };
         boxes[i][j] = [0, 1, 2, 3, 4].map(|k| five[k][row]);
+        outliers[i][j] = std::mem::take(&mut past[row]);
     }
     Ok(PlotResult::Boxes {
         x_labels,
         hue_labels,
         boxes,
+        outliers,
     })
 }
 
@@ -273,19 +294,11 @@ pub(crate) fn try_stripplot(
     let (x, hue): (Option<String>, Option<String>) = (optional(x), optional(hue));
     check_columns(dataset, x.as_deref(), hue.as_deref())?;
     let height: usize = dataset.metadata.height;
-    let step: usize = (height / SAMPLE).max(1);
-    let mut columns: Vec<Expr> = vec![col(y)];
-    columns.extend(x.as_deref().map(col));
-    columns.extend(hue.as_deref().map(col));
-    let sample: DataFrame = dataset
-        .dataframe
-        .clone()
-        .lazy()
-        .select(columns)
-        .drop_nulls(None)
-        .with_row_index(ROW, None)
-        .filter((col(ROW) % lit(step as IdxSize)).eq(lit(0 as IdxSize)))
-        .collect()?;
+    let columns: Vec<&str> = [Some(y), x.as_deref(), hue.as_deref()]
+        .into_iter()
+        .flatten()
+        .collect();
+    let (sample, step): (DataFrame, usize) = sample(dataset, &columns)?;
 
     let ys: Vec<f64> = f64s(&sample, y)?;
     let x_labels: Vec<String> = match &x {
@@ -341,11 +354,36 @@ pub(crate) fn try_stripplot(
     ))
 }
 
-fn optional(column: &str) -> Option<String> {
+/// About `SAMPLE` rows with no nulls in `columns`: one random row from each run of k rows. The
+/// seed is fixed, so the same data draws the same picture. Returns the rows and k.
+pub(crate) fn sample(dataset: &Dataset, columns: &[&str]) -> Result<(DataFrame, usize), PlotError> {
+    let rows: DataFrame = dataset
+        .dataframe
+        .clone()
+        .lazy()
+        .select(columns.iter().map(|c| col(*c)).collect::<Vec<Expr>>())
+        .drop_nulls(None)
+        .collect()?;
+    let step: usize = (rows.height() / SAMPLE).max(1);
+    if step == 1 {
+        return Ok((rows, 1));
+    }
+    let seed: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
+    let picks: Vec<IdxSize> = (0..rows.height() / step)
+        .map(|run| (run * step + (seed.hash_one(run) % step as u64) as usize) as IdxSize)
+        .collect();
+    Ok((rows.take(&IdxCa::from_vec(PlSmallStr::EMPTY, picks))?, step))
+}
+
+pub(crate) fn optional(column: &str) -> Option<String> {
     (!column.is_empty()).then(|| column.to_string())
 }
 
-fn check_columns(dataset: &Dataset, x: Option<&str>, hue: Option<&str>) -> Result<(), PlotError> {
+pub(crate) fn check_columns(
+    dataset: &Dataset,
+    x: Option<&str>,
+    hue: Option<&str>,
+) -> Result<(), PlotError> {
     if hue.is_some() && x.is_none() {
         return Err(PlotError::HueNeedsX);
     }
@@ -355,7 +393,7 @@ fn check_columns(dataset: &Dataset, x: Option<&str>, hue: Option<&str>) -> Resul
     Ok(())
 }
 
-fn f64s(frame: &DataFrame, column: &str) -> Result<Vec<f64>, PlotError> {
+pub(crate) fn f64s(frame: &DataFrame, column: &str) -> Result<Vec<f64>, PlotError> {
     Ok(frame
         .column(column)?
         .cast(&DataType::Float64)?
@@ -366,17 +404,23 @@ fn f64s(frame: &DataFrame, column: &str) -> Result<Vec<f64>, PlotError> {
 }
 
 /// Padding, card size and plot area shared by the three charts.
-struct Layout {
-    left: f64,
-    right: f64,
-    top: f64,
-    plot_w: f64,
-    plot_h: f64,
-    width: f64,
-    height: f64,
+pub(crate) struct Layout {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub plot_w: f64,
+    pub plot_h: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
-fn layout(style: &Style, subtitle: &str, slots: usize, min_slot: f64, right: f64) -> Layout {
+pub(crate) fn layout(
+    style: &Style,
+    subtitle: &str,
+    slots: usize,
+    min_slot: f64,
+    right: f64,
+) -> Layout {
     let (card_w, height): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
     let (left, top): (f64, f64) = (72.0, if subtitle.is_empty() { 92.0 } else { 110.0 });
     let plot_w: f64 = (card_w - left - right).max(slots.max(1) as f64 * min_slot);
@@ -392,7 +436,7 @@ fn layout(style: &Style, subtitle: &str, slots: usize, min_slot: f64, right: f64
 }
 
 /// The value axis: `.ylim`, else the data range with 0 included.
-fn range(style: &Style, values: impl Iterator<Item = f64>) -> (f64, f64) {
+pub(crate) fn range(style: &Style, values: impl Iterator<Item = f64>) -> (f64, f64) {
     style.ylim.unwrap_or_else(|| {
         values
             .filter(|v| v.is_finite())
@@ -400,12 +444,12 @@ fn range(style: &Style, values: impl Iterator<Item = f64>) -> (f64, f64) {
     })
 }
 
-fn title(texts: &Texts, style: &Style) -> String {
+pub(crate) fn title(texts: &Texts, style: &Style) -> String {
     style.title.clone().unwrap_or_else(|| texts.title.clone())
 }
 
 /// Legend (when there are groups), axis names, and the closing tag.
-fn finish(
+pub(crate) fn finish(
     out: &mut String,
     theme: &Theme,
     style: &Style,
@@ -534,7 +578,7 @@ pub(crate) fn render_hist(
     out
 }
 
-/// The old box plot: whiskers from min to max, a box from q25 to q75, a median line.
+/// The box from q25 to q75 with a median line, whiskers to the fences, outliers as rings.
 pub(crate) fn render_box(
     texts: &Texts,
     result: &PlotResult,
@@ -545,6 +589,7 @@ pub(crate) fn render_box(
         x_labels,
         hue_labels,
         boxes,
+        outliers,
     } = result
     else {
         unreachable!("box plots hold Boxes results");
@@ -576,8 +621,11 @@ pub(crate) fn render_box(
     let (lo, hi): (f64, f64) = range(
         style,
         rows.iter().flat_map(|&i| {
-            cols.iter()
-                .flat_map(move |&j| [boxes[i][j][0], boxes[i][j][4]])
+            cols.iter().flat_map(move |&j| {
+                [boxes[i][j][0], boxes[i][j][4]]
+                    .into_iter()
+                    .chain(outliers[i][j].iter().copied())
+            })
         }),
     );
     let scale: YScale = YScale::new(lo, hi, l.top, l.plot_h);
@@ -607,7 +655,7 @@ pub(crate) fn render_box(
             if grouped {
                 hover += &format!("\n{} = {}", texts.hue, hue_labels[j]);
             }
-            for (name, v) in ["max", "q75", "median", "q25", "min"]
+            for (name, v) in ["upper fence", "q75", "median", "q25", "lower fence"]
                 .iter()
                 .zip([five[4], five[3], five[2], five[1], five[0]])
             {
@@ -616,6 +664,14 @@ pub(crate) fn render_box(
             let w: f64 = if grouped { box_w * 0.8 } else { box_w };
             let cx: f64 = start + (s as f64 + 0.5) * box_w;
             out.push_str(&box_svg(&scale, cx, w, five, &color, theme.value, &hover));
+            for &v in &outliers[i][j] {
+                out.push_str(&format!(
+                    r##"<circle cx="{cx}" cy="{:.2}" r="2.5" fill="none" stroke="{color}" stroke-width="1.2"><title>{} = {}</title></circle>"##,
+                    scale.y(v),
+                    escape(&texts.y),
+                    svg::format_value(v)
+                ));
+            }
         }
         svg::x_tick(
             &mut out,
@@ -754,10 +810,40 @@ pub(crate) fn render_strip(
     out
 }
 
-fn value_label(out: &mut String, theme: &Theme, x: f64, y: f64, value: f64) {
+pub(crate) fn value_label(out: &mut String, theme: &Theme, x: f64, y: f64, value: f64) {
     out.push_str(&format!(
         r##"<text x="{x}" y="{y}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="middle">{}</text>"##,
         theme.value,
         svg::format_value(value)
     ));
+}
+
+#[cfg(test)]
+mod tests {
+    use polars::df;
+
+    use super::*;
+
+    #[test]
+    fn whiskers_stop_at_the_fences() {
+        let ds: Dataset = Dataset::new(df!("y" => [1.0, 2.0, 3.0, 4.0, 100.0]).unwrap(), "");
+        let PlotResult::Boxes {
+            boxes, outliers, ..
+        } = compute_boxes(&ds, None, "y", None).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(boxes, vec![vec![[1.0, 2.0, 3.0, 4.0, 4.0]]]);
+        assert_eq!(outliers, vec![vec![vec![100.0]]]);
+    }
+
+    #[test]
+    fn sample_takes_one_row_from_each_run() {
+        let ys: Vec<f64> = (0..10_000).map(f64::from).collect();
+        let ds: Dataset = Dataset::new(df!("y" => ys).unwrap(), "");
+        let (rows, step): (DataFrame, usize) = sample(&ds, &["y"]).unwrap();
+        assert_eq!((rows.height(), step), (2000, 5));
+        let picked: Vec<f64> = f64s(&rows, "y").unwrap();
+        assert!(picked.iter().enumerate().all(|(run, &y)| y as usize / 5 == run));
+    }
 }

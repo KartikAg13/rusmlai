@@ -7,7 +7,6 @@ use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use comfy_table::{Table, presets::UTF8_FULL};
@@ -61,17 +60,16 @@ impl Figure {
         }
     }
 
-    /// Notebook: shows the chart inline. Program: writes a temp SVG and opens the system viewer.
+    /// Notebook: shows the chart inline. Program: saves it where the auto-save would
+    /// (`metadata/plots/{title}.svg`) and opens it in the system viewer.
     #[track_caller]
     pub fn show(&self) {
         if in_notebook() {
             return self.evcxr_display();
         }
-        static SHOWN: AtomicUsize = AtomicUsize::new(0);
-        let n: usize = SHOWN.fetch_add(1, Ordering::Relaxed);
-        let path: PathBuf =
-            std::env::temp_dir().join(format!("rusmlai-{}-{n}.svg", std::process::id()));
+        let path: PathBuf = self.auto_path();
         self.write(&path).or_fatal();
+        self.saved.set(true);
         let opener: &str = if cfg!(target_os = "macos") {
             "open"
         } else {
@@ -94,6 +92,17 @@ impl Figure {
         self.chart.render(&self.style.resolved())
     }
 
+    /// `metadata/plots/{title}.svg` next to the CSV.
+    fn auto_path(&self) -> PathBuf {
+        let name: String = self
+            .chart
+            .title(&self.style.resolved())
+            .chars()
+            .filter(|c| c.is_alphanumeric() || " -_.".contains(*c))
+            .collect();
+        self.folder.join(format!("{name}.svg"))
+    }
+
     fn write(&self, path: &Path) -> Result<(), String> {
         let fail = |e: io::Error| format!("could not save {}: {e}", path.display());
         if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
@@ -113,16 +122,11 @@ impl Drop for Figure {
         if in_notebook() && !self.displayed.get() {
             self.evcxr_display();
         }
-        if !in_notebook() && !self.saved.get() {
-            let name: String = self
-                .chart
-                .title(&self.style.resolved())
-                .chars()
-                .filter(|c| c.is_alphanumeric() || " -_.".contains(*c))
-                .collect();
-            if let Err(e) = self.write(&self.folder.join(format!("{name}.svg"))) {
-                warn(e);
-            }
+        if !in_notebook()
+            && !self.saved.get()
+            && let Err(e) = self.write(&self.auto_path())
+        {
+            warn(e);
         }
     }
 }

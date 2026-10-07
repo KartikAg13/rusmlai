@@ -1,5 +1,7 @@
 //! Shared drawing code. Every chart builds its SVG from these pieces, with the colors of a `Theme`.
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use crate::{display::escape, plot::style::Theme};
 
 pub(crate) const WIDTH: f64 = 720.0;
@@ -7,7 +9,9 @@ pub(crate) const HEIGHT: f64 = 469.0;
 pub(crate) const MIN_CLUSTER_BAR: f64 = 16.0;
 const BAR_RADIUS: f64 = 6.0;
 const HEADROOM: f64 = 22.0;
-const CHAR_WIDTH: f64 = 7.0; // average width of a 12 px sans-serif character
+// ponytail: one average width per character cell (wide CJK = 2 cells); measure real glyphs if
+// labels still clip.
+pub(crate) const CHAR_WIDTH: f64 = 7.0; // average width of a 12 px sans-serif character
 
 /// Opens the card: background, title and subtitle. Square corners: Fedora's viewer paints
 /// transparent corners white.
@@ -56,16 +60,7 @@ pub(crate) fn axis_names(
 /// A category name under its slot. Shortened with "…" when wider than the slot; the full name
 /// is in the hover title.
 pub(crate) fn x_tick(svg: &mut String, theme: &Theme, label: &str, cx: f64, y: f64, slot: f64) {
-    let fit: usize = ((slot - 6.0) / CHAR_WIDTH).max(1.0) as usize;
-    let shown: String = if label.chars().count() > fit {
-        label
-            .chars()
-            .take(fit.saturating_sub(1))
-            .collect::<String>()
-            + "…"
-    } else {
-        label.to_string()
-    };
+    let shown: String = shorten(label, slot - 6.0);
     svg.push_str(&format!(
         r##"<text x="{cx}" y="{y}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="middle"><title>{}</title>{}</text>"##,
         theme.tick,
@@ -74,11 +69,27 @@ pub(crate) fn x_tick(svg: &mut String, theme: &Theme, label: &str, cx: f64, y: f
     ));
 }
 
+/// `label` cut with "…" to fit `max_px`. Wide characters (Chinese, Japanese, Korean) count twice.
+pub(crate) fn shorten(label: &str, max_px: f64) -> String {
+    if label.width() as f64 * CHAR_WIDTH <= max_px {
+        return label.to_string();
+    }
+    let mut used: f64 = CHAR_WIDTH; // the "…"
+    label
+        .chars()
+        .take_while(|c| {
+            used += c.width().unwrap_or(0) as f64 * CHAR_WIDTH;
+            used <= max_px
+        })
+        .collect::<String>()
+        + "…"
+}
+
 /// Slot width that fits the longest label, at most 140 px.
 pub(crate) fn label_width(labels: &[impl AsRef<str>]) -> f64 {
     let longest: usize = labels
         .iter()
-        .map(|label| label.as_ref().chars().count())
+        .map(|label| label.as_ref().width())
         .max()
         .unwrap_or(0);
     (longest as f64 * CHAR_WIDTH + 8.0).min(140.0)
@@ -228,4 +239,95 @@ pub(crate) fn bar(scale: &YScale, x: f64, w: f64, value: f64, fill: &str, hover:
         xr = x1 - r,
         hover = escape(hover)
     )
+}
+
+/// Linear x axis for scatter, line and regplot, with nice ticks.
+pub(crate) struct XScale {
+    lo: f64,
+    hi: f64,
+    step: f64,
+    left: f64,
+    width: f64,
+}
+
+impl XScale {
+    pub(crate) fn new(lo: f64, hi: f64, left: f64, width: f64) -> Self {
+        let hi: f64 = if hi - lo > 1e-9 { hi } else { lo + 1.0 };
+        Self {
+            lo,
+            hi,
+            step: nice_step(hi - lo, 5),
+            left,
+            width,
+        }
+    }
+
+    /// Pixel column of a value. Values outside `.xlim` stick to the edge.
+    pub(crate) fn x(&self, v: f64) -> f64 {
+        self.left + self.width * (v.clamp(self.lo, self.hi) - self.lo) / (self.hi - self.lo)
+    }
+
+    /// Tick labels under the plot at row `y`.
+    pub(crate) fn draw(&self, svg: &mut String, theme: &Theme, y: f64) {
+        let mut k: f64 = (self.lo / self.step).ceil();
+        while k * self.step <= self.hi + self.step * 1e-9 {
+            let t: f64 = k * self.step;
+            svg.push_str(&format!(
+                r##"<text x="{}" y="{y}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="middle">{}</text>"##,
+                self.x(t),
+                theme.tick,
+                format_tick(t)
+            ));
+            k += 1.0;
+        }
+    }
+}
+
+/// The color at `t` in [0, 1] along `stops`, mixed linearly between neighbours.
+pub(crate) fn mix(stops: &[&str], t: f64) -> String {
+    let t: f64 = if t.is_finite() {
+        t.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let last: usize = stops.len().saturating_sub(1);
+    let pos: f64 = t * last as f64;
+    let i: usize = (pos.floor() as usize).min(last.saturating_sub(1));
+    let (a, b): ([f64; 3], [f64; 3]) = (rgb(stops[i]), rgb(stops[(i + 1).min(last)]));
+    let f: f64 = pos - i as f64;
+    let c = |k: usize| (a[k] + (b[k] - a[k]) * f).round() as u8;
+    format!("#{:02X}{:02X}{:02X}", c(0), c(1), c(2))
+}
+
+/// Dark text on light fills, white text on dark fills.
+pub(crate) fn text_on(fill: &str) -> &'static str {
+    let [r, g, b] = rgb(fill);
+    if 0.2126 * r + 0.7152 * g + 0.0722 * b > 150.0 {
+        "#16181D"
+    } else {
+        "#FFFFFF"
+    }
+}
+
+fn rgb(hex: &str) -> [f64; 3] {
+    let h: &str = hex.trim_start_matches('#');
+    let full: String = if h.len() == 3 {
+        h.chars().flat_map(|c| [c, c]).collect()
+    } else {
+        h.to_string()
+    };
+    let n: u32 = u32::from_str_radix(&full, 16).unwrap_or(0);
+    [(n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF].map(|v| v as f64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shorten_counts_wide_characters_twice() {
+        assert_eq!(shorten("short", 100.0), "short");
+        assert_eq!(shorten("abcdefghij", 6.0 * CHAR_WIDTH), "abcde…");
+        assert_eq!(shorten("中文中文中文", 6.0 * CHAR_WIDTH), "中文…");
+    }
 }

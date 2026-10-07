@@ -38,6 +38,10 @@ thiserror = {
     default-features = false
 }
 
+unicode-width = {
+    version = "0.2.2"
+}
+
 [dev-dependencies]
 criterion = {
     version = "0.8.2",
