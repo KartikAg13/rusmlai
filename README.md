@@ -27,7 +27,7 @@ fn main() {
 - The stats go into a `metadata/` folder next to the CSV, with the size and modification time of the file. The next `read_csv` of an unchanged file loads them and does not compute them again.
 - `select` and `drop` share the stats of the original dataset. They do not copy or compute them again.
 - Chart results get the same cache. The aggregated numbers of each chart are stored per CSV, so a chart comes back instantly, also after a restart.
-- Tables print as text in a terminal and as HTML tables in a Jupyter notebook. `notebooks/eda.ipynb` is a sample notebook.
+- Tables print as text in a terminal and as HTML tables in a Jupyter notebook. `notebooks/s6e1.ipynb` and `s6e2.ipynb` are sample notebooks with every chart, one per cell.
 
 Charts use seaborn's names and draw SVG with hover values:
 
@@ -41,10 +41,16 @@ ds.boxplot("sleep_quality", "exam_score", "gender");
 ds.heatmap("course", "study_method", "exam_score", "mean").cmap("viridis");
 ds.corrplot();
 ds.regplot("study_hours", "exam_score", "");
+ds.bar("course", "exam_score", "", "mean")
+    .sort("value")
+    .horizontal()
+    .hline(62.5, "overall mean");
 ```
 
 - The charts are `bar`, `count`, `describe_bar`, `pie`, `hist`, `boxplot`, `stripplot`, `heatmap`, `corrplot`, `scatter`, `line` and `regplot`.
-- Options chain like keyword arguments in Python: `title`, `xlabel`, `ylabel`, `palette`, `colors`, `color`, `color_map`, `theme`, `size`, `order`, `hue_order`, `top`, `values`, `ylim`, `xlim`, `cmap`. `set_theme` and `set_palette` set defaults for a whole notebook.
+- Options chain like keyword arguments in Python: `title`, `subtitle`, `xlabel`, `ylabel`, `palette`, `colors`, `color`, `color_map`, `theme`, `size`, `order`, `hue_order`, `sort`, `top`, `values`, `ylim`, `xlim`, `cmap`, `sample`, `horizontal`, `percent`, `stacked`, `hline`, `vline`, `legend`. `set_theme` and `set_palette` set defaults for a whole notebook.
+- Colors take hex codes or names: `"teal"`, `"tab:blue"`, or `"C0"` for the first color of the current palette. By default each category gets its own color from the `rusmlai` palette; `colorblind`, `tab10`, `deep` and five more palettes are options.
+- Heatmaps draw a color scale. Long category names tilt instead of being cut.
 - In a notebook, a chart shows itself. In a program, it saves itself to `metadata/plots/{title}.svg` next to the CSV, unless you call `.save(path)`.
 
 On a 630,000-row, 13-column Kaggle CSV (an i5-1135G7 laptop):
@@ -86,6 +92,7 @@ How the models will be fast:
 ```sh
 cargo build
 cargo test
+cargo run --example s6e1          # every chart, on the Kaggle Playground S6E1 file in tests/fixtures/s6e1/
 cargo bench                       # criterion suites in benches/ (a cold build takes minutes and uses every core)
 benches/profile.sh metadata '^stats/numeric/exam_score$' 5   # perf, flamegraph and heaptrack for one bench
 ```

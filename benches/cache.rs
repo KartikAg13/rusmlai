@@ -18,7 +18,7 @@ use rusmlai::{
 };
 
 fn spec(bins: usize) -> PlotSpec {
-    PlotSpec::Hist {
+    PlotSpec::Histogram {
         column: "exam_score".to_string(),
         hue: None,
         bins,

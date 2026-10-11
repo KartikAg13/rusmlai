@@ -6,9 +6,12 @@ use crate::{
     dataset::Dataset,
     display::{Figure, escape},
     plot::{
-        bar::{index, labels, strings},
+        bar::{index, labels, ordered, strings},
         chart::{Chart, Texts},
-        dist::{Layout, check_columns, f64s, finish, layout, optional, range, sample, title},
+        dist::{
+            Layout, SAMPLE, check_columns, f64s, finish, hlines, layout, names, optional, range,
+            sample, sample_subtitle, thin, title,
+        },
         error::PlotError,
         style::{Style, Theme},
         svg::{self, XScale, YScale},
@@ -18,23 +21,23 @@ use crate::{
 const VALUE: &str = "__rusmlai_value";
 const MAX_LINE_POINTS: usize = 2000;
 
-/// About 2,000 sampled rows of `y` against `x`, colored by `hue`. (seaborn: `scatterplot`)
+/// Sampled rows of `y` against `x`, colored by `hue`. (seaborn: `scatterplot`)
 pub(crate) fn try_scatter(
     dataset: &Dataset,
     x: &str,
     y: &str,
     hue: &str,
 ) -> Result<Figure, PlotError> {
-    let (points, hue_labels, subtitle) = sampled_points(dataset, x, y, hue)?;
+    let (points, hue_labels, rows) = sampled_points(dataset, x, y, hue)?;
     Ok(xy_figure(
         dataset,
         "scatter",
         format!("Scatter: {x} vs {y}"),
         (x, y, hue),
         hue_labels,
-        points,
+        (points, rows),
         None,
-        subtitle,
+        String::new(),
     ))
 }
 
@@ -45,7 +48,7 @@ pub(crate) fn try_regplot(
     y: &str,
     hue: &str,
 ) -> Result<Figure, PlotError> {
-    let (points, hue_labels, subtitle) = sampled_points(dataset, x, y, hue)?;
+    let (points, hue_labels, rows) = sampled_points(dataset, x, y, hue)?;
     let fit: Option<(f64, f64)> = least_squares(dataset, x, y)?;
     Ok(xy_figure(
         dataset,
@@ -53,9 +56,9 @@ pub(crate) fn try_regplot(
         format!("Regplot: {x} vs {y}"),
         (x, y, hue),
         hue_labels,
-        points,
+        (points, rows),
         fit,
-        subtitle,
+        String::new(),
     ))
 }
 
@@ -106,7 +109,7 @@ pub(crate) fn try_line(
     }
     let mut points: Vec<(f64, f64, usize)> = Vec::new();
     for (j, line) in lines.iter().enumerate() {
-        points.extend(thin(line).into_iter().map(|(px, py)| (px, py, j)));
+        points.extend(thin_line(line).into_iter().map(|(px, py)| (px, py, j)));
     }
     if points.is_empty() {
         return Err(PlotError::EmptyResult(format!("{x}, {y}")));
@@ -117,7 +120,7 @@ pub(crate) fn try_line(
         format!("Line: mean {y} vs {x}"),
         (x, y, hue.as_deref().unwrap_or("")),
         hue_labels,
-        points,
+        (points, 0),
         None,
         "each point is the mean of y at that x".to_string(),
     ))
@@ -126,7 +129,7 @@ pub(crate) fn try_line(
 /// At most `MAX_LINE_POINTS`: past that, the lowest and highest y of each run of k points, in x
 /// order, so spikes survive.
 // ponytail: keeps the peaks of a run but not its shape; LTTB if long lines look off.
-fn thin(line: &[(f64, f64)]) -> Vec<(f64, f64)> {
+fn thin_line(line: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let k: usize = line.len().div_ceil(MAX_LINE_POINTS / 2).max(1);
     let mut kept: Vec<(f64, f64)> = Vec::new();
     for run in line.chunks(k) {
@@ -144,7 +147,8 @@ fn thin(line: &[(f64, f64)]) -> Vec<(f64, f64)> {
     kept
 }
 
-type Sampled = (Vec<(f64, f64, usize)>, Vec<String>, String);
+/// The sampled points, the hue labels, and how many rows had values.
+type Sampled = (Vec<(f64, f64, usize)>, Vec<String>, usize);
 
 fn sampled_points(dataset: &Dataset, x: &str, y: &str, hue: &str) -> Result<Sampled, PlotError> {
     dataset.try_numeric_stats(x)?;
@@ -155,15 +159,15 @@ fn sampled_points(dataset: &Dataset, x: &str, y: &str, hue: &str) -> Result<Samp
         .into_iter()
         .flatten()
         .collect();
-    let (rows, step): (DataFrame, usize) = sample(dataset, &columns)?;
-    let (xs, ys): (Vec<f64>, Vec<f64>) = (f64s(&rows, x)?, f64s(&rows, y)?);
+    let (picked, rows): (DataFrame, usize) = sample(dataset, &columns)?;
+    let (xs, ys): (Vec<f64>, Vec<f64>) = (f64s(&picked, x)?, f64s(&picked, y)?);
     let hue_labels: Vec<String> = match &hue {
-        Some(hue) => labels(dataset, &rows, hue)?,
+        Some(hue) => labels(dataset, &picked, hue)?,
         None => Vec::new(),
     };
-    let hues: Option<Vec<String>> = hue.as_deref().map(|h| strings(&rows, h)).transpose()?;
+    let hues: Option<Vec<String>> = hue.as_deref().map(|h| strings(&picked, h)).transpose()?;
     let hue_index = index(&hue_labels);
-    let points: Vec<(f64, f64, usize)> = (0..rows.height())
+    let points: Vec<(f64, f64, usize)> = (0..picked.height())
         .filter_map(|row| {
             let j: usize = match &hues {
                 Some(hues) => *hue_index.get(hues[row].as_str())?,
@@ -175,12 +179,7 @@ fn sampled_points(dataset: &Dataset, x: &str, y: &str, hue: &str) -> Result<Samp
     if points.is_empty() {
         return Err(PlotError::EmptyResult(format!("{x}, {y}")));
     }
-    let subtitle: String = if step > 1 {
-        format!("{} of {} rows", points.len(), dataset.metadata.height)
-    } else {
-        String::new()
-    };
-    Ok((points, hue_labels, subtitle))
+    Ok((points, hue_labels, rows))
 }
 
 /// Intercept and slope of y = a + b·x over all rows with both values, in two passes.
@@ -217,7 +216,7 @@ fn xy_figure(
     title: String,
     (x, y, hue): (&str, &str, &str),
     hue_labels: Vec<String>,
-    points: Vec<(f64, f64, usize)>,
+    (points, rows): (Vec<(f64, f64, usize)>, usize),
     fit: Option<(f64, f64)>,
     subtitle: String,
 ) -> Figure {
@@ -233,6 +232,7 @@ fn xy_figure(
             },
             hue_labels,
             points,
+            rows,
             fit,
             subtitle,
         },
@@ -241,19 +241,27 @@ fn xy_figure(
 }
 
 /// Points (scatter, regplot) or lines with markers (line), plus the fit line for regplot.
+/// `rows > 0` marks sampled points: `.sample(n)` draws n of them.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_xy(
     name: &str,
     texts: &Texts,
     hue_labels: &[String],
     points: &[(f64, f64, usize)],
+    rows: usize,
     fit: Option<(f64, f64)>,
     subtitle: &str,
     style: &Style,
 ) -> String {
     let theme: Theme = style.theme();
     let grouped: bool = !hue_labels.is_empty();
+    let points: Vec<(f64, f64, usize)> = if rows > 0 {
+        thin(points, style.sample.unwrap_or(SAMPLE))
+    } else {
+        points.to_vec()
+    };
     let cols: Vec<usize> = if grouped {
-        crate::plot::bar::pick(hue_labels, style.hue_order.as_deref(), usize::MAX)
+        ordered(hue_labels, style.hue_order.as_deref())
     } else {
         vec![0]
     };
@@ -269,17 +277,30 @@ pub(crate) fn render_xy(
     let (x_lo, x_hi): (f64, f64) = style.xlim.unwrap_or_else(|| {
         shown()
             .map(|p| p.0)
+            .chain(style.vlines.iter().map(|line| line.0))
             .filter(|v| v.is_finite())
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
                 (lo.min(v), hi.max(v))
             })
     });
-    let subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
-    let l: Layout = layout(style, subtitle, 1, 0.0, if grouped { 150.0 } else { 36.0 });
+    let subtitle: String = sample_subtitle(style, subtitle, points.len(), rows);
+    let subtitle: &str = &subtitle;
+    let mut items: Vec<(String, String)> = if grouped {
+        cols.iter()
+            .filter_map(|&j| Some((hue_labels[j].clone(), color_of[j].clone()?)))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if grouped && fit.is_some() {
+        items.push(("fit".to_string(), theme.fit.to_string()));
+    }
+    let l: Layout = layout(style, subtitle, 1, 0.0, &items);
     // Lines use the data range like seaborn; points keep the old axis from 0.
     let (y_lo, y_hi): (f64, f64) = match (name, style.ylim) {
         ("line", None) => shown()
             .map(|p| p.1)
+            .chain(style.hlines.iter().map(|line| line.0))
             .filter(|v| v.is_finite())
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
                 (lo.min(v), hi.max(v))
@@ -312,9 +333,9 @@ pub(crate) fn render_xy(
     let (radius, opacity): (&str, &str) = if name == "line" {
         ("3", "1")
     } else {
-        ("3.5", "0.85")
+        ("3.5", "0.6")
     };
-    for &(px, py, j) in points {
+    for &(px, py, j) in &points {
         let Some(color) = &color_of[j] else { continue };
         let mut hover: String = format!(
             "{} = {}\n{} = {}",
@@ -347,17 +368,12 @@ pub(crate) fn render_xy(
             escape(&texts.x)
         ));
     }
-    let mut items: Vec<(String, String)> = if grouped {
-        cols.iter()
-            .filter_map(|&j| Some((hue_labels[j].clone(), color_of[j].clone()?)))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    if grouped && fit.is_some() {
-        items.push(("fit".to_string(), theme.fit.to_string()));
+    hlines(&mut out, &theme, style, &scale, &l);
+    for (v, label) in &style.vlines {
+        let x: f64 = xscale.x(*v);
+        svg::ref_line(&mut out, &theme, false, x, l.top, scale.bottom(), label, *v);
     }
-    finish(&mut out, &theme, style, texts, &items, &l);
+    finish(&mut out, &theme, style, names(style, texts), &items, &l);
     out
 }
 
@@ -369,7 +385,7 @@ mod tests {
     fn thin_keeps_spikes() {
         let mut line: Vec<(f64, f64)> = (0..10_000).map(|i| (f64::from(i), 0.0)).collect();
         line[5_001].1 = 100.0;
-        let kept: Vec<(f64, f64)> = thin(&line);
+        let kept: Vec<(f64, f64)> = thin_line(&line);
         assert!(kept.len() <= MAX_LINE_POINTS);
         assert!(kept.contains(&(5_001.0, 100.0)));
         assert!(kept.windows(2).all(|w| w[0].0 < w[1].0));

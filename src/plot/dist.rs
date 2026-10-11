@@ -15,18 +15,19 @@ use crate::{
     display::{Figure, escape},
     metadata::dataset::stats::NumericStats,
     plot::{
-        bar::{TOP, index, labels, pick, strings},
+        bar::{TOP, index, labels, ordered, pick, strings},
         chart::{Chart, Texts},
         error::PlotError,
         result::PlotResult,
         spec::PlotSpec,
-        style::{Style, Theme},
-        svg::{self, HEIGHT, MIN_CLUSTER_BAR, WIDTH, YScale},
+        style::{Legend, Style, Theme},
+        svg::{self, HEIGHT, MIN_CLUSTER_BAR, Tick, WIDTH, YScale},
     },
 };
 
 const MAX_BINS: usize = 1000;
-const SAMPLE: usize = 2000; // points that stripplot, scatter and regplot draw
+pub(crate) const SAMPLE: usize = 2500; // points that strip, scatter and regplot draw by default
+pub(crate) const MAX_SAMPLE: usize = 50_000; // points kept from the data, the most .sample(n) draws
 // ponytail: at most 100 outliers per box, evenly spread by rank with both ends kept; raise it if
 // the dots look sparse.
 const MAX_OUTLIERS: usize = 100;
@@ -61,13 +62,14 @@ pub(crate) fn try_hist(
     if !stats.min.is_finite() {
         return Err(PlotError::EmptyResult(column.to_string()));
     }
-    let spec: PlotSpec = PlotSpec::Hist {
+    let spec: PlotSpec = PlotSpec::Histogram {
         column: column.to_string(),
         hue: hue.clone(),
         bins,
     };
+    let fine: usize = bins * MAX_BINS.div_ceil(bins);
     let result: PlotResult = dataset.metadata.plot(spec, || {
-        compute_hist(dataset, column, hue.as_deref(), bins, stats.min, stats.max)
+        compute_hist(dataset, column, hue.as_deref(), fine, stats.min, stats.max)
     })?;
     Ok(Figure::new(
         Chart::Hist {
@@ -79,10 +81,32 @@ pub(crate) fn try_hist(
                 hue: hue.unwrap_or_default(),
             },
             result,
+            bins,
             subtitle: String::new(),
         },
         dataset.metadata.filepath.as_deref(),
     ))
+}
+
+/// `fine` bin counts over [`lo`, `hi`] regrouped into `bins` equal bins over `range`, by each fine
+/// bin's center. Returns the counts and how many rows fell outside `range`. Without `.xlim`
+/// the fine bins split evenly, so the counts are exact; with it an edge can be off by one fine
+/// bin (1/1,000 of the data range).
+fn regroup(fine: &[f64], (lo, hi): (f64, f64), range: (f64, f64), bins: usize) -> (Vec<f64>, f64) {
+    let width: f64 = (hi - lo).max(1e-9) / fine.len().max(1) as f64;
+    let span: f64 = (range.1 - range.0).max(1e-9);
+    let mut counts: Vec<f64> = vec![0.0; bins];
+    let mut outside: f64 = 0.0;
+    for (f, &n) in fine.iter().enumerate() {
+        let center: f64 = lo + (f as f64 + 0.5) * width;
+        if center < range.0 || center > range.1 {
+            outside += n;
+        } else {
+            let b: usize = ((center - range.0) / span * bins as f64) as usize;
+            counts[b.min(bins - 1)] += n;
+        }
+    }
+    (counts, outside)
 }
 
 fn compute_hist(
@@ -282,8 +306,7 @@ fn compute_boxes(
     })
 }
 
-/// Every k-th row (about 2,000 points), spread sideways inside each `x` category.
-/// Raw rows, so nothing is cached.
+/// Sampled rows, spread sideways inside each `x` category. Raw rows, so nothing is cached.
 pub(crate) fn try_stripplot(
     dataset: &Dataset,
     x: &str,
@@ -293,12 +316,11 @@ pub(crate) fn try_stripplot(
     dataset.try_numeric_stats(y)?;
     let (x, hue): (Option<String>, Option<String>) = (optional(x), optional(hue));
     check_columns(dataset, x.as_deref(), hue.as_deref())?;
-    let height: usize = dataset.metadata.height;
     let columns: Vec<&str> = [Some(y), x.as_deref(), hue.as_deref()]
         .into_iter()
         .flatten()
         .collect();
-    let (sample, step): (DataFrame, usize) = sample(dataset, &columns)?;
+    let (sample, rows): (DataFrame, usize) = sample(dataset, &columns)?;
 
     let ys: Vec<f64> = f64s(&sample, y)?;
     let x_labels: Vec<String> = match &x {
@@ -328,11 +350,6 @@ pub(crate) fn try_stripplot(
     if points.is_empty() {
         return Err(PlotError::EmptyResult(y.to_string()));
     }
-    let subtitle: String = if step > 1 {
-        format!("{} of {height} rows", points.len())
-    } else {
-        String::new()
-    };
     Ok(Figure::new(
         Chart::Strip {
             texts: Texts {
@@ -348,14 +365,16 @@ pub(crate) fn try_stripplot(
             x_labels,
             hue_labels,
             points,
-            subtitle,
+            rows,
+            subtitle: String::new(),
         },
         dataset.metadata.filepath.as_deref(),
     ))
 }
 
-/// About `SAMPLE` rows with no nulls in `columns`: one random row from each run of k rows. The
-/// seed is fixed, so the same data draws the same picture. Returns the rows and k.
+/// Up to `MAX_SAMPLE` rows with no nulls in `columns`: one random row from each run of k rows.
+/// The seed is fixed, so the same data draws the same picture. Returns them and how many rows
+/// had values.
 pub(crate) fn sample(dataset: &Dataset, columns: &[&str]) -> Result<(DataFrame, usize), PlotError> {
     let rows: DataFrame = dataset
         .dataframe
@@ -364,15 +383,34 @@ pub(crate) fn sample(dataset: &Dataset, columns: &[&str]) -> Result<(DataFrame, 
         .select(columns.iter().map(|c| col(*c)).collect::<Vec<Expr>>())
         .drop_nulls(None)
         .collect()?;
-    let step: usize = (rows.height() / SAMPLE).max(1);
+    let step: usize = rows.height().div_ceil(MAX_SAMPLE).max(1);
     if step == 1 {
-        return Ok((rows, 1));
+        let n: usize = rows.height();
+        return Ok((rows, n));
     }
     let seed: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
     let picks: Vec<IdxSize> = (0..rows.height() / step)
         .map(|run| (run * step + (seed.hash_one(run) % step as u64) as usize) as IdxSize)
         .collect();
-    Ok((rows.take(&IdxCa::from_vec(PlSmallStr::EMPTY, picks))?, step))
+    Ok((rows.take(&IdxCa::from_vec(PlSmallStr::EMPTY, picks))?, rows.height()))
+}
+
+/// `n` evenly spaced items, or all of them when there are fewer (`.sample(n)` on the stored
+/// sample points).
+pub(crate) fn thin<T: Copy>(items: &[T], n: usize) -> Vec<T> {
+    if items.len() <= n {
+        return items.to_vec();
+    }
+    (0..n).map(|i| items[i * items.len() / n]).collect()
+}
+
+/// "2500 of 630000 rows" when a sample is drawn, unless a subtitle is set.
+pub(crate) fn sample_subtitle(style: &Style, subtitle: &str, shown: usize, rows: usize) -> String {
+    match &style.subtitle {
+        Some(text) => text.clone(),
+        None if subtitle.is_empty() && shown < rows => format!("{shown} of {rows} rows"),
+        None => subtitle.to_string(),
+    }
 }
 
 pub(crate) fn optional(column: &str) -> Option<String> {
@@ -403,7 +441,8 @@ pub(crate) fn f64s(frame: &DataFrame, column: &str) -> Result<Vec<f64>, PlotErro
         .collect())
 }
 
-/// Padding, card size and plot area shared by the three charts.
+/// Padding, card size and plot area shared by the charts. `legend_h` is the room a bottom
+/// legend takes under the axis name.
 pub(crate) struct Layout {
     pub left: f64,
     pub right: f64,
@@ -412,33 +451,76 @@ pub(crate) struct Layout {
     pub plot_h: f64,
     pub width: f64,
     pub height: f64,
+    pub legend_h: f64,
 }
 
+/// `items` is the legend: right of the plot, under it, or nowhere (`.legend`).
 pub(crate) fn layout(
     style: &Style,
     subtitle: &str,
     slots: usize,
     min_slot: f64,
-    right: f64,
+    items: &[(String, String)],
 ) -> Layout {
     let (card_w, height): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
+    let at: Legend = legend_at(style, items);
     let (left, top): (f64, f64) = (72.0, if subtitle.is_empty() { 92.0 } else { 110.0 });
+    let right: f64 = if at == Legend::Right { svg::legend_width(items) } else { 36.0 };
     let plot_w: f64 = (card_w - left - right).max(slots.max(1) as f64 * min_slot);
+    let width: f64 = left + plot_w + right;
+    let legend_h: f64 = bottom_legend_h(at, items, width);
     Layout {
         left,
         right,
         top,
         plot_w,
-        plot_h: height - top - 70.0,
-        width: left + plot_w + right,
+        plot_h: height - top - 70.0 - legend_h,
+        width,
         height,
+        legend_h,
     }
 }
 
-/// The value axis: `.ylim`, else the data range with 0 included.
+/// Tilts the category names when one is wider than its slot. The card grows taller for them
+/// (the flat row already has about 18 px), and the plot moves right when a name near the left
+/// would hang past the card's edge.
+pub(crate) fn tick_mode(l: &mut Layout, labels: &[impl AsRef<str>], slot: f64) -> Tick {
+    if !svg::tilts(labels, slot) {
+        return Tick::Flat;
+    }
+    l.height += (svg::tilt_room(labels) - 18.0).max(0.0);
+    let shift: f64 = labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| svg::tilt_reach(label.as_ref()) - (i as f64 + 0.5) * slot + 8.0 - l.left)
+        .fold(0.0, f64::max);
+    l.left += shift;
+    l.width += shift;
+    Tick::Down
+}
+
+/// Where the legend goes: nowhere without items, else `.legend` (right by default).
+pub(crate) fn legend_at(style: &Style, items: &[(String, String)]) -> Legend {
+    if items.is_empty() {
+        Legend::None
+    } else {
+        style.legend.unwrap_or(Legend::Right)
+    }
+}
+
+pub(crate) fn bottom_legend_h(at: Legend, items: &[(String, String)], width: f64) -> f64 {
+    if at == Legend::Bottom {
+        svg::legend_rows(items, width - 72.0) as f64 * 20.0 + 8.0
+    } else {
+        0.0
+    }
+}
+
+/// The value axis: `.ylim`, else the data range with 0 and every `.hline` included.
 pub(crate) fn range(style: &Style, values: impl Iterator<Item = f64>) -> (f64, f64) {
     style.ylim.unwrap_or_else(|| {
         values
+            .chain(style.hlines.iter().map(|line| line.0))
             .filter(|v| v.is_finite())
             .fold((0.0, 0.0), |(lo, hi): (f64, f64), v| (lo.min(v), hi.max(v)))
     })
@@ -448,77 +530,172 @@ pub(crate) fn title(texts: &Texts, style: &Style) -> String {
     style.title.clone().unwrap_or_else(|| texts.title.clone())
 }
 
-/// Legend (when there are groups), axis names, and the closing tag.
+/// The axis names: `.xlabel` / `.ylabel`, else the column names.
+pub(crate) fn names<'a>(style: &'a Style, texts: &'a Texts) -> (&'a str, &'a str) {
+    (
+        style.xlabel.as_deref().unwrap_or(&texts.x),
+        style.ylabel.as_deref().unwrap_or(&texts.y),
+    )
+}
+
+/// `.hline` lines across the plot.
+pub(crate) fn hlines(out: &mut String, theme: &Theme, style: &Style, scale: &YScale, l: &Layout) {
+    for (v, label) in &style.hlines {
+        svg::ref_line(out, theme, true, scale.y(*v), l.left, l.width - l.right, label, *v);
+    }
+}
+
+/// 100 / the sum of the finite values with `.percent`, else 1.
+pub(crate) fn percent_factor(style: &Style, values: impl Iterator<Item = f64>) -> f64 {
+    if !style.percent {
+        return 1.0;
+    }
+    let total: f64 = values.filter(|v| v.is_finite()).sum();
+    if total > 0.0 { 100.0 / total } else { 0.0 }
+}
+
+/// A value as a label: "12.5%" with `.percent`.
+pub(crate) fn unit(style: &Style, v: f64) -> String {
+    if style.percent {
+        format!("{}%", svg::format_value(v))
+    } else {
+        svg::format_value(v)
+    }
+}
+
+/// Legend, axis names, and the closing tag.
 pub(crate) fn finish(
     out: &mut String,
     theme: &Theme,
     style: &Style,
-    texts: &Texts,
+    (x_name, y_name): (&str, &str),
     items: &[(String, String)],
     l: &Layout,
 ) {
-    if !items.is_empty() {
-        svg::legend(out, theme, items, l.width - l.right + 16.0, l.top + 8.0);
+    match legend_at(style, items) {
+        Legend::Right => svg::legend(out, theme, items, l.width - l.right + 16.0, l.top + 8.0),
+        Legend::Bottom => svg::legend_flow(
+            out,
+            theme,
+            items,
+            36.0,
+            l.height - l.legend_h + 12.0,
+            l.width - 72.0,
+        ),
+        Legend::None => {}
     }
     svg::axis_names(
         out,
         theme,
-        style.xlabel.as_deref().unwrap_or(&texts.x),
-        style.ylabel.as_deref().unwrap_or(&texts.y),
+        x_name,
+        y_name,
         l.left + l.plot_w / 2.0,
         l.top + l.plot_h / 2.0,
-        l.height,
+        l.height - l.legend_h,
     );
     out.push_str("</svg>");
 }
 
-/// The old histogram: bars per bin (grouped by hue), bin ticks, five edge labels.
+/// The old histogram: bars per bin (grouped or stacked by hue), bin ticks, five edge labels.
 pub(crate) fn render_hist(
     texts: &Texts,
     result: &PlotResult,
+    bins: usize,
     subtitle: &str,
     style: &Style,
 ) -> String {
     let PlotResult::Hist {
-        lo,
-        hi,
-        names,
-        counts,
+        lo: data_lo,
+        hi: data_hi,
+        names: groups,
+        counts: fine,
     } = result
     else {
         unreachable!("histograms hold Hist results");
     };
     let theme: Theme = style.theme();
     let grouped: bool = !texts.hue.is_empty();
+    let stacked: bool = grouped && style.stacked;
     let cols: Vec<usize> = if grouped {
-        pick(names, style.hue_order.as_deref(), usize::MAX)
+        ordered(groups, style.hue_order.as_deref())
     } else {
         vec![0]
     };
-    let bins: usize = counts.first().map_or(1, Vec::len).max(1);
-    let k: usize = cols.len().max(1);
+    let (lo, hi): (f64, f64) = style.xlim.unwrap_or((*data_lo, *data_hi));
+    let bins: usize = bins.max(1);
+    let mut outside: f64 = 0.0;
+    let counts: Vec<Vec<f64>> = fine
+        .iter()
+        .enumerate()
+        .map(|(j, series)| {
+            let (counts, out): (Vec<f64>, f64) = regroup(series, (*data_lo, *data_hi), (lo, hi), bins);
+            if cols.contains(&j) {
+                outside += out;
+            }
+            counts
+        })
+        .collect();
+    let factor: f64 = percent_factor(style, counts.iter().flatten().copied());
+    let counts: Vec<Vec<f64>> = counts
+        .iter()
+        .map(|c| c.iter().map(|v| v * factor).collect())
+        .collect();
+    let what: &str = if style.percent { "percent" } else { "count" };
+    let k: usize = if stacked { 1 } else { cols.len().max(1) };
     let fill: f64 = if k == 1 { 0.82 } else { 0.70 };
     let min_slot: f64 = if k == 1 {
         16.0
     } else {
         k as f64 * MIN_CLUSTER_BAR / fill
     };
-    let subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
-    let l: Layout = layout(
-        style,
-        subtitle,
-        bins,
-        min_slot,
-        if grouped { 150.0 } else { 36.0 },
-    );
-    let (y_lo, y_hi): (f64, f64) =
-        range(style, cols.iter().flat_map(|&j| counts[j].iter().copied()));
+    let items: Vec<(String, String)> = if grouped {
+        cols.iter()
+            .enumerate()
+            .map(|(s, &j)| (groups[j].clone(), style.group_color(s, &groups[j])))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let left_out: String = if outside > 0.0 {
+        format!("{} rows outside the range", svg::format_value(outside))
+    } else {
+        subtitle.to_string()
+    };
+    let subtitle: &str = style.subtitle.as_deref().unwrap_or(&left_out);
+    let l: Layout = layout(style, subtitle, bins, min_slot, &items);
+    let heights: Vec<f64> = if stacked {
+        (0..bins)
+            .map(|b| cols.iter().map(|&j| counts[j][b]).sum())
+            .collect()
+    } else {
+        cols.iter().flat_map(|&j| counts[j].iter().copied()).collect()
+    };
+    let (y_lo, y_hi): (f64, f64) = range(style, heights.into_iter());
     let scale: YScale = YScale::new(y_lo, y_hi, l.top, l.plot_h);
     let (slot, span): (f64, f64) = (l.plot_w / bins as f64, (hi - lo).max(1e-9));
     let (inner, base): (f64, f64) = (slot * fill, scale.bottom());
     let bar_w: f64 = inner / k as f64;
     let show_values: bool = style.values.unwrap_or(false);
     let edge = |b: usize| lo + span * b as f64 / bins as f64;
+    let hover = |b: usize, j: usize, v: f64| {
+        let mut text: String = format!(
+            "{} = {} to {}",
+            texts.x,
+            svg::format_value(edge(b)),
+            svg::format_value(edge(b + 1))
+        );
+        if grouped {
+            text += &format!("\n{} = {}", texts.hue, groups[j]);
+        }
+        text + &format!("\n{what} = {}", unit(style, v))
+    };
+    let color = |s: usize, j: usize| {
+        if grouped {
+            style.group_color(s, &groups[j])
+        } else {
+            style.single_color(&groups[j])
+        }
+    };
 
     let mut out: String = svg::card(&theme, &title(texts, style), subtitle, l.width, l.height);
     scale.draw(&mut out, &theme, l.left, l.width - l.right);
@@ -530,28 +707,34 @@ pub(crate) fn render_hist(
             theme.grid
         ));
     }
-    for (s, &j) in cols.iter().enumerate() {
-        let color: String = if grouped {
-            style.group_color(s, &names[j])
-        } else {
-            style.single_color(&names[j])
-        };
-        for (b, &value) in counts[j].iter().enumerate() {
-            let x: f64 = l.left + b as f64 * slot + (slot - inner) / 2.0 + s as f64 * bar_w;
-            let w: f64 = (bar_w - 1.2).max(1.0);
-            let mut hover: String = format!(
-                "{} = {} to {}",
-                texts.x,
-                svg::format_value(edge(b)),
-                svg::format_value(edge(b + 1))
-            );
-            if grouped {
-                hover += &format!("\n{} = {}", texts.hue, names[j]);
+    if stacked {
+        #[allow(clippy::needless_range_loop)] // b is the bin: it indexes every group's counts
+        for b in 0..bins {
+            let x: f64 = l.left + b as f64 * slot + (slot - inner) / 2.0;
+            let w: f64 = (inner - 1.2).max(1.0);
+            let mut sum: f64 = 0.0;
+            for (s, &j) in cols.iter().enumerate() {
+                let v: f64 = counts[j][b];
+                if v > 0.0 {
+                    let (y0, y1): (f64, f64) = (scale.y(sum + v), scale.y(sum));
+                    out.push_str(&svg::rect(x, y0, w, y1 - y0, &color(s, j), &hover(b, j, v)));
+                    sum += v;
+                }
             }
-            hover += &format!("\ncount = {}", svg::format_value(value));
-            out.push_str(&svg::bar(&scale, x, w, value, &color, &hover));
-            if show_values && value > 0.0 {
-                value_label(&mut out, &theme, x + w / 2.0, scale.y(value) - 8.0, value);
+            if show_values && sum > 0.0 {
+                value_label(&mut out, &theme, x + w / 2.0, scale.y(sum) - 8.0, &unit(style, sum));
+            }
+        }
+    } else {
+        for (s, &j) in cols.iter().enumerate() {
+            for (b, &value) in counts[j].iter().enumerate() {
+                let x: f64 = l.left + b as f64 * slot + (slot - inner) / 2.0 + s as f64 * bar_w;
+                let w: f64 = (bar_w - 1.2).max(1.0);
+                out.push_str(&svg::bar(&scale, x, w, value, &color(s, j), &hover(b, j, value)));
+                if show_values && value > 0.0 {
+                    let text: String = unit(style, value);
+                    value_label(&mut out, &theme, x + w / 2.0, scale.y(value) - 8.0, &text);
+                }
             }
         }
     }
@@ -566,15 +749,15 @@ pub(crate) fn render_hist(
             svg::format_value(edge(b))
         ));
     }
-    let items: Vec<(String, String)> = if grouped {
-        cols.iter()
-            .enumerate()
-            .map(|(s, &j)| (names[j].clone(), style.group_color(s, &names[j])))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    finish(&mut out, &theme, style, texts, &items, &l);
+    hlines(&mut out, &theme, style, &scale, &l);
+    // A .vline outside the drawn range is skipped; `.xlim` can widen the range to include it.
+    for (v, label) in style.vlines.iter().filter(|(v, _)| (lo..=hi).contains(v)) {
+        let x: f64 = l.left + (v - lo) / span * l.plot_w;
+        svg::ref_line(&mut out, &theme, false, x, l.top, base, label, *v);
+    }
+    let (x_name, y_name): (&str, &str) = names(style, texts);
+    let y_name: &str = if style.percent && style.ylabel.is_none() { "percent" } else { y_name };
+    finish(&mut out, &theme, style, (x_name, y_name), &items, &l);
     out
 }
 
@@ -596,9 +779,10 @@ pub(crate) fn render_box(
     };
     let theme: Theme = style.theme();
     let grouped: bool = !hue_labels.is_empty();
-    let rows: Vec<usize> = pick(x_labels, style.order.as_deref(), style.top.unwrap_or(TOP));
+    let medians: Vec<f64> = boxes.iter().map(|row| mean(row.iter().map(|five| five[2]))).collect();
+    let rows: Vec<usize> = pick(x_labels, style, &medians, style.top.unwrap_or(TOP));
     let cols: Vec<usize> = if grouped {
-        pick(hue_labels, style.hue_order.as_deref(), usize::MAX)
+        ordered(hue_labels, style.hue_order.as_deref())
     } else {
         vec![0]
     };
@@ -610,14 +794,16 @@ pub(crate) fn render_box(
         56.0
     }
     .max(svg::label_width(&shown));
+    let items: Vec<(String, String)> = if grouped {
+        cols.iter()
+            .enumerate()
+            .map(|(s, &j)| (hue_labels[j].clone(), style.group_color(s, &hue_labels[j])))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
-    let l: Layout = layout(
-        style,
-        subtitle,
-        rows.len(),
-        min_slot,
-        if grouped { 150.0 } else { 36.0 },
-    );
+    let mut l: Layout = layout(style, subtitle, rows.len(), min_slot, &items);
     let (lo, hi): (f64, f64) = range(
         style,
         rows.iter().flat_map(|&i| {
@@ -630,6 +816,7 @@ pub(crate) fn render_box(
     );
     let scale: YScale = YScale::new(lo, hi, l.top, l.plot_h);
     let slot: f64 = l.plot_w / rows.len().max(1) as f64;
+    let tick: Tick = tick_mode(&mut l, &shown, slot);
     let box_w: f64 = if grouped {
         slot * 0.70 / k as f64
     } else {
@@ -649,7 +836,7 @@ pub(crate) fn render_box(
             let color: String = if grouped {
                 style.group_color(s, &hue_labels[j])
             } else {
-                style.single_color(&x_labels[i])
+                style.category_color(n, &x_labels[i])
             };
             let mut hover: String = format!("{} = {}", texts.x, x_labels[i]);
             if grouped {
@@ -680,17 +867,11 @@ pub(crate) fn render_box(
             slot_x + slot / 2.0,
             scale.bottom() + 22.0,
             slot,
+            tick,
         );
     }
-    let items: Vec<(String, String)> = if grouped {
-        cols.iter()
-            .enumerate()
-            .map(|(s, &j)| (hue_labels[j].clone(), style.group_color(s, &hue_labels[j])))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    finish(&mut out, &theme, style, texts, &items, &l);
+    hlines(&mut out, &theme, style, &scale, &l);
+    finish(&mut out, &theme, style, names(style, texts), &items, &l);
     out
 }
 
@@ -720,18 +901,23 @@ pub(crate) fn render_strip(
     x_labels: &[String],
     hue_labels: &[String],
     points: &[(usize, usize, f64)],
+    rows_with_values: usize,
     subtitle: &str,
     style: &Style,
 ) -> String {
     let theme: Theme = style.theme();
     let grouped: bool = !hue_labels.is_empty();
-    let rows: Vec<usize> = pick(x_labels, style.order.as_deref(), style.top.unwrap_or(TOP));
+    let points: Vec<(usize, usize, f64)> = thin(points, style.sample.unwrap_or(SAMPLE));
+    let means: Vec<f64> = (0..x_labels.len())
+        .map(|i| mean(points.iter().filter(|p| p.0 == i).map(|p| p.2)))
+        .collect();
+    let rows: Vec<usize> = pick(x_labels, style, &means, style.top.unwrap_or(TOP));
     let mut slot_of: Vec<Option<usize>> = vec![None; x_labels.len()];
     for (n, &i) in rows.iter().enumerate() {
         slot_of[i] = Some(n);
     }
     let cols: Vec<usize> = if grouped {
-        pick(hue_labels, style.hue_order.as_deref(), usize::MAX)
+        ordered(hue_labels, style.hue_order.as_deref())
     } else {
         Vec::new()
     };
@@ -739,15 +925,24 @@ pub(crate) fn render_strip(
     for (s, &j) in cols.iter().enumerate() {
         hue_color[j] = Some(style.group_color(s, &hue_labels[j]));
     }
-    let x_color: Vec<String> = x_labels.iter().map(|x| style.single_color(x)).collect();
+    let x_color: Vec<String> = x_labels
+        .iter()
+        .enumerate()
+        .map(|(i, x)| style.category_color(slot_of[i].unwrap_or(0), x))
+        .collect();
     let shown: Vec<&String> = rows.iter().map(|&i| &x_labels[i]).collect();
-    let subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
-    let l: Layout = layout(
+    let subtitle: String = sample_subtitle(style, subtitle, points.len(), rows_with_values);
+    let subtitle: &str = &subtitle;
+    let items: Vec<(String, String)> = cols
+        .iter()
+        .filter_map(|&j| Some((hue_labels[j].clone(), hue_color[j].clone()?)))
+        .collect();
+    let mut l: Layout = layout(
         style,
         subtitle,
         rows.len(),
         svg::label_width(&shown).max(48.0),
-        if grouped { 150.0 } else { 28.0 },
+        &items,
     );
     let (lo, hi): (f64, f64) = range(
         style,
@@ -758,6 +953,7 @@ pub(crate) fn render_strip(
     );
     let scale: YScale = YScale::new(lo, hi, l.top, l.plot_h);
     let slot: f64 = l.plot_w / rows.len().max(1) as f64;
+    let tick: Tick = tick_mode(&mut l, &shown, slot);
 
     let mut out: String = svg::card(&theme, &title(texts, style), subtitle, l.width, l.height);
     scale.draw(&mut out, &theme, l.left, l.width - l.right);
@@ -787,7 +983,7 @@ pub(crate) fn render_strip(
             hover += &format!("\n{} = {}", texts.hue, hue_labels[j]);
         }
         out.push_str(&format!(
-            r##"<circle cx="{px:.2}" cy="{:.2}" r="3" fill="{color}" fill-opacity="0.85"><title>{}</title></circle>"##,
+            r##"<circle cx="{px:.2}" cy="{:.2}" r="3" fill="{color}" fill-opacity="0.6"><title>{}</title></circle>"##,
             scale.y(y),
             escape(&hover)
         ));
@@ -800,21 +996,26 @@ pub(crate) fn render_strip(
             l.left + (n as f64 + 0.5) * slot,
             scale.bottom() + 22.0,
             slot,
+            tick,
         );
     }
-    let items: Vec<(String, String)> = cols
-        .iter()
-        .filter_map(|&j| Some((hue_labels[j].clone(), hue_color[j].clone()?)))
-        .collect();
-    finish(&mut out, &theme, style, texts, &items, &l);
+    hlines(&mut out, &theme, style, &scale, &l);
+    finish(&mut out, &theme, style, names(style, texts), &items, &l);
     out
 }
 
-pub(crate) fn value_label(out: &mut String, theme: &Theme, x: f64, y: f64, value: f64) {
+/// Mean of the finite values; NaN when there are none.
+fn mean(values: impl Iterator<Item = f64>) -> f64 {
+    let (sum, n): (f64, usize) = values
+        .filter(|v| v.is_finite())
+        .fold((0.0, 0), |(sum, n), v| (sum + v, n + 1));
+    if n == 0 { f64::NAN } else { sum / n as f64 }
+}
+
+pub(crate) fn value_label(out: &mut String, theme: &Theme, x: f64, y: f64, text: &str) {
     out.push_str(&format!(
-        r##"<text x="{x}" y="{y}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="middle">{}</text>"##,
-        theme.value,
-        svg::format_value(value)
+        r##"<text x="{x}" y="{y}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="middle">{text}</text>"##,
+        theme.value
     ));
 }
 
@@ -838,12 +1039,22 @@ mod tests {
     }
 
     #[test]
+    fn regroup_is_exact_without_xlim_and_counts_rows_outside_it() {
+        let fine: Vec<f64> = vec![1.0; 1000]; // 1,000 fine bins over 0..100, one row each
+        let (counts, outside): (Vec<f64>, f64) = regroup(&fine, (0.0, 100.0), (0.0, 100.0), 4);
+        assert_eq!((counts, outside), (vec![250.0; 4], 0.0));
+        let (counts, outside): (Vec<f64>, f64) = regroup(&fine, (0.0, 100.0), (25.0, 75.0), 2);
+        assert_eq!((counts, outside), (vec![250.0; 2], 500.0));
+    }
+
+    #[test]
     fn sample_takes_one_row_from_each_run() {
-        let ys: Vec<f64> = (0..10_000).map(f64::from).collect();
+        let ys: Vec<f64> = (0..100_000).map(f64::from).collect();
         let ds: Dataset = Dataset::new(df!("y" => ys).unwrap(), "");
-        let (rows, step): (DataFrame, usize) = sample(&ds, &["y"]).unwrap();
-        assert_eq!((rows.height(), step), (2000, 5));
-        let picked: Vec<f64> = f64s(&rows, "y").unwrap();
-        assert!(picked.iter().enumerate().all(|(run, &y)| y as usize / 5 == run));
+        let (sample, rows): (DataFrame, usize) = sample(&ds, &["y"]).unwrap();
+        assert_eq!((sample.height(), rows), (MAX_SAMPLE, 100_000));
+        let picked: Vec<f64> = f64s(&sample, "y").unwrap();
+        assert!(picked.iter().enumerate().all(|(run, &y)| y as usize / 2 == run));
+        assert_eq!(thin(&picked, 8000).len(), 8000);
     }
 }

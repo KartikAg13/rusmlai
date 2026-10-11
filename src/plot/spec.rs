@@ -87,7 +87,8 @@ pub enum PlotSpec {
         value: Option<String>,
         estimator: Estimator,
     },
-    Hist {
+    /// Counts in fine bins (a multiple of `bins`, at least 1,000), so `.xlim` can regroup them.
+    Histogram {
         column: String,
         hue: Option<String>,
         bins: usize,

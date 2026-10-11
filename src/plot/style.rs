@@ -1,23 +1,21 @@
 //! Chart options: the Rust form of Python's keyword arguments, plus notebook-wide defaults.
 
-use std::sync::{LazyLock, PoisonError, RwLock};
-
 use crate::{
     display::Figure,
     error::OrFatal,
-    plot::{bar::MAX_GROUPS, chart::Chart, error::PlotError},
+    plot::{bar::MAX_GROUPS, chart::Chart, dist::MAX_SAMPLE, error::PlotError},
 };
 
 /// Colors of a card. `CLASSIC` is the original rusmlai look.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Theme {
     pub background: &'static str,
+    /// The high end of the default heatmap color scale (single-series charts use the palette).
     pub bar: &'static str,
     pub grid: &'static str,
     pub axis: &'static str,
     pub tick: &'static str,
     pub title: &'static str,
-    pub subtitle: &'static str,
     pub value: &'static str,
     pub palette: &'static [&'static str],
     /// Heatmap colors: the low end, the middle of a diverging range, and negative values.
@@ -35,9 +33,8 @@ pub(crate) const CLASSIC: Theme = Theme {
     axis: "#353942",
     tick: "#8B8F9A",
     title: "#F2F3F5",
-    subtitle: "#E4E7EE",
     value: "#FFFFFF",
-    palette: GREENS,
+    palette: RUSMLAI,
     cell_low: "#0E2A20",
     cell_mid: "#1A2A24",
     negative: "#C44B4B",
@@ -51,9 +48,8 @@ const LIGHT: Theme = Theme {
     axis: "#C9CDD4",
     tick: "#5B606B",
     title: "#16181D",
-    subtitle: "#3A3F48",
     value: "#16181D",
-    palette: GREENS,
+    palette: RUSMLAI_LIGHT,
     cell_low: "#E3F2EB",
     cell_mid: "#F1F3F2",
     negative: "#C44B4B",
@@ -62,11 +58,27 @@ const LIGHT: Theme = Theme {
 
 const THEMES: &[(&str, Theme)] = &[("dark", CLASSIC), ("classic", CLASSIC), ("light", LIGHT)];
 
+/// The default group colors on the dark card (chosen 2026-10-10): olive, cream, rust, navy, sky,
+/// then gold, plum and sage. Navy is one step lighter than the chosen `#1F487E`, which almost
+/// disappears on the dark card. Neighbours pass the color-blindness and normal-vision checks of
+/// the dataviz validator; the muted olive and cream fail its chroma check on purpose.
+const RUSMLAI: &[&str] = &[
+    "#566E3D", "#F5DFBB", "#B7410E", "#436DA6", "#39A9DB", "#D79B3C", "#955A89", "#8ED09C",
+];
+
+/// The same hues for the white card: cream, sky, gold and sage are darker steps (cream `#F5DFBB`
+/// would almost disappear on white), and navy is the chosen `#1F487E`.
+const RUSMLAI_LIGHT: &[&str] = &[
+    "#566E3D", "#BDA885", "#B7410E", "#1F487E", "#018CBC", "#C0851F", "#864C7A", "#519160",
+];
+
 const GREENS: &[&str] = &[
     "#199E70", "#3DCF9A", "#0E6B4A", "#7EE0C0", "#5BA88A", "#C4F0DE", "#2A8F6A",
 ];
 
+/// `rusmlai` is empty: it means "the theme's own palette", so it follows `.theme("light")`.
 const PALETTES: &[(&str, &[&str])] = &[
+    ("rusmlai", &[]),
     ("greens", GREENS),
     (
         "colorblind",
@@ -196,37 +208,77 @@ pub(crate) struct Style {
     pub ylim: Option<(f64, f64)>,
     pub xlim: Option<(f64, f64)>,
     pub cmap: Option<Cmap>,
+    pub sample: Option<usize>,
+    pub sort: Option<Sort>,
+    pub horizontal: bool,
+    pub percent: bool,
+    pub stacked: bool,
+    /// Reference lines: (value, label).
+    pub hlines: Vec<(f64, String)>,
+    pub vlines: Vec<(f64, String)>,
+    pub legend: Option<Legend>,
 }
 
-static DEFAULTS: LazyLock<RwLock<Style>> = LazyLock::new(|| RwLock::new(Style::default()));
+/// `.legend(..)`: right of the plot (default), under it, or hidden.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Legend {
+    Right,
+    Bottom,
+    None,
+}
+
+/// `.sort(..)`: tallest first, A to Z, or the stored order (most rows first).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Sort {
+    Value,
+    Name,
+    Count,
+}
+
+// The notebook-wide defaults live in environment variables, not in a static: evcxr builds each
+// notebook cell with its own copy of rusmlai, so a static set in one cell is unseen by the next.
+// The process environment is shared by every copy. A shell can set them too.
+const THEME_VAR: &str = "RUSMLAI_THEME";
+const PALETTE_VAR: &str = "RUSMLAI_PALETTE";
 
 /// Card style for every chart that follows, like `sns.set_theme`: `"dark"` (default) or `"light"`.
+/// Call it before drawing, not while another thread is running a query.
 #[track_caller]
 pub fn set_theme(name: &str) {
-    let theme: Theme = lookup(THEMES, "set_theme", name).or_fatal();
-    DEFAULTS
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .theme = Some(theme);
+    lookup(THEMES, "set_theme", name).or_fatal();
+    set_default(THEME_VAR, name);
 }
 
-/// Colors of groups for every chart that follows, like `sns.set_palette`.
+/// Colors of groups for every chart that follows, like `sns.set_palette`. Call it before
+/// drawing, not while another thread is running a query.
 #[track_caller]
 pub fn set_palette(name: &str) {
-    let palette: &[&str] = lookup(PALETTES, "set_palette", name).or_fatal();
-    DEFAULTS
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
-        .palette = Some(strings(palette));
+    lookup(PALETTES, "set_palette", name).or_fatal();
+    set_default(PALETTE_VAR, name);
+}
+
+fn set_default(var: &str, name: &str) {
+    // SAFETY: changing the environment is unsound only while another thread reads it. rusmlai
+    // starts no threads, and Polars' threads read it only during a query; set_theme and
+    // set_palette run between queries (in a notebook, in a cell of their own).
+    unsafe { std::env::set_var(var, name) };
+}
+
+/// A default set by `set_theme` / `set_palette` (or the shell), if it names a known entry.
+fn default<T: Copy>(table: &[(&str, T)], var: &'static str) -> Option<T> {
+    let name: String = std::env::var(var).ok()?;
+    lookup(table, var, &name).ok()
 }
 
 impl Style {
     /// The options of one chart on top of `set_theme` and `set_palette`.
     pub(crate) fn resolved(&self) -> Style {
-        let defaults = DEFAULTS.read().unwrap_or_else(PoisonError::into_inner);
         Style {
-            theme: self.theme.or(defaults.theme),
-            palette: self.palette.clone().or_else(|| defaults.palette.clone()),
+            theme: self.theme.or_else(|| default(THEMES, THEME_VAR)),
+            palette: self
+                .palette
+                .clone()
+                .or_else(|| default(PALETTES, PALETTE_VAR).map(strings)),
             ..self.clone()
         }
     }
@@ -235,22 +287,37 @@ impl Style {
         self.theme.unwrap_or(CLASSIC)
     }
 
-    /// A single-series mark: `.color_map` for its name, then `.color`, then the theme.
+    /// A single-series mark: `.color_map` for its name, then `.color`, then the palette's first
+    /// color (seaborn's "C0").
     pub(crate) fn single_color(&self, name: &str) -> String {
         self.mapped(name)
             .or_else(|| self.color.clone())
-            .unwrap_or_else(|| self.theme().bar.to_string())
+            .unwrap_or_else(|| self.palette_color(0))
     }
 
     /// Group `i`: `.color_map` for its name, then the palette.
     pub(crate) fn group_color(&self, i: usize, name: &str) -> String {
-        self.mapped(name).unwrap_or_else(|| match &self.palette {
-            Some(palette) => palette[i % palette.len()].clone(),
-            None => {
-                let palette: &[&str] = self.theme().palette;
-                palette[i % palette.len()].to_string()
-            }
-        })
+        self.mapped(name).unwrap_or_else(|| self.palette_color(i))
+    }
+
+    /// Category `i` of a chart with no hue: `.color_map`, then `.color`, then the palette.
+    pub(crate) fn category_color(&self, i: usize, name: &str) -> String {
+        self.mapped(name)
+            .or_else(|| self.color.clone())
+            .unwrap_or_else(|| self.palette_color(i))
+    }
+
+    /// The palette in use: `.palette` / `.colors`, else the theme's.
+    fn palette_colors(&self) -> Vec<String> {
+        match &self.palette {
+            Some(palette) if !palette.is_empty() => palette.clone(),
+            _ => strings(self.theme().palette),
+        }
+    }
+
+    fn palette_color(&self, i: usize) -> String {
+        let palette: Vec<String> = self.palette_colors();
+        palette[i % palette.len()].clone()
     }
 
     fn mapped(&self, name: &str) -> Option<String> {
@@ -321,7 +388,8 @@ impl Figure {
         })
     }
 
-    /// Colors of the groups: greens (default), colorblind, tab10, deep, muted, pastel, bright, dark.
+    /// Colors of the groups: rusmlai (default), greens, colorblind, tab10, deep, muted, pastel,
+    /// bright, dark.
     /// (seaborn: `palette=`)
     #[track_caller]
     pub fn palette(self, name: &str) -> Self {
@@ -331,28 +399,31 @@ impl Figure {
         })
     }
 
-    /// Your own palette, as hex colors. (plotly: `color_discrete_sequence=`)
+    /// Your own palette: hex codes or names (see `.color`). (plotly: `color_discrete_sequence=`)
     #[track_caller]
     pub fn colors(self, colors: &[&str]) -> Self {
         self.set(".colors", |s, _| {
             if colors.is_empty() {
                 return Err(invalid(".colors", "the list is empty".to_string()));
             }
+            let current: Vec<String> = s.resolved().palette_colors();
             s.palette = Some(
                 colors
                     .iter()
-                    .map(|color| hex(".colors", color))
+                    .map(|color| paint(".colors", color, &current))
                     .collect::<Result<Vec<String>, PlotError>>()?,
             );
             Ok(())
         })
     }
 
-    /// One color for a single series. (seaborn: `color=`)
+    /// One color for the whole chart: a hex code, a matplotlib / CSS name ("teal", "tomato"), a
+    /// Tableau name ("tab:blue"), or "C0" to "C9" for a color of the current palette.
+    /// (seaborn: `color=`)
     #[track_caller]
     pub fn color(self, color: &str) -> Self {
         self.set(".color", |s, _| {
-            s.color = Some(hex(".color", color)?);
+            s.color = Some(paint(".color", color, &s.resolved().palette_colors())?);
             Ok(())
         })
     }
@@ -361,6 +432,7 @@ impl Figure {
     #[track_caller]
     pub fn color_map(self, map: &[(&str, &str)]) -> Self {
         self.set(".color_map", |s, chart| {
+            let current: Vec<String> = s.resolved().palette_colors();
             let names: &[String] = match chart.categories(true) {
                 [] => chart.categories(false),
                 hue => hue,
@@ -368,7 +440,7 @@ impl Figure {
             for &(name, color) in map {
                 known(".color_map", name, names)?;
                 s.color_map
-                    .push((name.to_string(), hex(".color_map", color)?));
+                    .push((name.to_string(), paint(".color_map", color, &current)?));
             }
             Ok(())
         })
@@ -453,7 +525,9 @@ impl Figure {
         })
     }
 
-    /// The range of the x axis on scatter, line and regplot charts. (matplotlib: `ax.set_xlim`)
+    /// The range of the x axis on scatter, line, regplot and histogram charts. A histogram
+    /// re-bins inside it and leaves out the rows outside. (matplotlib: `ax.set_xlim`, seaborn:
+    /// `binrange=`)
     #[track_caller]
     pub fn xlim(self, low: f64, high: f64) -> Self {
         self.set(".xlim", |s, _| {
@@ -465,6 +539,90 @@ impl Figure {
                 ));
             }
             s.xlim = Some((low, high));
+            Ok(())
+        })
+    }
+
+    /// How many sampled points strip, scatter and regplot charts draw (2,500 by default, at most
+    /// 50,000: every point is text in the SVG).
+    #[track_caller]
+    pub fn sample(self, n: usize) -> Self {
+        self.set(".sample", |s, _| {
+            if !(1..=MAX_SAMPLE).contains(&n) {
+                return Err(invalid(
+                    ".sample",
+                    format!("n must be between 1 and {MAX_SAMPLE}, got {n}"),
+                ));
+            }
+            s.sample = Some(n);
+            Ok(())
+        })
+    }
+
+    /// Category order: "value" (tallest first), "name" (A to Z, numbers by size), or "count"
+    /// (the default: most rows first, numbers ascending). `.order` wins over it.
+    /// (seaborn: `order=` from a sorted index)
+    #[track_caller]
+    pub fn sort(self, by: &str) -> Self {
+        self.set(".sort", |s, _| {
+            s.sort = Some(lookup(SORTS, ".sort", by)?);
+            Ok(())
+        })
+    }
+
+    /// Bars sideways: categories down the left, values along the bottom. `.xlabel` still names
+    /// the categories and `.ylabel` the values. (seaborn: `orient="h"`)
+    #[track_caller]
+    pub fn horizontal(self) -> Self {
+        self.set(".horizontal", |s, _| {
+            s.horizontal = true;
+            Ok(())
+        })
+    }
+
+    /// Counts as a share of all rows, in percent. (seaborn: `stat="percent"`)
+    #[track_caller]
+    pub fn percent(self) -> Self {
+        self.set(".percent", |s, _| {
+            s.percent = true;
+            Ok(())
+        })
+    }
+
+    /// Hue groups on top of each other instead of side by side. (plotly: `barmode="stack"`)
+    #[track_caller]
+    pub fn stacked(self) -> Self {
+        self.set(".stacked", |s, _| {
+            s.stacked = true;
+            Ok(())
+        })
+    }
+
+    /// A dashed line at value `y`, with a label (`""` for none). On horizontal bars it runs along
+    /// the value axis. Call it again for more lines. (matplotlib: `ax.axhline`)
+    #[track_caller]
+    pub fn hline(self, y: f64, label: &str) -> Self {
+        self.set(".hline", |s, _| {
+            s.hlines.push((finite(".hline", y)?, label.to_string()));
+            Ok(())
+        })
+    }
+
+    /// A dashed line at `x` on scatter, line, regplot and histogram charts. (matplotlib:
+    /// `ax.axvline`)
+    #[track_caller]
+    pub fn vline(self, x: f64, label: &str) -> Self {
+        self.set(".vline", |s, _| {
+            s.vlines.push((finite(".vline", x)?, label.to_string()));
+            Ok(())
+        })
+    }
+
+    /// Where the legend goes: "right" (default), "bottom", or "none". (seaborn: `legend=False`)
+    #[track_caller]
+    pub fn legend(self, at: &str) -> Self {
+        self.set(".legend", |s, _| {
+            s.legend = Some(lookup(LEGENDS, ".legend", at)?);
             Ok(())
         })
     }
@@ -501,17 +659,124 @@ fn lookup<T: Copy>(table: &[(&str, T)], option: &'static str, name: &str) -> Res
     }
 }
 
-fn hex(option: &'static str, color: &str) -> Result<String, PlotError> {
-    let digits: &str = color.strip_prefix('#').unwrap_or("");
-    if matches!(digits.len(), 3 | 6) && digits.chars().all(|c| c.is_ascii_hexdigit()) {
-        Ok(color.to_string())
+const LEGENDS: &[(&str, Legend)] = &[
+    ("right", Legend::Right),
+    ("bottom", Legend::Bottom),
+    ("none", Legend::None),
+];
+
+fn finite(option: &'static str, v: f64) -> Result<f64, PlotError> {
+    if v.is_finite() {
+        Ok(v)
     } else {
-        Err(invalid(
-            option,
-            format!("'{color}' is not a hex color like \"#199E70\""),
-        ))
+        Err(invalid(option, format!("{v} is not a number")))
     }
 }
+
+const SORTS: &[(&str, Sort)] = &[
+    ("value", Sort::Value),
+    ("name", Sort::Name),
+    ("count", Sort::Count),
+];
+
+/// A color as hex: a hex code, a matplotlib / CSS name, a Tableau name, or "C0".."C9" from
+/// `palette` (the palette in effect at that point of the chain, like matplotlib's "C0").
+fn paint(option: &'static str, color: &str, palette: &[String]) -> Result<String, PlotError> {
+    let name: String = color.trim().to_ascii_lowercase();
+    if let Some(digits) = name.strip_prefix('#') {
+        if matches!(digits.len(), 3 | 6) && digits.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Ok(color.trim().to_string());
+        }
+    } else if let Some(i) = name.strip_prefix('c').and_then(|d| d.parse::<usize>().ok()) {
+        return palette.get(i).cloned().ok_or_else(|| {
+            invalid(option, format!("'{color}': the palette has only {} colors", palette.len()))
+        });
+    } else if let Some(hex) = TABLEAU
+        .iter()
+        .chain(&NAMED)
+        .find_map(|&(n, hex)| (n == name).then_some(hex))
+    {
+        return Ok(format!("#{hex}"));
+    }
+    let close: Vec<&str> = TABLEAU
+        .iter()
+        .chain(&NAMED)
+        .map(|&(n, _)| n)
+        .filter(|n| {
+            name.len() >= 3
+                && (n.contains(name.as_str())
+                    || name.contains(n)
+                    || name.get(..3).is_some_and(|p| n.starts_with(p)))
+        })
+        .take(6)
+        .collect();
+    let hint: String = if close.is_empty() {
+        String::new()
+    } else {
+        format!(" Close names: {}.", close.join(", "))
+    };
+    Err(invalid(
+        option,
+        format!(
+            "'{color}' is not a color. Use a hex code (\"#199E70\"), a name (\"teal\", \"tab:blue\") or \"C0\".{hint}"
+        ),
+    ))
+}
+
+const TABLEAU: [(&str, &str); 11] = [
+    ("tab:blue", "1F77B4"),
+    ("tab:orange", "FF7F0E"),
+    ("tab:green", "2CA02C"),
+    ("tab:red", "D62728"),
+    ("tab:purple", "9467BD"),
+    ("tab:brown", "8C564B"),
+    ("tab:pink", "E377C2"),
+    ("tab:gray", "7F7F7F"),
+    ("tab:grey", "7F7F7F"),
+    ("tab:olive", "BCBD22"),
+    ("tab:cyan", "17BECF"),
+];
+
+/// The 148 CSS color names, which matplotlib also uses.
+const NAMED: [(&str, &str); 148] = [
+    ("aliceblue", "F0F8FF"), ("antiquewhite", "FAEBD7"), ("aqua", "00FFFF"), ("aquamarine", "7FFFD4"),
+    ("azure", "F0FFFF"), ("beige", "F5F5DC"), ("bisque", "FFE4C4"), ("black", "000000"),
+    ("blanchedalmond", "FFEBCD"), ("blue", "0000FF"), ("blueviolet", "8A2BE2"), ("brown", "A52A2A"),
+    ("burlywood", "DEB887"), ("cadetblue", "5F9EA0"), ("chartreuse", "7FFF00"), ("chocolate", "D2691E"),
+    ("coral", "FF7F50"), ("cornflowerblue", "6495ED"), ("cornsilk", "FFF8DC"), ("crimson", "DC143C"),
+    ("cyan", "00FFFF"), ("darkblue", "00008B"), ("darkcyan", "008B8B"), ("darkgoldenrod", "B8860B"),
+    ("darkgray", "A9A9A9"), ("darkgreen", "006400"), ("darkgrey", "A9A9A9"), ("darkkhaki", "BDB76B"),
+    ("darkmagenta", "8B008B"), ("darkolivegreen", "556B2F"), ("darkorange", "FF8C00"), ("darkorchid", "9932CC"),
+    ("darkred", "8B0000"), ("darksalmon", "E9967A"), ("darkseagreen", "8FBC8F"), ("darkslateblue", "483D8B"),
+    ("darkslategray", "2F4F4F"), ("darkslategrey", "2F4F4F"), ("darkturquoise", "00CED1"), ("darkviolet", "9400D3"),
+    ("deeppink", "FF1493"), ("deepskyblue", "00BFFF"), ("dimgray", "696969"), ("dimgrey", "696969"),
+    ("dodgerblue", "1E90FF"), ("firebrick", "B22222"), ("floralwhite", "FFFAF0"), ("forestgreen", "228B22"),
+    ("fuchsia", "FF00FF"), ("gainsboro", "DCDCDC"), ("ghostwhite", "F8F8FF"), ("gold", "FFD700"),
+    ("goldenrod", "DAA520"), ("gray", "808080"), ("green", "008000"), ("greenyellow", "ADFF2F"),
+    ("grey", "808080"), ("honeydew", "F0FFF0"), ("hotpink", "FF69B4"), ("indianred", "CD5C5C"),
+    ("indigo", "4B0082"), ("ivory", "FFFFF0"), ("khaki", "F0E68C"), ("lavender", "E6E6FA"),
+    ("lavenderblush", "FFF0F5"), ("lawngreen", "7CFC00"), ("lemonchiffon", "FFFACD"), ("lightblue", "ADD8E6"),
+    ("lightcoral", "F08080"), ("lightcyan", "E0FFFF"), ("lightgoldenrodyellow", "FAFAD2"), ("lightgray", "D3D3D3"),
+    ("lightgreen", "90EE90"), ("lightgrey", "D3D3D3"), ("lightpink", "FFB6C1"), ("lightsalmon", "FFA07A"),
+    ("lightseagreen", "20B2AA"), ("lightskyblue", "87CEFA"), ("lightslategray", "778899"), ("lightslategrey", "778899"),
+    ("lightsteelblue", "B0C4DE"), ("lightyellow", "FFFFE0"), ("lime", "00FF00"), ("limegreen", "32CD32"),
+    ("linen", "FAF0E6"), ("magenta", "FF00FF"), ("maroon", "800000"), ("mediumaquamarine", "66CDAA"),
+    ("mediumblue", "0000CD"), ("mediumorchid", "BA55D3"), ("mediumpurple", "9370DB"), ("mediumseagreen", "3CB371"),
+    ("mediumslateblue", "7B68EE"), ("mediumspringgreen", "00FA9A"), ("mediumturquoise", "48D1CC"), ("mediumvioletred", "C71585"),
+    ("midnightblue", "191970"), ("mintcream", "F5FFFA"), ("mistyrose", "FFE4E1"), ("moccasin", "FFE4B5"),
+    ("navajowhite", "FFDEAD"), ("navy", "000080"), ("oldlace", "FDF5E6"), ("olive", "808000"),
+    ("olivedrab", "6B8E23"), ("orange", "FFA500"), ("orangered", "FF4500"), ("orchid", "DA70D6"),
+    ("palegoldenrod", "EEE8AA"), ("palegreen", "98FB98"), ("paleturquoise", "AFEEEE"), ("palevioletred", "DB7093"),
+    ("papayawhip", "FFEFD5"), ("peachpuff", "FFDAB9"), ("peru", "CD853F"), ("pink", "FFC0CB"),
+    ("plum", "DDA0DD"), ("powderblue", "B0E0E6"), ("purple", "800080"), ("rebeccapurple", "663399"),
+    ("red", "FF0000"), ("rosybrown", "BC8F8F"), ("royalblue", "4169E1"), ("saddlebrown", "8B4513"),
+    ("salmon", "FA8072"), ("sandybrown", "F4A460"), ("seagreen", "2E8B57"), ("seashell", "FFF5EE"),
+    ("sienna", "A0522D"), ("silver", "C0C0C0"), ("skyblue", "87CEEB"), ("slateblue", "6A5ACD"),
+    ("slategray", "708090"), ("slategrey", "708090"), ("snow", "FFFAFA"), ("springgreen", "00FF7F"),
+    ("steelblue", "4682B4"), ("tan", "D2B48C"), ("teal", "008080"), ("thistle", "D8BFD8"),
+    ("tomato", "FF6347"), ("turquoise", "40E0D0"), ("violet", "EE82EE"), ("wheat", "F5DEB3"),
+    ("white", "FFFFFF"), ("whitesmoke", "F5F5F5"), ("yellow", "FFFF00"), ("yellowgreen", "9ACD32"),
+];
 
 fn known(option: &'static str, name: &str, categories: &[String]) -> Result<(), PlotError> {
     if categories.iter().any(|c| c == name) {
@@ -531,4 +796,20 @@ fn known(option: &'static str, name: &str, categories: &[String]) -> Result<(), 
         option,
         format!("'{name}' is not a category of this chart. Categories: {list}"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn colors_by_hex_name_tableau_and_palette_index() {
+        let palette: Vec<String> = strings(RUSMLAI);
+        assert_eq!(paint(".color", "#199E70", &palette).unwrap(), "#199E70");
+        assert_eq!(paint(".color", "Teal", &palette).unwrap(), "#008080");
+        assert_eq!(paint(".color", "tab:blue", &palette).unwrap(), "#1F77B4");
+        assert_eq!(paint(".color", "C1", &palette).unwrap(), RUSMLAI[1]);
+        let typo: String = paint(".color", "tomatoe", &palette).unwrap_err().to_string();
+        assert!(typo.contains("tomato"), "{typo}");
+    }
 }

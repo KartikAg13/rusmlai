@@ -1,6 +1,6 @@
 //! `bar`, `count`, `describe_bar` and `pie`: compute the numbers, then render them.
 
-use std::collections::HashMap;
+use std::{cmp::Ordering, collections::HashMap};
 
 use polars::prelude::{DataFrame, DataType, Expr, IntoLazy, SortOptions, col, len};
 
@@ -13,8 +13,12 @@ use crate::{
         error::PlotError,
         result::PlotResult,
         spec::{BarSpec, Estimator, PlotSpec},
-        style::Style,
-        svg::{self, HEIGHT, MIN_CLUSTER_BAR, WIDTH, YScale},
+        dist::{
+            Layout, bottom_legend_h, finish, hlines, layout, legend_at, names, percent_factor,
+            range, tick_mode, title, unit, value_label,
+        },
+        style::{Legend, Sort, Style},
+        svg::{self, HEIGHT, MIN_CLUSTER_BAR, Tick, WIDTH, XScale, YScale},
     },
 };
 
@@ -177,12 +181,18 @@ pub(crate) fn try_describe_bar(
             column.to_string()
         }));
     }
+    let subtitle: String = if column.is_empty() {
+        format!("n={}", dataset.metadata.height)
+    } else {
+        let nulls: usize = dataset.try_column_info(column)?.null_count;
+        format!("n={},  nulls={nulls}", dataset.metadata.height - nulls)
+    };
     Ok(Figure::new(
         Chart::Bar {
             name: "describe_bar",
             texts,
             result: PlotResult::Series { labels, values },
-            subtitle: "from cached column stats".to_string(),
+            subtitle,
         },
         dataset.metadata.filepath.as_deref(),
     ))
@@ -355,41 +365,64 @@ fn subtitle(x: Option<&CategoricalStats>, hue: Option<&str>) -> String {
 }
 
 /// The old `render_simple` and `render_clustered` in one: a single series is one group.
-pub(crate) fn render(texts: &Texts, result: &PlotResult, subtitle: &str, style: &Style) -> String {
+/// `per_category`: a single series gets one palette color per bar (not `describe_bar`).
+/// `.horizontal()` lays the same bars down; `.stacked()` piles hue groups.
+pub(crate) fn render(
+    texts: &Texts,
+    result: &PlotResult,
+    subtitle: &str,
+    per_category: bool,
+    style: &Style,
+) -> String {
     let theme = style.theme();
     let top: usize = style.top.unwrap_or(TOP);
 
-    let (all, x_labels, hue_labels, grid): (usize, Vec<&String>, Vec<&String>, Vec<Vec<f64>>) =
-        match result {
-            PlotResult::Series { labels, values } => {
-                let rows: Vec<usize> = pick(labels, style.order.as_deref(), top);
-                (
-                    labels.len(),
-                    rows.iter().map(|&i| &labels[i]).collect(),
-                    Vec::new(),
-                    rows.iter().map(|&i| vec![values[i]]).collect(),
-                )
-            }
-            PlotResult::Clustered {
-                x_labels,
-                hue_labels,
-                grid,
-            } => {
-                let rows: Vec<usize> = pick(x_labels, style.order.as_deref(), top);
-                let cols: Vec<usize> = pick(hue_labels, style.hue_order.as_deref(), usize::MAX);
-                (
-                    x_labels.len(),
-                    rows.iter().map(|&i| &x_labels[i]).collect(),
-                    cols.iter().map(|&j| &hue_labels[j]).collect(),
-                    rows.iter()
-                        .map(|&i| cols.iter().map(|&j| grid[i][j]).collect())
-                        .collect(),
-                )
-            }
-            _ => unreachable!("bar charts hold Series or Clustered results"),
-        };
+    let (all, factor, x_labels, hue_labels, grid): (
+        usize,
+        f64,
+        Vec<&String>,
+        Vec<&String>,
+        Vec<Vec<f64>>,
+    ) = match result {
+        PlotResult::Series { labels, values } => {
+            let rows: Vec<usize> = pick(labels, style, values, top);
+            (
+                labels.len(),
+                percent_factor(style, values.iter().copied()),
+                rows.iter().map(|&i| &labels[i]).collect(),
+                Vec::new(),
+                rows.iter().map(|&i| vec![values[i]]).collect(),
+            )
+        }
+        PlotResult::Clustered {
+            x_labels,
+            hue_labels,
+            grid,
+        } => {
+            let totals: Vec<f64> = grid
+                .iter()
+                .map(|row| row.iter().filter(|v| v.is_finite()).sum())
+                .collect();
+            let rows: Vec<usize> = pick(x_labels, style, &totals, top);
+            let cols: Vec<usize> = ordered(hue_labels, style.hue_order.as_deref());
+            (
+                x_labels.len(),
+                percent_factor(style, grid.iter().flatten().copied()),
+                rows.iter().map(|&i| &x_labels[i]).collect(),
+                cols.iter().map(|&j| &hue_labels[j]).collect(),
+                rows.iter()
+                    .map(|&i| cols.iter().map(|&j| grid[i][j]).collect())
+                    .collect(),
+            )
+        }
+        _ => unreachable!("bar charts hold Series or Clustered results"),
+    };
+    let grid: Vec<Vec<f64>> = grid
+        .into_iter()
+        .map(|row| row.into_iter().map(|v| v * factor).collect())
+        .collect();
 
-    let title: String = style.title.clone().unwrap_or_else(|| texts.title.clone());
+    let title: String = title(texts, style);
     let base_subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
     let subtitle: String = match (x_labels.len() < all, base_subtitle.is_empty()) {
         (true, true) => format!("showing {} of {all}", x_labels.len()),
@@ -398,133 +431,212 @@ pub(crate) fn render(texts: &Texts, result: &PlotResult, subtitle: &str, style: 
     };
 
     let clustered: bool = !hue_labels.is_empty();
-    let k: usize = hue_labels.len().max(1);
-    let n: usize = x_labels.len().max(1);
-    let (card_w, height): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
-    let left: f64 = 72.0;
-    let right: f64 = if clustered { 150.0 } else { 28.0 };
-    let pad_top: f64 = if subtitle.is_empty() { 92.0 } else { 110.0 };
-    let plot_h: f64 = height - pad_top - 70.0;
-    let min_slot: f64 = if clustered {
-        k as f64 * MIN_CLUSTER_BAR / 0.62
-    } else {
-        48.0
-    }
-    .max(svg::label_width(&x_labels));
-    let plot_w: f64 = (card_w - left - right).max(n as f64 * min_slot);
-    let width: f64 = left + plot_w + right;
-
-    let (lo, hi): (f64, f64) = style.ylim.unwrap_or_else(|| {
-        grid.iter()
-            .flatten()
-            .filter(|v| v.is_finite())
-            .fold((0.0, 0.0), |(lo, hi): (f64, f64), &v| {
-                (lo.min(v), hi.max(v))
-            })
-    });
-    let scale: YScale = YScale::new(lo, hi, pad_top, plot_h);
-    let slot: f64 = plot_w / n as f64;
-    let bar_w: f64 = if clustered {
-        slot * 0.70 / k as f64
-    } else {
-        slot * 0.58
-    };
-    let show_values: bool = style.values.unwrap_or(!clustered);
-
-    let mut out: String = svg::card(&theme, &title, &subtitle, width, height);
-    scale.draw(&mut out, &theme, left, width - right);
-    for (i, (label, row)) in x_labels.iter().zip(&grid).enumerate() {
-        let slot_x: f64 = left + i as f64 * slot;
-        let start: f64 = slot_x + (slot - bar_w * k as f64) / 2.0;
-        for (j, &value) in row.iter().enumerate() {
-            let x: f64 = start + j as f64 * bar_w;
-            let (w, fill, hover): (f64, String, String) = if clustered {
-                let hue: &str = hue_labels[j];
-                (
-                    (bar_w - 1.5).max(1.0),
-                    style.group_color(j, hue),
-                    format!(
-                        "{} = {label}\n{} = {hue}\n{} = {}",
-                        texts.x,
-                        texts.hue,
-                        texts.value,
-                        svg::format_value(value)
-                    ),
-                )
-            } else {
-                (
-                    bar_w,
-                    style.single_color(label),
-                    format!(
-                        "{} = {label}\n{} = {}",
-                        texts.x,
-                        texts.value,
-                        svg::format_value(value)
-                    ),
-                )
-            };
-            out.push_str(&svg::bar(&scale, x, w, value, &fill, &hover));
-            if show_values && value.is_finite() {
-                let y: f64 = if value >= 0.0 {
-                    scale.y(value) - 8.0
-                } else {
-                    scale.y(value) + 16.0
-                };
-                out.push_str(&format!(
-                    r##"<text x="{}" y="{y}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="middle">{}</text>"##,
-                    x + w / 2.0,
-                    theme.value,
-                    svg::format_value(value)
-                ));
-            }
+    let stacked: bool = clustered && style.stacked;
+    let what: &str = if style.percent { "percent" } else { &texts.value };
+    let fill_of = |i: usize, j: usize| -> String {
+        if clustered {
+            style.group_color(j, hue_labels[j])
+        } else if per_category {
+            style.category_color(i, x_labels[i])
+        } else {
+            style.single_color(x_labels[i])
         }
-        svg::x_tick(
-            &mut out,
-            &theme,
-            label,
-            slot_x + slot / 2.0,
-            scale.bottom() + 22.0,
-            slot,
-        );
-    }
-    if clustered {
-        let items: Vec<(String, String)> = hue_labels
+    };
+    let hover = |i: usize, j: usize, v: f64| -> String {
+        let mut text: String = format!("{} = {}", texts.x, x_labels[i]);
+        if clustered {
+            text += &format!("\n{} = {}", texts.hue, hue_labels[j]);
+        }
+        text + &format!("\n{what} = {}", unit(style, v))
+    };
+    let items: Vec<(String, String)> = if clustered {
+        hue_labels
             .iter()
             .enumerate()
             .map(|(j, hue)| (hue.to_string(), style.group_color(j, hue)))
-            .collect();
-        svg::legend(
-            &mut out,
-            &theme,
-            &items,
-            width - right + 16.0,
-            pad_top + 8.0,
-        );
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let sums: Vec<f64> = grid
+        .iter()
+        .map(|row| row.iter().filter(|v| v.is_finite() && **v > 0.0).sum())
+        .collect();
+    let (lo, hi): (f64, f64) = if stacked {
+        range(style, sums.iter().copied())
+    } else {
+        range(style, grid.iter().flatten().copied())
+    };
+    let show_values: bool = style.values.unwrap_or(!clustered);
+    let (x_name, y_name): (&str, &str) = names(style, texts);
+    let y_name: &str = if style.percent && style.ylabel.is_none() { "percent" } else { y_name };
+    let n: usize = x_labels.len().max(1);
+    let k: usize = if clustered && !stacked { hue_labels.len() } else { 1 };
+
+    if !style.horizontal {
+        let min_slot: f64 = if k > 1 {
+            k as f64 * MIN_CLUSTER_BAR / 0.62
+        } else {
+            48.0
+        }
+        .max(svg::label_width(&x_labels));
+        let mut l: Layout = layout(style, &subtitle, n, min_slot, &items);
+        let scale: YScale = YScale::new(lo, hi, l.top, l.plot_h);
+        let slot: f64 = l.plot_w / n as f64;
+        let tick: Tick = tick_mode(&mut l, &x_labels, slot);
+        let bar_w: f64 = if k > 1 { slot * 0.70 / k as f64 } else { slot * 0.58 };
+        let mut out: String = svg::card(&theme, &title, &subtitle, l.width, l.height);
+        scale.draw(&mut out, &theme, l.left, l.width - l.right);
+        for (i, row) in grid.iter().enumerate() {
+            let slot_x: f64 = l.left + i as f64 * slot;
+            let start: f64 = slot_x + (slot - bar_w * k as f64) / 2.0;
+            if stacked {
+                let mut sum: f64 = 0.0;
+                for (j, &v) in row.iter().enumerate() {
+                    if v.is_finite() && v > 0.0 {
+                        let (y0, y1): (f64, f64) = (scale.y(sum + v), scale.y(sum));
+                        out.push_str(&svg::rect(start, y0, bar_w, y1 - y0, &fill_of(i, j), &hover(i, j, v)));
+                        sum += v;
+                    }
+                }
+                if show_values && sum > 0.0 {
+                    let text: String = unit(style, sum);
+                    value_label(&mut out, &theme, start + bar_w / 2.0, scale.y(sum) - 8.0, &text);
+                }
+            } else {
+                for (j, &v) in row.iter().enumerate() {
+                    let x: f64 = start + j as f64 * bar_w;
+                    let w: f64 = if clustered { (bar_w - 1.5).max(1.0) } else { bar_w };
+                    out.push_str(&svg::bar(&scale, x, w, v, &fill_of(i, j), &hover(i, j, v)));
+                    if show_values && v.is_finite() {
+                        let y: f64 = if v >= 0.0 { scale.y(v) - 8.0 } else { scale.y(v) + 16.0 };
+                        value_label(&mut out, &theme, x + w / 2.0, y, &unit(style, v));
+                    }
+                }
+            }
+            let cx: f64 = slot_x + slot / 2.0;
+            svg::x_tick(&mut out, &theme, x_labels[i], cx, scale.bottom() + 22.0, slot, tick);
+        }
+        hlines(&mut out, &theme, style, &scale, &l);
+        finish(&mut out, &theme, style, (x_name, y_name), &items, &l);
+        return out;
     }
-    let x_name: &str = style.xlabel.as_deref().unwrap_or(&texts.x);
-    let y_axis: &str = style.ylabel.as_deref().unwrap_or(&texts.y);
-    svg::axis_names(
-        &mut out,
-        &theme,
-        x_name,
-        y_axis,
-        left + plot_w / 2.0,
-        pad_top + plot_h / 2.0,
-        height,
-    );
-    out.push_str("</svg>");
+
+    // Horizontal: categories down the left, values along the bottom.
+    let (card_w, card_h): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
+    let at: Legend = legend_at(style, &items);
+    let longest: f64 = x_labels.iter().map(|label| svg::text_px(label)).fold(0.0, f64::max);
+    let left: f64 = (longest.min(svg::MAX_LABEL) + 40.0).max(72.0);
+    let right: f64 = if at == Legend::Right { svg::legend_width(&items) } else { 36.0 };
+    let top_pad: f64 = if subtitle.is_empty() { 92.0 } else { 110.0 };
+    let width: f64 = card_w.max(left + 200.0 + right);
+    let legend_h: f64 = bottom_legend_h(at, &items, width);
+    let min_slot: f64 = if k > 1 { k as f64 * 12.0 / 0.7 } else { 28.0 };
+    let plot_h: f64 = (card_h - top_pad - 70.0 - legend_h).max(n as f64 * min_slot);
+    let l: Layout = Layout {
+        left,
+        right,
+        top: top_pad,
+        plot_w: width - left - right,
+        plot_h,
+        width,
+        height: top_pad + plot_h + 70.0 + legend_h,
+        legend_h,
+    };
+    let room: f64 = if show_values { 52.0 } else { 0.0 }; // value labels past the longest bar
+    let scale: XScale = XScale::new(lo, hi, l.left, l.plot_w - room);
+    let slot: f64 = l.plot_h / n as f64;
+    let bar_h: f64 = if k > 1 { slot * 0.70 / k as f64 } else { slot * 0.58 };
+    let bottom: f64 = l.top + l.plot_h;
+    let mut out: String = svg::card(&theme, &title, &subtitle, l.width, l.height);
+    scale.grid(&mut out, &theme, l.top, bottom);
+    scale.draw(&mut out, &theme, bottom + 22.0);
+    let end_label = |out: &mut String, x: f64, y: f64, anchor: &str, v: f64| {
+        out.push_str(&format!(
+            r##"<text x="{x:.2}" y="{:.2}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="{anchor}">{}</text>"##,
+            y + 4.0,
+            theme.value,
+            unit(style, v)
+        ));
+    };
+    for (i, row) in grid.iter().enumerate() {
+        let slot_y: f64 = l.top + i as f64 * slot;
+        let start: f64 = slot_y + (slot - bar_h * k as f64) / 2.0;
+        if stacked {
+            let mut sum: f64 = 0.0;
+            for (j, &v) in row.iter().enumerate() {
+                if v.is_finite() && v > 0.0 {
+                    let (x0, x1): (f64, f64) = (scale.x(sum), scale.x(sum + v));
+                    out.push_str(&svg::rect(x0, start, x1 - x0, bar_h, &fill_of(i, j), &hover(i, j, v)));
+                    sum += v;
+                }
+            }
+            if show_values && sum > 0.0 {
+                end_label(&mut out, scale.x(sum) + 6.0, start + bar_h / 2.0, "start", sum);
+            }
+        } else {
+            for (j, &v) in row.iter().enumerate() {
+                let y: f64 = start + j as f64 * bar_h;
+                let h: f64 = if clustered { (bar_h - 1.5).max(1.0) } else { bar_h };
+                out.push_str(&svg::hbar(&scale, y, h, v, &fill_of(i, j), &hover(i, j, v)));
+                if show_values && v.is_finite() {
+                    let (x, anchor): (f64, &str) = if v >= 0.0 {
+                        (scale.x(v) + 6.0, "start")
+                    } else {
+                        (scale.x(v) - 6.0, "end")
+                    };
+                    end_label(&mut out, x, y + h / 2.0, anchor, v);
+                }
+            }
+        }
+        let cy: f64 = slot_y + slot / 2.0 + 4.0;
+        svg::y_tick(&mut out, &theme, x_labels[i], l.left - 10.0, cy, l.left - 24.0);
+    }
+    for (v, label) in &style.hlines {
+        svg::ref_line(&mut out, &theme, false, scale.x(*v), l.top, bottom, label, *v);
+    }
+    finish(&mut out, &theme, style, (y_name, x_name), &items, &l);
     out
 }
 
-/// Indices of the categories to draw: `.order` first (else the stored order), then at most `top`.
-pub(crate) fn pick(labels: &[String], order: Option<&[String]>, top: usize) -> Vec<usize> {
+/// Indices of the categories to draw: `.order` if given, else the stored order re-sorted by
+/// `.sort` (`keys` are what "value" sorts by), then at most `top`.
+pub(crate) fn pick(labels: &[String], style: &Style, keys: &[f64], top: usize) -> Vec<usize> {
+    let mut rows: Vec<usize> = ordered(labels, style.order.as_deref());
+    if style.order.is_none() {
+        match style.sort {
+            Some(Sort::Value) => {
+                let key = |i: usize| keys.get(i).copied().filter(|v| v.is_finite());
+                let key = |i: usize| key(i).unwrap_or(f64::NEG_INFINITY);
+                rows.sort_by(|&a, &b| key(b).total_cmp(&key(a)));
+            }
+            Some(Sort::Name) => rows.sort_by(|&a, &b| by_name(&labels[a], &labels[b])),
+            Some(Sort::Count) | None => {}
+        }
+    }
+    rows.truncate(top);
+    rows
+}
+
+/// `order` (names missing from `labels` are skipped), else every label in the stored order.
+pub(crate) fn ordered(labels: &[String], order: Option<&[String]>) -> Vec<usize> {
     match order {
         Some(order) => order
             .iter()
             .filter_map(|name| labels.iter().position(|label| label == name))
-            .take(top)
             .collect(),
-        None => (0..labels.len().min(top)).collect(),
+        None => (0..labels.len()).collect(),
+    }
+}
+
+/// Numbers first, by size ("2" before "10"), then other names A to Z. A total order, so
+/// `sort_by` never sees an inconsistent comparison.
+fn by_name(a: &str, b: &str) -> Ordering {
+    match (a.parse::<f64>().ok(), b.parse::<f64>().ok()) {
+        (Some(x), Some(y)) => x.total_cmp(&y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.cmp(b),
     }
 }
 
@@ -539,7 +651,7 @@ pub(crate) fn render_pie(
         unreachable!("pie charts hold Series results");
     };
     let theme = style.theme();
-    let rows: Vec<usize> = pick(labels, style.order.as_deref(), style.top.unwrap_or(PIE_TOP));
+    let rows: Vec<usize> = pick(labels, style, values, style.top.unwrap_or(PIE_TOP));
     let mut slices: Vec<(&str, f64)> = rows
         .iter()
         .map(|&i| (labels[i].as_str(), values[i]))
@@ -609,4 +721,23 @@ pub(crate) fn render_pie(
     }
     out.push_str("</svg>");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pick_sorts_by_value_or_name_unless_ordered() {
+        let labels: Vec<String> = ["10", "2", "b", "a"].map(String::from).to_vec();
+        let keys: [f64; 4] = [1.0, f64::NAN, 3.0, 2.0];
+        let mut style: Style = Style::default();
+        assert_eq!(pick(&labels, &style, &keys, 30), [0, 1, 2, 3]);
+        style.sort = Some(Sort::Value);
+        assert_eq!(pick(&labels, &style, &keys, 3), [2, 3, 0]); // NaN last, then cut to 3
+        style.sort = Some(Sort::Name);
+        assert_eq!(pick(&labels, &style, &keys, 30), [1, 0, 3, 2]); // 2 before 10
+        style.order = Some(vec!["a".to_string(), "10".to_string()]);
+        assert_eq!(pick(&labels, &style, &keys, 30), [3, 0]);
+    }
 }

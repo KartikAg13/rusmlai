@@ -27,9 +27,11 @@ pub enum Chart {
         result: PlotResult,
         subtitle: String,
     },
+    /// `result` holds fine bins; `bins` is how many the chart draws.
     Hist {
         texts: Texts,
         result: PlotResult,
+        bins: usize,
         subtitle: String,
     },
     Box {
@@ -37,12 +39,14 @@ pub enum Chart {
         result: PlotResult,
         subtitle: String,
     },
-    /// Sampled rows: `points` are (x index, hue index, y).
+    /// Sampled rows: `points` are (x index, hue index, y), up to `MAX_SAMPLE` of the `rows`
+    /// rows with values; `.sample(n)` draws n of them.
     Strip {
         texts: Texts,
         x_labels: Vec<String>,
         hue_labels: Vec<String>,
         points: Vec<(usize, usize, f64)>,
+        rows: usize,
         subtitle: String,
     },
     /// `heatmap` and `corrplot`. `fixed` pins the color range (corrplot: -1 to 1).
@@ -54,12 +58,13 @@ pub enum Chart {
         subtitle: String,
     },
     /// `scatter`, `line` and `regplot`: `points` are (x, y, hue index); `fit` is (a, b) of
-    /// y = a + b·x.
+    /// y = a + b·x. Scatter and regplot points are sampled like `Strip` (`rows` > 0).
     Xy {
         name: &'static str,
         texts: Texts,
         hue_labels: Vec<String>,
         points: Vec<(f64, f64, usize)>,
+        rows: usize,
         fit: Option<(f64, f64)>,
         subtitle: String,
     },
@@ -91,11 +96,11 @@ impl Chart {
     pub(crate) fn render(&self, style: &Style) -> String {
         match self {
             Chart::Bar {
+                name,
                 texts,
                 result,
                 subtitle,
-                ..
-            } => bar::render(texts, result, subtitle, style),
+            } => bar::render(texts, result, subtitle, *name != "describe_bar", style),
             Chart::Pie {
                 texts,
                 result,
@@ -104,8 +109,9 @@ impl Chart {
             Chart::Hist {
                 texts,
                 result,
+                bins,
                 subtitle,
-            } => dist::render_hist(texts, result, subtitle, style),
+            } => dist::render_hist(texts, result, *bins, subtitle, style),
             Chart::Box {
                 texts,
                 result,
@@ -116,8 +122,9 @@ impl Chart {
                 x_labels,
                 hue_labels,
                 points,
+                rows,
                 subtitle,
-            } => dist::render_strip(texts, x_labels, hue_labels, points, subtitle, style),
+            } => dist::render_strip(texts, x_labels, hue_labels, points, *rows, subtitle, style),
             Chart::Matrix {
                 texts,
                 result,
@@ -130,16 +137,21 @@ impl Chart {
                 texts,
                 hue_labels,
                 points,
+                rows,
                 fit,
                 subtitle,
-            } => xy::render_xy(name, texts, hue_labels, points, *fit, subtitle, style),
+            } => xy::render_xy(name, texts, hue_labels, points, *rows, *fit, subtitle, style),
         }
     }
 
     /// The options each chart accepts (the table in docs/plots.md).
     pub(crate) fn check(&self, option: &'static str) -> Result<(), PlotError> {
         let allowed: bool = match self {
-            Chart::Bar { .. } => !matches!(option, ".cmap" | ".xlim"),
+            // .percent and .stacked need counts.
+            Chart::Bar { name, .. } => {
+                !matches!(option, ".cmap" | ".xlim" | ".sample" | ".vline")
+                    && (*name == "count" || !matches!(option, ".percent" | ".stacked"))
+            }
             Chart::Pie { .. } => matches!(
                 option,
                 ".title"
@@ -152,10 +164,24 @@ impl Chart {
                     | ".order"
                     | ".top"
                     | ".values"
+                    | ".sort"
             ),
-            Chart::Hist { .. } => !matches!(option, ".order" | ".top" | ".cmap" | ".xlim"),
+            Chart::Hist { .. } => !matches!(
+                option,
+                ".order" | ".top" | ".cmap" | ".sort" | ".sample" | ".horizontal"
+            ),
             Chart::Box { .. } | Chart::Strip { .. } => {
-                !matches!(option, ".values" | ".cmap" | ".xlim")
+                let sampled: bool = matches!(self, Chart::Strip { .. });
+                !matches!(
+                    option,
+                    ".values"
+                        | ".cmap"
+                        | ".xlim"
+                        | ".horizontal"
+                        | ".percent"
+                        | ".stacked"
+                        | ".vline"
+                ) && (sampled || option != ".sample")
             }
             Chart::Matrix { .. } => matches!(
                 option,
@@ -168,7 +194,19 @@ impl Chart {
                     | ".cmap"
                     | ".values"
             ),
-            Chart::Xy { .. } => !matches!(option, ".order" | ".top" | ".values" | ".cmap"),
+            Chart::Xy { name, .. } => {
+                !matches!(
+                    option,
+                    ".order"
+                        | ".top"
+                        | ".values"
+                        | ".cmap"
+                        | ".sort"
+                        | ".horizontal"
+                        | ".percent"
+                        | ".stacked"
+                ) && !(option == ".sample" && *name == "line")
+            }
         };
         if allowed {
             Ok(())

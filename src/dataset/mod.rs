@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use polars::frame::DataFrame;
+use polars::frame::{DataFrame, column::Column};
 
 use crate::{
     dataset::{error::DatasetError, reader::Reader},
@@ -53,8 +53,12 @@ impl Dataset {
                 });
             }
         }
+        let picked: Vec<Column> = columns
+            .iter()
+            .map(|name| self.column(name).cloned())
+            .collect::<Result<_, _>>()?;
         Ok(Self {
-            dataframe: self.dataframe.select(columns)?,
+            dataframe: DataFrame::new(self.dataframe.height(), picked)?,
             metadata: self.metadata.select(columns),
         })
     }
@@ -125,7 +129,25 @@ impl Dataset {
     /// The column's info and stats; stats that aren't there yet are computed now.
     fn try_stats(&self, column_name: &str) -> Result<(&ColumnInfo, &ColumnStats), DatasetError> {
         let info: &ColumnInfo = self.try_column_info(column_name)?;
-        Ok((info, info.ensure_stats(self.dataframe.column(column_name)?)?))
+        let stats: &ColumnStats = match info.stats.get() {
+            Some(stats) => stats,
+            None => info.ensure_stats(self.column(column_name)?)?,
+        };
+        Ok((info, stats))
+    }
+
+    /// A column found by comparing names, not through Polars' name index. evcxr builds each
+    /// notebook cell with its own copy of Polars, and an index made by the cell that read the
+    /// table gives wrong answers in later cells ("not found" for a column that exists).
+    fn column(&self, name: &str) -> Result<&Column, DatasetError> {
+        self.dataframe
+            .columns()
+            .iter()
+            .find(|column| column.name().as_str() == name)
+            .ok_or_else(|| DatasetError::ColumnNotFound {
+                requested: name.to_string(),
+                available: self.columns().join(","),
+            })
     }
 
     pub fn metadata(&self, skip_columns: &[&str]) {

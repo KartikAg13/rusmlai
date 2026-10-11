@@ -13,7 +13,7 @@ use crate::{
         result::PlotResult,
         spec::{Estimator, PlotSpec},
         style::Style,
-        svg::{self, HEIGHT, WIDTH},
+        svg::{self, HEIGHT, Tick, WIDTH},
     },
 };
 
@@ -224,9 +224,16 @@ pub(crate) fn render_matrix(
     };
     let theme = style.theme();
     let (card_w, card_h): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
-    let (left, top, right, bottom): (f64, f64, f64, f64) = (110.0, 100.0, 90.0, 70.0);
+    // Row names fit the left margin; column names tilt up when wider than a cell, and the top
+    // and right margins grow for them.
+    let longest: f64 = y_labels.iter().map(|label| svg::text_px(label)).fold(0.0, f64::max);
+    let (left, bottom): (f64, f64) = ((longest.min(svg::MAX_LABEL) + 40.0).max(110.0), 70.0);
     let (nx, ny): (usize, usize) = (x_labels.len().max(1), y_labels.len().max(1));
-    let cell_w: f64 = ((card_w - left - right) / nx as f64).max(28.0);
+    let cell = |right: f64| ((card_w - left - right) / nx as f64).max(28.0);
+    let tick: Tick = if svg::tilts(x_labels, cell(100.0)) { Tick::Up } else { Tick::Flat };
+    let room: f64 = if tick == Tick::Up { svg::tilt_room(x_labels) } else { 0.0 };
+    let (top, right): (f64, f64) = (100.0f64.max(92.0 + room), 100.0f64.max(room + 8.0));
+    let cell_w: f64 = cell(right);
     let cell_h: f64 = ((card_h - top - bottom) / ny as f64).max(28.0);
     let width: f64 = (left + cell_w * nx as f64 + right).max(card_w);
     let height: f64 = (top + cell_h * ny as f64 + bottom).max(card_h);
@@ -267,18 +274,12 @@ pub(crate) fn render_matrix(
             left + (c as f64 + 0.5) * cell_w,
             top - 12.0,
             cell_w,
+            tick,
         );
     }
     for (r, y_label) in y_labels.iter().enumerate() {
-        let shown: String = svg::shorten(y_label, left - 16.0);
-        out.push_str(&format!(
-            r##"<text x="{}" y="{}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="end"><title>{}</title>{}</text>"##,
-            left - 10.0,
-            top + (r as f64 + 0.55) * cell_h,
-            theme.tick,
-            escape(y_label),
-            escape(&shown)
-        ));
+        let y: f64 = top + (r as f64 + 0.55) * cell_h;
+        svg::y_tick(&mut out, &theme, y_label, left - 10.0, y, left - 16.0);
         for (c, x_label) in x_labels.iter().enumerate() {
             let v: f64 = grid[r][c];
             if !v.is_finite() {
@@ -320,6 +321,17 @@ pub(crate) fn render_matrix(
             }
         }
     }
+    let (lo, hi): (f64, f64) = if diverging { (-reach, reach) } else { (vmin, vmax) };
+    svg::colorbar(
+        &mut out,
+        &theme,
+        &stops,
+        lo,
+        hi,
+        left + cell_w * nx as f64 + 24.0,
+        top,
+        (cell_h * ny as f64).max(120.0),
+    );
     let x_name: &str = style.xlabel.as_deref().unwrap_or(&texts.x);
     let y_name: &str = style.ylabel.as_deref().unwrap_or(&texts.y);
     if !x_name.is_empty() || !y_name.is_empty() {
