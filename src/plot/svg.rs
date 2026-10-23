@@ -1,17 +1,37 @@
 //! Shared drawing code. Every chart builds its SVG from these pieces, with the colors of a `Theme`.
 
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use std::cmp::Ordering;
 
-use crate::{display::escape, plot::style::Theme};
+use unicode_width::UnicodeWidthChar;
+
+use crate::{
+    display::escape,
+    plot::{
+        BOUND,
+        style::{Legend, Sort, Style, Theme},
+    },
+};
 
 pub(crate) const WIDTH: f64 = 720.0;
 pub(crate) const HEIGHT: f64 = 469.0;
 pub(crate) const MIN_CLUSTER_BAR: f64 = 16.0;
+pub(crate) const TOP: usize = 30; // categories drawn by default
 const BAR_RADIUS: f64 = 6.0;
 const HEADROOM: f64 = 22.0;
-// ponytail: one average width per character cell (wide CJK = 2 cells); measure real glyphs if
-// labels still clip.
-pub(crate) const CHAR_WIDTH: f64 = 7.0; // average width of a 12 px sans-serif character
+/// Advance widths of printable ASCII (space to `~`) in thousandths of an em. Each is the widest
+/// of Noto Sans, DejaVu Sans and Liberation Sans (Arial's metrics), the fonts `sans-serif`
+/// usually is, so a name sized with them never clips in any of these.
+#[rustfmt::skip]
+const ASCII_EM: [u16; 95] = [
+    318, 401, 460, 838, 636, 950, 780, 275, 390, 390, 551, 838, 318, 361, 318, 372,
+    636, 636, 636, 636, 636, 636, 636, 636, 636, 636, 337, 337, 838, 838, 838, 556,
+    1015, 684, 686, 722, 770, 667, 611, 778, 752, 339, 500, 667, 557, 907, 760, 787,
+    667, 787, 722, 667, 611, 732, 684, 989, 685, 667, 685, 390, 372, 390, 838, 556,
+    500, 613, 635, 550, 635, 615, 352, 635, 634, 278, 278, 579, 278, 974, 634, 612,
+    635, 635, 413, 521, 392, 634, 592, 818, 592, 592, 525, 636, 551, 636, 838,
+];
+const CHAR_WIDTH: f64 = 7.0; // one character cell outside ASCII at 12 px (wide CJK = 2 cells)
+const ELLIPSIS: f64 = 12.0; // "…" is 1 em in these fonts
 
 /// Opens the card: background, title and subtitle. Square corners: Fedora's viewer paints
 /// transparent corners white.
@@ -20,16 +40,22 @@ pub(crate) fn card(theme: &Theme, title: &str, subtitle: &str, width: f64, heigh
     let mut svg: String = format!(
         r##"<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" style="background-color:{bg}"><rect x="0" y="0" width="{w}" height="{h}" fill="{bg}"/>"##
     );
+    // Text wider than the card ends in "…" (the full text is on hover). `shorten` counts 12 px
+    // characters; the title is 22 px bold (about 8% wider), the subtitle 13 px.
+    let fit = |text: &str, scale: f64| {
+        let shown: String = shorten(text, (width - 72.0) / scale);
+        format!("<title>{}</title>{}", escape(text), escape(&shown))
+    };
     svg.push_str(&format!(
         r##"<text x="36" y="48" font-family="sans-serif" font-size="22" font-weight="bold" fill="{}">{}</text>"##,
         theme.title,
-        escape(title)
+        fit(title, 22.0 / 12.0 * 1.08)
     ));
     if !subtitle.is_empty() {
         svg.push_str(&format!(
             r##"<text x="36" y="70" font-family="sans-serif" font-size="13" fill="{}">{}</text>"##,
             theme.tick,
-            escape(subtitle)
+            fit(subtitle, 13.0 / 12.0)
         ));
     }
     svg
@@ -71,12 +97,26 @@ pub(crate) enum Tick {
 
 /// Width of a 12 px name, in pixels.
 pub(crate) fn text_px(label: &str) -> f64 {
-    label.width() as f64 * CHAR_WIDTH
+    label.chars().map(char_px).sum()
+}
+
+fn char_px(c: char) -> f64 {
+    match c {
+        ' '..='~' => f64::from(ASCII_EM[c as usize - 32]) * 0.012,
+        _ => c.width().unwrap_or(0) as f64 * CHAR_WIDTH,
+    }
+}
+
+/// Card width that fits a 13 px subtitle drawn from x = 36.
+pub(crate) fn subtitle_width(subtitle: &str) -> f64 {
+    text_px(subtitle) * 13.0 / 12.0 + 72.0
 }
 
 /// True when a name is wider than its slot: then every name of the chart tilts.
 pub(crate) fn tilts(labels: &[impl AsRef<str>], slot: f64) -> bool {
-    labels.iter().any(|label| text_px(label.as_ref()) > slot - 6.0)
+    labels
+        .iter()
+        .any(|label| text_px(label.as_ref()) > slot - 6.0)
 }
 
 /// How far one tilted name reaches down (or up), and sideways.
@@ -113,11 +153,18 @@ pub(crate) fn x_tick(
     tick: Tick,
 ) {
     let (shown, y, place): (String, f64, String) = match tick {
-        Tick::Flat => (shorten(label, slot - 6.0), y, r##"text-anchor="middle""##.to_string()),
+        Tick::Flat => (
+            shorten(label, slot - 6.0),
+            y,
+            r##"text-anchor="middle""##.to_string(),
+        ),
         Tick::Down => (
             shorten(label, MAX_LABEL),
             y - 8.0,
-            format!(r##"text-anchor="end" transform="rotate(-45 {cx} {})""##, y - 8.0),
+            format!(
+                r##"text-anchor="end" transform="rotate(-45 {cx} {})""##,
+                y - 8.0
+            ),
         ),
         Tick::Up => (
             shorten(label, MAX_LABEL),
@@ -135,14 +182,14 @@ pub(crate) fn x_tick(
 
 /// `label` cut with "…" to fit `max_px`. Wide characters (Chinese, Japanese, Korean) count twice.
 pub(crate) fn shorten(label: &str, max_px: f64) -> String {
-    if label.width() as f64 * CHAR_WIDTH <= max_px {
+    if text_px(label) <= max_px {
         return label.to_string();
     }
-    let mut used: f64 = CHAR_WIDTH; // the "…"
+    let mut used: f64 = ELLIPSIS;
     label
         .chars()
         .take_while(|c| {
-            used += c.width().unwrap_or(0) as f64 * CHAR_WIDTH;
+            used += char_px(*c);
             used <= max_px
         })
         .collect::<String>()
@@ -151,12 +198,23 @@ pub(crate) fn shorten(label: &str, max_px: f64) -> String {
 
 /// Slot width that fits the longest label, at most 140 px.
 pub(crate) fn label_width(labels: &[impl AsRef<str>]) -> f64 {
-    let longest: usize = labels
+    let longest: f64 = labels
         .iter()
-        .map(|label| label.as_ref().width())
-        .max()
-        .unwrap_or(0);
-    (longest as f64 * CHAR_WIDTH + 8.0).min(140.0)
+        .map(|label| text_px(label.as_ref()))
+        .fold(0.0, f64::max);
+    (longest + 8.0).min(140.0)
+}
+
+/// Legend rows for the drawn hue groups `cols` of `names`, in the group colors.
+pub(crate) fn legend_items(
+    style: &Style,
+    names: &[String],
+    cols: &[usize],
+) -> Vec<(String, String)> {
+    cols.iter()
+        .enumerate()
+        .map(|(s, &j)| (names[j].clone(), style.group_color(s, &names[j])))
+        .collect()
 }
 
 /// Color squares with names, one per row.
@@ -205,7 +263,7 @@ fn flow(items: &[(String, String)], width: f64) -> Vec<(f64, usize)> {
     items
         .iter()
         .map(|(name, _)| {
-            let w: f64 = 18.0 + name.width() as f64 * CHAR_WIDTH + 20.0;
+            let w: f64 = 18.0 + text_px(name) + 20.0;
             if x > 0.0 && x + w > width {
                 (x, row) = (0.0, row + 1);
             }
@@ -229,7 +287,11 @@ pub(crate) fn ref_line(
     label: &str,
     value: f64,
 ) {
-    let (x1, y1, x2, y2): (f64, f64, f64, f64) = if across { (a, at, b, at) } else { (at, a, at, b) };
+    let (x1, y1, x2, y2): (f64, f64, f64, f64) = if across {
+        (a, at, b, at)
+    } else {
+        (at, a, at, b)
+    };
     let (bg, fg): (&str, &str) = (theme.background, theme.title);
     let hover: String = if label.is_empty() {
         format_value(value)
@@ -248,7 +310,7 @@ pub(crate) fn ref_line(
             (at + 8.0, a + 14.0, "start")
         };
         // textLength makes the text exactly `text_w` wide in any font, so the box fits it.
-        let text_w: f64 = label.width() as f64 * 6.2;
+        let text_w: f64 = text_px(label);
         let bx: f64 = if across { tx - text_w - 4.0 } else { tx - 4.0 };
         svg.push_str(&format!(
             r##"<rect x="{bx:.2}" y="{:.2}" width="{:.2}" height="16" rx="3" fill="{bg}" fill-opacity="0.85"/><text x="{tx:.2}" y="{ty:.2}" font-family="sans-serif" font-size="12" fill="{fg}" text-anchor="{anchor}" textLength="{text_w:.2}" lengthAdjust="spacing">{}</text>"##,
@@ -282,8 +344,10 @@ pub(crate) fn y_tick(svg: &mut String, theme: &Theme, label: &str, x: f64, y: f6
 
 /// Numbers on marks: the old two decimals, scientific only where two decimals would show 0.00.
 pub(crate) fn format_value(v: f64) -> String {
-    if !v.is_finite() {
+    if v.is_nan() {
         "nan".to_string()
+    } else if v.is_infinite() || v.abs() >= 1e15 {
+        format!("{v:.2e}") // `as i64` below saturates past 9.2e18
     } else if (v - v.round()).abs() < 1e-9 {
         format!("{}", v.round() as i64)
     } else if v.abs() < 0.01 {
@@ -294,7 +358,7 @@ pub(crate) fn format_value(v: f64) -> String {
 }
 
 /// Axis ticks: like `format_value`, with one decimal from 100 up.
-fn format_tick(v: f64) -> String {
+pub(crate) fn format_tick(v: f64) -> String {
     if v.abs() >= 100.0 && (v - v.round()).abs() >= 1e-9 {
         format!("{v:.1}")
     } else {
@@ -317,6 +381,41 @@ fn nice_step(span: f64, target_ticks: usize) -> f64 {
     nice * magnitude
 }
 
+/// About `target` round tick values inside [lo, hi] (for small panels that draw their own axes).
+pub(crate) fn nice_ticks(lo: f64, hi: f64, target: usize) -> Vec<f64> {
+    multiples(lo, hi, nice_step(hi - lo, target))
+}
+
+/// The multiples of `step` in [lo, hi], at most 50. Counting with `k += 1.0` never ends once
+/// `lo / step` passes 2^53 or the span is infinite: `k` stops changing and memory fills up.
+fn multiples(lo: f64, hi: f64, step: f64) -> Vec<f64> {
+    let first: f64 = (lo / step).ceil();
+    let mut ticks: Vec<f64> = (0..50)
+        .map(|k| (first + f64::from(k)) * step)
+        .take_while(|t| *t <= hi + step * 1e-9)
+        .collect();
+    ticks.dedup(); // equal when the step is below the precision of lo
+    ticks
+}
+
+/// `hi`, or a little above `lo` for an empty range (a constant column), so no scale divides by 0.
+/// `lo + 1.0` alone equals `lo` past 2^53.
+fn top_of(lo: f64, hi: f64) -> f64 {
+    if hi - lo > 1e-9 {
+        hi
+    } else {
+        lo + lo.abs().max(1e9) * 1e-9
+    }
+}
+
+/// An SVG path through `points` ("M x,y L x,y ...").
+pub(crate) fn polyline(points: impl Iterator<Item = (f64, f64)>) -> String {
+    points
+        .enumerate()
+        .map(|(k, (x, y))| format!("{}{x:.2},{y:.2}", if k == 0 { "M" } else { " L" }))
+        .collect()
+}
+
 /// Linear value axis over [lo, hi], negative values included.
 pub(crate) struct YScale {
     lo: f64,
@@ -328,7 +427,7 @@ pub(crate) struct YScale {
 
 impl YScale {
     pub(crate) fn new(lo: f64, hi: f64, top: f64, height: f64) -> Self {
-        let hi: f64 = if hi - lo > 1e-9 { hi } else { lo + 1.0 };
+        let hi: f64 = top_of(lo, hi);
         Self {
             lo,
             hi,
@@ -357,14 +456,14 @@ impl YScale {
     pub(crate) fn draw(&self, svg: &mut String, theme: &Theme, left: f64, right: f64) {
         let span: f64 = self.hi - self.lo;
         let mut ticks: Vec<f64> = Vec::new();
-        let mut k: f64 = (self.lo / self.step).ceil();
-        if k * self.step - self.lo > span * 0.02 {
+        if (self.lo / self.step).ceil() * self.step - self.lo > span * 0.02 {
             ticks.push(self.lo);
         }
-        while k * self.step < self.lo + span * 0.92 {
-            ticks.push(k * self.step);
-            k += 1.0;
-        }
+        ticks.extend(
+            multiples(self.lo, self.hi, self.step)
+                .into_iter()
+                .take_while(|t| *t < self.lo + span * 0.92),
+        );
         if ticks.last().is_none_or(|last| self.hi - last > span * 0.02) {
             ticks.push(self.hi);
         }
@@ -444,7 +543,7 @@ pub(crate) struct XScale {
 
 impl XScale {
     pub(crate) fn new(lo: f64, hi: f64, left: f64, width: f64) -> Self {
-        let hi: f64 = if hi - lo > 1e-9 { hi } else { lo + 1.0 };
+        let hi: f64 = top_of(lo, hi);
         Self {
             lo,
             hi,
@@ -460,13 +559,7 @@ impl XScale {
     }
 
     fn ticks(&self) -> Vec<f64> {
-        let mut ticks: Vec<f64> = Vec::new();
-        let mut k: f64 = (self.lo / self.step).ceil();
-        while k * self.step <= self.hi + self.step * 1e-9 {
-            ticks.push(k * self.step);
-            k += 1.0;
-        }
-        ticks
+        multiples(self.lo, self.hi, self.step)
     }
 
     /// Tick labels under the plot at row `y`.
@@ -539,14 +632,12 @@ pub(crate) fn colorbar(
     let span: f64 = hi - lo;
     let mut ticks: Vec<f64> = vec![lo];
     if span > 1e-12 {
-        let step: f64 = nice_step(span, 4);
-        let mut k: f64 = (lo / step).ceil();
-        while k * step < hi - span * 0.06 {
-            if k * step > lo + span * 0.06 {
-                ticks.push(k * step);
-            }
-            k += 1.0;
-        }
+        let inside = |t: &f64| *t > lo + span * 0.06 && *t < hi - span * 0.06;
+        ticks.extend(
+            multiples(lo, hi, nice_step(span, 4))
+                .into_iter()
+                .filter(inside),
+        );
         ticks.push(hi);
     }
     for t in ticks {
@@ -589,6 +680,219 @@ fn rgb(hex: &str) -> [f64; 3] {
     [(n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF].map(|v| v as f64)
 }
 
+/// The lowest and highest finite value; (inf, -inf) when there is none.
+pub(crate) fn extent(values: impl Iterator<Item = f64>) -> (f64, f64) {
+    values
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(-BOUND, BOUND))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(v), hi.max(v))
+        })
+}
+
+/// Padding, card size and plot area shared by the charts. `legend_h` is the room a bottom
+/// legend takes under the axis name.
+pub(crate) struct Layout {
+    pub left: f64,
+    pub right: f64,
+    pub top: f64,
+    pub plot_w: f64,
+    pub plot_h: f64,
+    pub width: f64,
+    pub height: f64,
+    pub legend_h: f64,
+}
+
+/// `items` is the legend: right of the plot, under it, or nowhere (`.legend`).
+pub(crate) fn layout(
+    style: &Style,
+    subtitle: &str,
+    slots: usize,
+    min_slot: f64,
+    items: &[(String, String)],
+) -> Layout {
+    let (card_w, height): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
+    let at: Legend = legend_at(style, items);
+    let (left, top): (f64, f64) = (72.0, if subtitle.is_empty() { 92.0 } else { 110.0 });
+    let right: f64 = if at == Legend::Right {
+        legend_width(items)
+    } else {
+        36.0
+    };
+    let plot_w: f64 =
+        (card_w.max(subtitle_width(subtitle)) - left - right).max(slots.max(1) as f64 * min_slot);
+    let width: f64 = left + plot_w + right;
+    let legend_h: f64 = bottom_legend_h(at, items, width);
+    Layout {
+        left,
+        right,
+        top,
+        plot_w,
+        plot_h: height - top - 70.0 - legend_h,
+        width,
+        height,
+        legend_h,
+    }
+}
+
+/// Tilts the category names when one is wider than its slot. The card grows taller for them
+/// (the flat row already has about 18 px), and the plot moves right when a name near the left
+/// would hang past the card's edge.
+pub(crate) fn tick_mode(l: &mut Layout, labels: &[impl AsRef<str>], slot: f64) -> Tick {
+    if !tilts(labels, slot) {
+        return Tick::Flat;
+    }
+    l.height += (tilt_room(labels) - 18.0).max(0.0);
+    let shift: f64 = labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| tilt_reach(label.as_ref()) - (i as f64 + 0.5) * slot + 8.0 - l.left)
+        .fold(0.0, f64::max);
+    l.left += shift;
+    l.width += shift;
+    Tick::Down
+}
+
+/// Where the legend goes: nowhere without items, else `.legend` (right by default).
+pub(crate) fn legend_at(style: &Style, items: &[(String, String)]) -> Legend {
+    if items.is_empty() {
+        Legend::None
+    } else {
+        style.legend.unwrap_or(Legend::Right)
+    }
+}
+
+pub(crate) fn bottom_legend_h(at: Legend, items: &[(String, String)], width: f64) -> f64 {
+    if at == Legend::Bottom {
+        legend_rows(items, width - 72.0) as f64 * 20.0 + 8.0
+    } else {
+        0.0
+    }
+}
+
+/// The value axis: `.ylim`, else the data range with 0 and every `.hline` included.
+pub(crate) fn range(style: &Style, values: impl Iterator<Item = f64>) -> (f64, f64) {
+    let lines = style.hlines.iter().map(|line| line.0);
+    style
+        .ylim
+        .unwrap_or_else(|| extent(values.chain(lines).chain([0.0])))
+}
+
+/// `.hline` lines across the plot.
+pub(crate) fn hlines(out: &mut String, theme: &Theme, style: &Style, scale: &YScale, l: &Layout) {
+    for (v, label) in &style.hlines {
+        ref_line(
+            out,
+            theme,
+            true,
+            scale.y(*v),
+            l.left,
+            l.width - l.right,
+            label,
+            *v,
+        );
+    }
+}
+
+/// 100 / the sum of the finite values with `.percent`, else 1.
+pub(crate) fn percent_factor(style: &Style, values: impl Iterator<Item = f64>) -> f64 {
+    if !style.percent {
+        return 1.0;
+    }
+    let total: f64 = values.filter(|v| v.is_finite()).sum();
+    if total > 0.0 { 100.0 / total } else { 0.0 }
+}
+
+/// A value as a label: "12.5%" with `.percent`.
+pub(crate) fn unit(style: &Style, v: f64) -> String {
+    if style.percent {
+        format!("{}%", format_value(v))
+    } else {
+        format_value(v)
+    }
+}
+
+/// Legend, axis names, and the closing tag.
+pub(crate) fn finish(
+    out: &mut String,
+    theme: &Theme,
+    style: &Style,
+    (x_name, y_name): (&str, &str),
+    items: &[(String, String)],
+    l: &Layout,
+) {
+    match legend_at(style, items) {
+        Legend::Right => legend(out, theme, items, l.width - l.right + 16.0, l.top + 8.0),
+        Legend::Bottom => legend_flow(
+            out,
+            theme,
+            items,
+            36.0,
+            l.height - l.legend_h + 12.0,
+            l.width - 72.0,
+        ),
+        Legend::None => {}
+    }
+    axis_names(
+        out,
+        theme,
+        x_name,
+        y_name,
+        l.left + l.plot_w / 2.0,
+        l.top + l.plot_h / 2.0,
+        l.height - l.legend_h,
+    );
+    out.push_str("</svg>");
+}
+
+pub(crate) fn value_label(out: &mut String, theme: &Theme, x: f64, y: f64, text: &str) {
+    out.push_str(&format!(
+        r##"<text x="{x}" y="{y}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="middle">{text}</text>"##,
+        theme.value
+    ));
+}
+
+/// Indices of the categories to draw: `.order` if given, else the stored order re-sorted by
+/// `.sort` (`keys` are what "value" sorts by), then at most `top`.
+pub(crate) fn pick(labels: &[String], style: &Style, keys: &[f64], top: usize) -> Vec<usize> {
+    let mut rows: Vec<usize> = ordered(labels, style.order.as_deref());
+    if style.order.is_none() {
+        match style.sort {
+            Some(Sort::Value) => {
+                let key = |i: usize| keys.get(i).copied().filter(|v| v.is_finite());
+                let key = |i: usize| key(i).unwrap_or(f64::NEG_INFINITY);
+                rows.sort_by(|&a, &b| key(b).total_cmp(&key(a)));
+            }
+            Some(Sort::Name) => rows.sort_by(|&a, &b| by_name(&labels[a], &labels[b])),
+            Some(Sort::Count) | None => {}
+        }
+    }
+    rows.truncate(top);
+    rows
+}
+
+/// `order` (names missing from `labels` are skipped), else every label in the stored order.
+pub(crate) fn ordered(labels: &[String], order: Option<&[String]>) -> Vec<usize> {
+    match order {
+        Some(order) => order
+            .iter()
+            .filter_map(|name| labels.iter().position(|label| label == name))
+            .collect(),
+        None => (0..labels.len()).collect(),
+    }
+}
+
+/// Numbers first, by size ("2" before "10"), then other names A to Z. A total order, so
+/// `sort_by` never sees an inconsistent comparison.
+fn by_name(a: &str, b: &str) -> Ordering {
+    match (a.parse::<f64>().ok(), b.parse::<f64>().ok()) {
+        (Some(x), Some(y)) => x.total_cmp(&y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => a.cmp(b),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,7 +910,22 @@ mod tests {
     #[test]
     fn shorten_counts_wide_characters_twice() {
         assert_eq!(shorten("short", 100.0), "short");
-        assert_eq!(shorten("abcdefghij", 6.0 * CHAR_WIDTH), "abcde…");
-        assert_eq!(shorten("中文中文中文", 6.0 * CHAR_WIDTH), "中文…");
+        assert_eq!(shorten("abcdefghij", 42.0), "abcd…");
+        assert_eq!(shorten("中文中文中文", 42.0), "中文…");
+        assert!(text_px("MMMM") > 3.0 * text_px("llll")); // per-glyph widths, not one average
+    }
+
+    #[test]
+    fn pick_sorts_by_value_or_name_unless_ordered() {
+        let labels: Vec<String> = ["10", "2", "b", "a"].map(String::from).to_vec();
+        let keys: [f64; 4] = [1.0, f64::NAN, 3.0, 2.0];
+        let mut style: Style = Style::default();
+        assert_eq!(pick(&labels, &style, &keys, 30), [0, 1, 2, 3]);
+        style.sort = Some(Sort::Value);
+        assert_eq!(pick(&labels, &style, &keys, 3), [2, 3, 0]); // NaN last, then cut to 3
+        style.sort = Some(Sort::Name);
+        assert_eq!(pick(&labels, &style, &keys, 30), [1, 0, 3, 2]); // 2 before 10
+        style.order = Some(vec!["a".to_string(), "10".to_string()]);
+        assert_eq!(pick(&labels, &style, &keys, 30), [3, 0]);
     }
 }

@@ -27,9 +27,10 @@ impl ColumnInfo {
     }
 
     pub fn with_stats(column: &Column, stats: ColumnStats) -> Self {
-        let info: ColumnInfo = ColumnInfo::new(column);
-        let _ = info.stats.set(stats);
-        info
+        ColumnInfo {
+            stats: OnceLock::from(stats),
+            ..ColumnInfo::new(column)
+        }
     }
 
     /// The column's stats, computed now if they aren't there yet.

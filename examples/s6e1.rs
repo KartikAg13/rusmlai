@@ -8,7 +8,7 @@ fn main() {
     dataset.describe();
     dataset.info();
 
-    // Each chart saves itself to tests/fixtures/s6e1/metadata/plots/{title}.svg.
+    // Each chart saves itself to tests/fixtures/s6e1/metadata/plots/{title}.png.
 
     // Who the students are: the default dark card, one rusmlai color per category.
     dataset.count("course", "").title("Students per course");
@@ -169,6 +169,36 @@ fn main() {
         .color("tab:orange")
         .hline(62.51, "mean score")
         .vline(4.0, "4 hours");
+
+    // Shapes and gaps: pair plot, densities, violins, a Q-Q plot, missing values.
+    dataset
+        .pairplot(
+            &[
+                "study_hours",
+                "class_attendance",
+                "sleep_hours",
+                "exam_score",
+            ],
+            "study_method",
+        )
+        .title("How the numbers move together");
+    dataset
+        .kdeplot("exam_score", "sleep_quality")
+        .title("Score density by sleep quality")
+        .hue_order(&["poor", "average", "good"]);
+    dataset
+        .hist("exam_score", "", 30)
+        .title("Exam scores with a density line")
+        .kde();
+    dataset
+        .violinplot("course", "exam_score", "")
+        .title("Score shapes by course")
+        .sort("value");
+    dataset
+        .qqplot("exam_score")
+        .title("Are exam scores normal?");
+    dataset.missing().title("Missing values per column");
+    dataset.missing_matrix();
 
     // An explicit path replaces the auto-save; show() also opens the viewer.
     dataset

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// The cached numbers of a chart, not its SVG. A missing group is NaN, never 0.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PlotResult {
     Series {
@@ -34,6 +35,23 @@ pub enum PlotResult {
         boxes: Vec<Vec<[f64; 5]>>,
         outliers: Vec<Vec<Vec<f64>>>,
     },
+}
+
+impl PlotResult {
+    /// True when there is nothing to draw: every value is NaN (or every count 0).
+    pub(crate) fn is_empty(&self) -> bool {
+        let finite = |v: &f64| v.is_finite();
+        !match self {
+            PlotResult::Series { values, .. } => values.iter().any(finite),
+            PlotResult::Clustered { grid, .. } | PlotResult::Matrix { grid, .. } => {
+                grid.iter().flatten().any(finite)
+            }
+            PlotResult::Hist { counts, .. } => counts.iter().flatten().any(|&n| n > 0.0),
+            PlotResult::Boxes { boxes, .. } => {
+                boxes.iter().flatten().any(|five| five[2].is_finite())
+            }
+        }
+    }
 }
 
 fn nan_vec<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<f64>, D::Error> {

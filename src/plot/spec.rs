@@ -1,8 +1,9 @@
 use polars::lazy::dsl::{Expr, col};
 use serde::{Deserialize, Serialize};
 
-use crate::plot::error::PlotError;
+use crate::plot::{error::PlotError, optional};
 
+/// How a bar or heatmap cell sums up its values: the `estimator` argument as a type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Estimator {
@@ -12,9 +13,11 @@ pub enum Estimator {
     Max,
     Std,
     Count,
+    Sum,
 }
 
 impl Estimator {
+    /// The Polars aggregation of `column`. Std is the sample std (ddof 1), like pandas.
     pub fn expr(self, column: &str) -> Expr {
         match self {
             Self::Mean => col(column).mean(),
@@ -23,33 +26,50 @@ impl Estimator {
             Self::Max => col(column).max(),
             Self::Std => col(column).std(1),
             Self::Count => col(column).count(),
+            Self::Sum => col(column).sum(),
         }
     }
 
+    /// The name users pass, for titles and hover text: "mean", "std", ...
     pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Mean => "mean",
-            Self::Median => "median",
-            Self::Min => "min",
-            Self::Max => "max",
-            Self::Std => "std",
-            Self::Count => "count",
-        }
+        ESTIMATORS
+            .iter()
+            .find(|(_, e)| *e == self)
+            .map_or("", |(name, _)| name)
     }
 
+    /// The estimator with this exact name, or `PlotError::UnknownEstimator`.
     pub fn parse(raw: &str) -> Result<Self, PlotError> {
-        match raw {
-            "mean" => Ok(Self::Mean),
-            "median" => Ok(Self::Median),
-            "min" => Ok(Self::Min),
-            "max" => Ok(Self::Max),
-            "std" => Ok(Self::Std),
-            "count" => Ok(Self::Count),
-            _ => Err(PlotError::UnknownEstimator(raw.to_string())),
+        ESTIMATORS
+            .iter()
+            .find(|(name, _)| *name == raw)
+            .map(|(_, e)| *e)
+            .ok_or_else(|| PlotError::UnknownEstimator(raw.to_string()))
+    }
+
+    /// The estimator for `raw`, where `""` means the default: "count" without a value column,
+    /// "mean" with one. Only "count" works without a value column.
+    pub fn pick(has_value: bool, raw: &str) -> Result<Self, PlotError> {
+        match (has_value, raw) {
+            (false, "" | "count") => Ok(Self::Count),
+            (false, other) => Err(PlotError::EstimatorNeedsY(other.to_string())),
+            (true, "") => Ok(Self::Mean),
+            (true, other) => Self::parse(other),
         }
     }
 }
 
+const ESTIMATORS: [(&str, Estimator); 7] = [
+    ("mean", Estimator::Mean),
+    ("median", Estimator::Median),
+    ("min", Estimator::Min),
+    ("max", Estimator::Max),
+    ("std", Estimator::Std),
+    ("count", Estimator::Count),
+    ("sum", Estimator::Sum),
+];
+
+/// The cache key of a `bar` or `count` chart.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BarSpec {
     pub x: String,
@@ -59,25 +79,22 @@ pub struct BarSpec {
 }
 
 impl BarSpec {
+    /// The key for these arguments, with `""` as None and the estimator parsed.
     pub fn new(x: &str, y: &str, hue: &str, estimator: &str) -> Result<Self, PlotError> {
         if x.is_empty() {
             return Err(PlotError::EmptyX);
         }
-        let estimator: Estimator = match (y.is_empty(), estimator) {
-            (true, "" | "count") => Estimator::Count,
-            (true, other) => return Err(PlotError::EstimatorNeedsY(other.to_string())),
-            (false, "") => Estimator::Mean,
-            (false, other) => Estimator::parse(other)?,
-        };
         Ok(Self {
             x: x.to_string(),
-            y: (!y.is_empty()).then(|| y.to_string()),
-            hue: (!hue.is_empty()).then(|| hue.to_string()),
-            estimator,
+            y: optional(y),
+            // hue = x adds nothing: each bar already gets its own color, so don't dodge them.
+            hue: optional(hue).filter(|hue| hue != x),
+            estimator: Estimator::pick(!y.is_empty(), estimator)?,
         })
     }
 }
 
+/// The cache key of a chart: one line of `{stem}.plots.jsonl` per key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PlotSpec {
     Bar(BarSpec),
@@ -100,6 +117,10 @@ pub enum PlotSpec {
     },
     /// The numeric columns go in the key, because `select` shares the plot cache.
     Corrplot {
+        columns: Vec<String>,
+    },
+    /// Null counts per band of rows, for `missing_matrix`. The columns go in the key too.
+    Missing {
         columns: Vec<String>,
     },
 }

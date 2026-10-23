@@ -1,0 +1,13 @@
+id,name,age,cgpa,batch,passed
+0,Aarav Shah,19,8.1,B13,true
+1,Zoë Müller,20,7.4,B14,true
+2,Liam O'Brien,21,6.2,B15,false
+3,Mei Chen,19,9.0,B13,true
+4,,22,5.8,B14,false
+5,Omar Haddad,20,,B15,true
+6,Sara Jensen,,7.9,B13,true
+7,Diego Rivera,23,5.1,B14,false
+8,Priya Nair,21,8.6,B15,true
+9,Noah Kim,22,6.7,B13,false
+10,Ana Costa,19,7.2,B14,true
+11,Yuki Tanaka,24,8.8,B15,true

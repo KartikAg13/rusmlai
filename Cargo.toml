@@ -1,59 +1,75 @@
 [package]
 name = "rusmlai"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 
-[dependencies]
-comfy-table = {
-    version = "8.0",
-    default-features = false
-}
+[dependencies.comfy-table]
+version = "8.0"
+default-features = false
 
-indexmap = {
-    version = "2.14.0",
-    default-features = false,
-    features = ['serde']
-}
+[dependencies.indexmap]
+version = "2.14.0"
+default-features = false
+features = ['serde']
 
-polars = {
-    version = "0.55.2",
-    default-features = false,
-    features = ["csv", "fmt_no_tty", "lazy", "serde"]
-}
+[dependencies.polars]
+version = "0.55.2"
+default-features = false
+features = ["csv", "fmt_no_tty", "lazy", "serde"]
 
-serde = {
-    version = "1.0.228",
-    default-features = false,
-    features = ["derive", "std"]
-}
+# SVG to pixels, for the PNG a chart saves (`display::png`).
+[dependencies.resvg]
+version = "0.48.1"
+default-features = false
+features = ["memmap-fonts", "system-fonts", "text"]
 
-serde_json = {
-    version = "1.0.150",
-    default-features = false,
-    features = ["std"]
-}
+# Pixels to a .png file. resvg can encode PNGs only at its slow compression level.
+[dependencies.png]
+version = "0.18.1"
+default-features = false
 
-thiserror = {
-    version = "2.0.18",
-    default-features = false
-}
+[dependencies.serde]
+version = "1.0.228"
+default-features = false
+features = ["derive", "std"]
 
-unicode-width = {
-    version = "0.2.2"
-}
+[dependencies.serde_json]
+version = "1.0.150"
+default-features = false
+features = ["std"]
 
-[dev-dependencies]
-criterion = {
-    version = "0.8.2",
-    default-features = false,
-    features = ["cargo_bench_support", "html_reports", "plotters"]
-}
+[dependencies.thiserror]
+version = "2.0.18"
+default-features = false
+
+[dependencies.unicode-width]
+version = "0.2.2"
+
+[dev-dependencies.criterion]
+version = "0.8.2"
+default-features = false
+features = ["cargo_bench_support", "html_reports", "plotters"]
 
 [lib]
 bench = false
 
 [profile.dev]
 split-debuginfo = "unpacked"
+# PNG charts: unoptimized, drawing and encoding take most of a second per chart. Only crates
+# outside Polars' tree, so this never rebuilds Polars.
+package.fdeflate.opt-level = 3
+package.fontdb.opt-level = 3
+package.harfrust.opt-level = 3
+package.kurbo.opt-level = 3
+package.png.opt-level = 3
+package.read-fonts.opt-level = 3
+package.resvg.opt-level = 3
+package.roxmltree.opt-level = 3
+package.skrifa.opt-level = 3
+package.svgtypes.opt-level = 3
+package.tiny-skia.opt-level = 3
+package.tiny-skia-path.opt-level = 3
+package.usvg.opt-level = 3
 
 [profile.bench]
 debug = "line-tables-only"

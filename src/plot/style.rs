@@ -3,7 +3,7 @@
 use crate::{
     display::Figure,
     error::OrFatal,
-    plot::{bar::MAX_GROUPS, chart::Chart, dist::MAX_SAMPLE, error::PlotError},
+    plot::{MAX_GROUPS, MAX_SAMPLE, chart::Chart, error::PlotError},
 };
 
 /// Colors of a card. `CLASSIC` is the original rusmlai look.
@@ -217,6 +217,8 @@ pub(crate) struct Style {
     pub hlines: Vec<(f64, String)>,
     pub vlines: Vec<(f64, String)>,
     pub legend: Option<Legend>,
+    /// A density line over a histogram.
+    pub kde: bool,
 }
 
 /// `.legend(..)`: right of the plot (default), under it, or hidden.
@@ -241,16 +243,83 @@ pub(crate) enum Sort {
 const THEME_VAR: &str = "RUSMLAI_THEME";
 const PALETTE_VAR: &str = "RUSMLAI_PALETTE";
 
-/// Card style for every chart that follows, like `sns.set_theme`: `"dark"` (default) or `"light"`.
-/// Call it before drawing, not while another thread is running a query.
+/// The card style of every chart that follows: `"dark"` (the default) or `"light"`.
+/// (seaborn: `sns.set_theme`)
+///
+/// The choice lives in the `RUSMLAI_THEME` environment variable, so every notebook cell sees
+/// it. A chart's own `.theme` wins over it. Call it before drawing, not while another thread
+/// runs a query.
+///
+/// # Panics
+///
+/// If the name is unknown. The message lists the names.
+///
+/// # Examples
+///
+/// White cards from here on:
+/// ```standalone_crate
+/// use rusmlai::prelude::*;
+///
+/// set_theme("light");
+/// let ds = read_csv("tests/data/students.csv");
+/// let svg = ds.count("batch", "").svg();
+/// assert!(svg.contains("background-color:#FFFFFF"));
+/// ```
+///
+/// A chart's `.theme` wins over the default:
+/// ```standalone_crate
+/// # use rusmlai::prelude::*;
+/// set_theme("light");
+/// let ds = read_csv("tests/data/students.csv");
+/// let svg = ds.count("batch", "").theme("dark").svg();
+/// assert!(svg.contains("background-color:#15171C"));
+/// ```
+///
+/// Edge case: an unknown name:
+/// ```should_panic
+/// rusmlai::prelude::set_theme("solarized"); // panics: Use one of: dark, classic, light
+/// ```
 #[track_caller]
 pub fn set_theme(name: &str) {
     lookup(THEMES, "set_theme", name).or_fatal();
     set_default(THEME_VAR, name);
 }
 
-/// Colors of groups for every chart that follows, like `sns.set_palette`. Call it before
-/// drawing, not while another thread is running a query.
+/// The group colors of every chart that follows. (seaborn: `sns.set_palette`)
+///
+/// The names are the ones of [`Figure::palette`]. The choice lives in the `RUSMLAI_PALETTE`
+/// environment variable, so every notebook cell sees it. A chart's own `.palette` or
+/// `.colors` wins over it. Call it before drawing, not while another thread runs a query.
+///
+/// # Panics
+///
+/// If the name is unknown. The message lists the names.
+///
+/// # Examples
+///
+/// Tableau colors from here on:
+/// ```standalone_crate
+/// use rusmlai::prelude::*;
+///
+/// set_palette("tab10");
+/// let ds = read_csv("tests/data/students.csv");
+/// let svg = ds.count("batch", "").svg();
+/// assert!(svg.contains("#1F77B4")); // the first tab10 color
+/// ```
+///
+/// A chart's `.colors` wins over the default:
+/// ```standalone_crate
+/// # use rusmlai::prelude::*;
+/// set_palette("tab10");
+/// let ds = read_csv("tests/data/students.csv");
+/// let svg = ds.count("batch", "").colors(&["gold"]).svg();
+/// assert!(svg.contains("#FFD700") && !svg.contains("#1F77B4"));
+/// ```
+///
+/// Edge case: an unknown name:
+/// ```should_panic
+/// rusmlai::prelude::set_palette("viridis"); // panics: Use one of: rusmlai, greens, ...
+/// ```
 #[track_caller]
 pub fn set_palette(name: &str) {
     lookup(PALETTES, "set_palette", name).or_fatal();
@@ -328,6 +397,12 @@ impl Style {
     }
 }
 
+/// Chart options, the Rust form of Python's keyword arguments. Each one takes the figure and
+/// returns it, so they chain: `ds.count("batch", "").title("Batches").palette("colorblind")`.
+///
+/// Each chart takes the options that fit it, and its method lists them. Any other option
+/// panics at your line, for example `.cmap() does not work on a count chart`. A bad value
+/// panics too, with the reason and the names you can use.
 impl Figure {
     /// Checks the option against the chart, then applies it. Errors panic at the caller's line.
     #[track_caller]
@@ -343,43 +418,159 @@ impl Figure {
         self
     }
 
+    /// `set` for an option that can't be wrong.
+    #[track_caller]
+    fn put(self, option: &'static str, apply: impl FnOnce(&mut Style)) -> Self {
+        self.set(option, |s, _| {
+            apply(s);
+            Ok(())
+        })
+    }
+
     /// Replaces the title. (matplotlib: `ax.set_title`)
+    ///
+    /// The title also names the auto-saved PNG, minus the characters a file name can't hold.
+    /// Every chart takes it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").title("Students per batch").svg();
+    /// assert!(svg.contains("Students per batch"));
+    /// ```
+    ///
+    /// With the other text options:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .bar("batch", "cgpa", "", "")
+    ///     .title("Mean CGPA")
+    ///     .subtitle("by batch")
+    ///     .xlabel("batch")
+    ///     .ylabel("CGPA")
+    ///     .svg();
+    /// assert!(svg.contains("Mean CGPA") && svg.contains("by batch"));
+    /// ```
+    ///
+    /// Edge case: `<`, `>` and `&` are escaped in the SVG:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").title("CGPA < 6 & failed").svg();
+    /// assert!(svg.contains("CGPA &lt; 6 &amp; failed"));
+    /// ```
     #[track_caller]
     pub fn title(self, text: &str) -> Self {
-        self.set(".title", |s, _| {
-            s.title = Some(text.to_string());
-            Ok(())
-        })
+        self.put(".title", |s| s.title = Some(text.to_string()))
     }
 
-    /// Replaces the line under the title.
+    /// Replaces the line under the title. Every chart takes it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").subtitle("spring term").svg();
+    /// assert!(svg.contains("spring term"));
+    /// ```
+    ///
+    /// Edge case: `""` removes the default line (here the counts' unique and mode facts):
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").subtitle("").svg();
+    /// assert!(!svg.contains("unique=3"));
+    /// ```
     #[track_caller]
     pub fn subtitle(self, text: &str) -> Self {
-        self.set(".subtitle", |s, _| {
-            s.subtitle = Some(text.to_string());
-            Ok(())
-        })
+        self.put(".subtitle", |s| s.subtitle = Some(text.to_string()))
     }
 
-    /// Replaces the x axis name. (matplotlib: `ax.set_xlabel`)
+    /// Replaces the x axis name, which is the column name by default. (matplotlib:
+    /// `ax.set_xlabel`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.hist("cgpa", "", 10).xlabel("CGPA (out of 10)").svg();
+    /// assert!(svg.contains("CGPA (out of 10)"));
+    /// ```
+    ///
+    /// On sideways bars `.xlabel` still names the categories, now down the left:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").horizontal().xlabel("group").svg();
+    /// assert!(svg.contains("group"));
+    /// ```
+    ///
+    /// Edge case: a pie has no axes:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.pie("batch").xlabel("batch"); // panics: .xlabel() does not work on a pie chart
+    /// ```
     #[track_caller]
     pub fn xlabel(self, text: &str) -> Self {
-        self.set(".xlabel", |s, _| {
-            s.xlabel = Some(text.to_string());
-            Ok(())
-        })
+        self.put(".xlabel", |s| s.xlabel = Some(text.to_string()))
     }
 
     /// Replaces the y axis name. (matplotlib: `ax.set_ylabel`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").ylabel("students").svg();
+    /// assert!(svg.contains("students"));
+    /// ```
+    ///
+    /// Edge case: the missing matrix has no y axis name to replace:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// // panics: .ylabel() does not work on a missing_matrix chart
+    /// ds.missing_matrix().ylabel("row");
+    /// ```
     #[track_caller]
     pub fn ylabel(self, text: &str) -> Self {
-        self.set(".ylabel", |s, _| {
-            s.ylabel = Some(text.to_string());
-            Ok(())
-        })
+        self.put(".ylabel", |s| s.ylabel = Some(text.to_string()))
     }
 
-    /// `"dark"` (default) or `"light"`. (plotly: `template=`)
+    /// The card style: `"dark"` (the default) or `"light"`. It wins over [`set_theme`].
+    /// Every chart takes it. (plotly: `template=`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").theme("light").svg();
+    /// assert!(svg.contains("background-color:#FFFFFF"));
+    /// ```
+    ///
+    /// The light card also switches the default palette to darker steps, so pale colors stay
+    /// visible on white:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").theme("light").svg();
+    /// assert!(svg.contains("#BDA885")); // the light card's cream
+    /// ```
+    ///
+    /// Edge case: an unknown name:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").theme("solarized"); // panics: Use one of: dark, classic, light
+    /// ```
     #[track_caller]
     pub fn theme(self, name: &str) -> Self {
         self.set(".theme", |s, _| {
@@ -388,9 +579,35 @@ impl Figure {
         })
     }
 
-    /// Colors of the groups: rusmlai (default), greens, colorblind, tab10, deep, muted, pastel,
-    /// bright, dark.
-    /// (seaborn: `palette=`)
+    /// The group colors: rusmlai (the default), greens, colorblind, tab10, deep, muted, pastel,
+    /// bright or dark. It wins over [`set_palette`]. (seaborn: `palette=`)
+    ///
+    /// Bars, boxes and slices without a hue take one color per category. Hue groups take one
+    /// color per group. A single-color chart (a histogram without hue) takes the first color.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").palette("colorblind").svg();
+    /// assert!(svg.contains("#E69F00")); // the first colorblind color
+    /// ```
+    ///
+    /// `"C0"` to `"C9"` in a later `.color` pick from this palette, like matplotlib:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.hist("cgpa", "", 10).palette("tab10").color("C3").svg();
+    /// assert!(svg.contains("#D62728")); // tab10's red
+    /// ```
+    ///
+    /// Edge case: an unknown name:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").palette("viridis"); // panics: Use one of: rusmlai, greens, ...
+    /// ```
     #[track_caller]
     pub fn palette(self, name: &str) -> Self {
         self.set(".palette", |s, _| {
@@ -399,7 +616,36 @@ impl Figure {
         })
     }
 
-    /// Your own palette: hex codes or names (see `.color`). (plotly: `color_discrete_sequence=`)
+    /// Your own palette: hex codes or color names (see [`Figure::color`]).
+    /// (plotly: `color_discrete_sequence=`)
+    ///
+    /// # Panics
+    ///
+    /// If the list is empty or a color is unknown.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").colors(&["#199E70", "tomato", "tab:blue"]).svg();
+    /// assert!(svg.contains("#FF6347") && svg.contains("#1F77B4"));
+    /// ```
+    ///
+    /// A short list starts over: the third batch gets gold again.
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").colors(&["gold", "navy"]).svg();
+    /// assert_eq!(svg.matches("fill=\"#FFD700\"").count(), 2);
+    /// ```
+    ///
+    /// Edge case: an empty list:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").colors(&[]); // panics: .colors(): the list is empty
+    /// ```
     #[track_caller]
     pub fn colors(self, colors: &[&str]) -> Self {
         self.set(".colors", |s, _| {
@@ -420,6 +666,43 @@ impl Figure {
     /// One color for the whole chart: a hex code, a matplotlib / CSS name ("teal", "tomato"), a
     /// Tableau name ("tab:blue"), or "C0" to "C9" for a color of the current palette.
     /// (seaborn: `color=`)
+    ///
+    /// Hue groups keep their palette colors; `.color_map` sets those.
+    ///
+    /// # Panics
+    ///
+    /// If the color is unknown. The message suggests close names.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.hist("cgpa", "", 10).color("teal").svg();
+    /// assert!(svg.contains("#008080"));
+    /// ```
+    ///
+    /// The four ways to name a color:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// for (color, hex) in [
+    ///     ("#199E70", "#199E70"),  // hex
+    ///     ("Tomato", "#FF6347"),   // CSS name, any case
+    ///     ("tab:blue", "#1F77B4"), // Tableau
+    ///     ("C1", "#FF7F0E"),       // the 2nd color of the palette, here tab10
+    /// ] {
+    ///     let svg = ds.hist("cgpa", "", 10).palette("tab10").color(color).svg();
+    ///     assert!(svg.contains(hex), "{color}");
+    /// }
+    /// ```
+    ///
+    /// Edge case: a typo:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.hist("cgpa", "", 10).color("tomatoe"); // panics: ... Close names: tomato
+    /// ```
     #[track_caller]
     pub fn color(self, color: &str) -> Self {
         self.set(".color", |s, _| {
@@ -428,7 +711,39 @@ impl Figure {
         })
     }
 
-    /// A fixed color for named categories. (plotly: `color_discrete_map=`)
+    /// A fixed color for named categories, or for hue groups when the chart has a hue. Other
+    /// names keep their palette colors. (plotly: `color_discrete_map=`)
+    ///
+    /// # Panics
+    ///
+    /// If a name isn't a category of the chart, or a color is unknown.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").color_map(&[("B13", "gold")]).svg();
+    /// assert!(svg.contains("#FFD700"));
+    /// ```
+    ///
+    /// With a hue, the names are the hue groups:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .count("batch", "passed")
+    ///     .color_map(&[("true", "seagreen"), ("false", "tomato")])
+    ///     .svg();
+    /// assert!(svg.contains("#2E8B57") && svg.contains("#FF6347"));
+    /// ```
+    ///
+    /// Edge case: a name that isn't a category:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").color_map(&[("B99", "gold")]); // panics: Categories: B13, B14, B15
+    /// ```
     #[track_caller]
     pub fn color_map(self, map: &[(&str, &str)]) -> Self {
         self.set(".color_map", |s, chart| {
@@ -446,8 +761,36 @@ impl Figure {
         })
     }
 
-    /// The card size in pixels. The card still gets wider when categories need room.
-    /// (matplotlib: `figsize=`)
+    /// The card size in pixels (720 × 469 by default). The card still gets wider when
+    /// categories need room. Every chart takes it. (matplotlib: `figsize=`)
+    ///
+    /// # Panics
+    ///
+    /// If the size is below 200 × 150 or not finite.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").size(600.0, 400.0).svg();
+    /// assert!(svg.starts_with(r#"<svg width="600" height="400""#));
+    /// ```
+    ///
+    /// Eleven names don't fit in 200 pixels, so the card grows wider:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("name", "").size(200.0, 150.0).svg();
+    /// assert!(!svg.starts_with(r#"<svg width="200""#));
+    /// ```
+    ///
+    /// Edge case: too small:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").size(100.0, 100.0); // panics: use at least 200 x 150
+    /// ```
     #[track_caller]
     pub fn size(self, width: f64, height: f64) -> Self {
         self.set(".size", |s, _| {
@@ -456,7 +799,7 @@ impl Figure {
             if !ok {
                 return Err(invalid(
                     ".size",
-                    format!("{width} x {height} is too small; use at least 200 x 150"),
+                    format!("{width:?} x {height:?} is too small; use at least 200 x 150"),
                 ));
             }
             s.size = Some((width, height));
@@ -464,7 +807,37 @@ impl Figure {
         })
     }
 
-    /// Which x categories to draw, in this order. (seaborn: `order=`)
+    /// Which x categories to draw, in this order. It wins over `.sort`. (seaborn: `order=`)
+    ///
+    /// # Panics
+    ///
+    /// If a name isn't a category of the chart. The message lists the categories.
+    ///
+    /// # Examples
+    ///
+    /// Two batches, B15 first:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").order(&["B15", "B13"]).svg();
+    /// assert!(!svg.contains("batch = B14"));
+    /// assert!(svg.find("batch = B15") < svg.find("batch = B13"));
+    /// ```
+    ///
+    /// The categories of a number column are its values as text:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("age", "").order(&["24", "19"]).svg();
+    /// assert!(svg.find("age = 24") < svg.find("age = 19"));
+    /// ```
+    ///
+    /// Edge case: a name that isn't a category:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").order(&["B99"]); // panics: Categories: B13, B14, B15
+    /// ```
     #[track_caller]
     pub fn order(self, names: &[&str]) -> Self {
         self.set(".order", |s, chart| {
@@ -477,9 +850,43 @@ impl Figure {
     }
 
     /// Which hue groups to draw, in this order. (seaborn: `hue_order=`)
+    ///
+    /// # Panics
+    ///
+    /// If the chart has no hue, or a name isn't one of its groups.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "passed").hue_order(&["false", "true"]).svg();
+    /// assert!(svg.find("passed = false") < svg.find("passed = true"));
+    /// ```
+    ///
+    /// A shorter list draws only those groups:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "passed").hue_order(&["false"]).svg();
+    /// assert!(!svg.contains("passed = true"));
+    /// ```
+    ///
+    /// Edge case: a chart without a hue:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").hue_order(&["true"]); // panics: this chart has no hue groups
+    /// ```
     #[track_caller]
     pub fn hue_order(self, names: &[&str]) -> Self {
         self.set(".hue_order", |s, chart| {
+            if chart.categories(true).is_empty() {
+                return Err(invalid(
+                    ".hue_order",
+                    "this chart has no hue groups".to_string(),
+                ));
+            }
             for name in names {
                 known(".hue_order", name, chart.categories(true))?;
             }
@@ -488,7 +895,36 @@ impl Figure {
         })
     }
 
-    /// Draws at most `n` categories (30 by default).
+    /// Draws at most `n` categories (30 by default, 8 slices on a pie). The subtitle says how
+    /// many are shown.
+    ///
+    /// # Panics
+    ///
+    /// If `n` is 0.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("name", "").top(5).svg();
+    /// assert!(svg.contains("showing 5 of 11"));
+    /// ```
+    ///
+    /// On a pie, the rest join one "Other" slice:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.pie("batch").top(1).svg();
+    /// assert!(svg.contains("Other  8  (67%)"));
+    /// ```
+    ///
+    /// Edge case: zero:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("name", "").top(0); // panics: n must be at least 1
+    /// ```
     #[track_caller]
     pub fn top(self, n: usize) -> Self {
         self.set(".top", |s, _| {
@@ -500,51 +936,149 @@ impl Figure {
         })
     }
 
-    /// Numbers on the marks on or off. (plotly: `text_auto=`)
+    /// Turns the numbers on the bars, cells or slices on or off. They are on by default,
+    /// except on histograms and on bars split by a hue. (plotly: `text_auto=`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let with: String = ds.count("batch", "").svg();
+    /// let without: String = ds.count("batch", "").values(false).svg();
+    /// assert!(without.len() < with.len());
+    /// ```
+    ///
+    /// Numbers on bars split by a hue:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let plain: String = ds.count("batch", "passed").svg();
+    /// let numbered: String = ds.count("batch", "passed").values(true).svg();
+    /// assert!(numbered.len() > plain.len());
+    /// ```
+    ///
+    /// Edge case: a scatter has no numbers to show:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// // panics: .values() does not work on a scatter chart
+    /// ds.scatter("age", "cgpa", "").values(true);
+    /// ```
     #[track_caller]
     pub fn values(self, show: bool) -> Self {
-        self.set(".values", |s, _| {
-            s.values = Some(show);
-            Ok(())
-        })
+        self.put(".values", |s| s.values = Some(show))
     }
 
     /// The range of the value axis. (matplotlib: `ax.set_ylim`)
+    ///
+    /// # Panics
+    ///
+    /// If `low` isn't below `high`, or either isn't finite.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.bar("batch", "cgpa", "", "").ylim(0.0, 10.0).svg();
+    /// assert!(svg.contains(">10<")); // the top tick
+    /// ```
+    ///
+    /// On sideways bars the value axis runs along the bottom, and `.ylim` still sets it:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.bar("batch", "cgpa", "", "").horizontal().ylim(0.0, 10.0).svg();
+    /// assert!(svg.contains(">10<"));
+    /// ```
+    ///
+    /// Edge case: a range upside down:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.bar("batch", "cgpa", "", "").ylim(10.0, 0.0); // panics: (10.0, 0.0) is not a range
+    /// ```
     #[track_caller]
     pub fn ylim(self, low: f64, high: f64) -> Self {
         self.set(".ylim", |s, _| {
-            let ok: bool = low.is_finite() && high.is_finite() && low < high;
-            if !ok {
-                return Err(invalid(
-                    ".ylim",
-                    format!("({low}, {high}) is not a range; low must be below high"),
-                ));
-            }
-            s.ylim = Some((low, high));
+            s.ylim = Some(limits(".ylim", low, high)?);
             Ok(())
         })
     }
 
-    /// The range of the x axis on scatter, line, regplot and histogram charts. A histogram
-    /// re-bins inside it and leaves out the rows outside. (matplotlib: `ax.set_xlim`, seaborn:
-    /// `binrange=`)
+    /// The range of the x axis on scatter, line, regplot, histogram, density and Q-Q charts. A
+    /// histogram re-bins inside it and leaves out the rows outside. (matplotlib: `ax.set_xlim`,
+    /// seaborn: `binrange=`)
+    ///
+    /// # Panics
+    ///
+    /// If `low` isn't below `high` or either isn't finite, or the chart has no number x axis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.scatter("age", "cgpa", "").xlim(15.0, 30.0).svg();
+    /// assert!(svg.contains(">30<")); // the last tick
+    /// ```
+    ///
+    /// A histogram makes its bins inside the range and says how many rows it left out:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.hist("cgpa", "", 4).xlim(6.0, 8.0).svg();
+    /// assert!(svg.contains("cgpa = 6 to 6.50"));
+    /// assert!(svg.contains("6 rows outside the range"));
+    /// ```
+    ///
+    /// Edge case: bars have categories, not a number x axis:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").xlim(0.0, 1.0); // panics: .xlim() does not work on a count chart
+    /// ```
     #[track_caller]
     pub fn xlim(self, low: f64, high: f64) -> Self {
         self.set(".xlim", |s, _| {
-            let ok: bool = low.is_finite() && high.is_finite() && low < high;
-            if !ok {
-                return Err(invalid(
-                    ".xlim",
-                    format!("({low}, {high}) is not a range; low must be below high"),
-                ));
-            }
-            s.xlim = Some((low, high));
+            s.xlim = Some(limits(".xlim", low, high)?);
             Ok(())
         })
     }
 
-    /// How many sampled points strip, scatter and regplot charts draw (2,500 by default, at most
-    /// 50,000: every point is text in the SVG).
+    /// How many sampled points a strip, scatter, regplot, Q-Q or pair chart draws (2,500 by
+    /// default, 1,000 on Q-Q and pair charts). At most 50,000, because every point is text in
+    /// the SVG. The subtitle says how many rows the points stand for.
+    ///
+    /// # Panics
+    ///
+    /// If `n` is 0 or above 50,000.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.scatter("age", "cgpa", "").sample(5).svg();
+    /// assert_eq!(svg.matches("<circle").count(), 5);
+    /// assert!(svg.contains("5 of 10 rows"));
+    /// ```
+    ///
+    /// A number above the row count draws every row:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.scatter("age", "cgpa", "").sample(50_000).svg();
+    /// assert_eq!(svg.matches("<circle").count(), 10);
+    /// ```
+    ///
+    /// Edge case: zero:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.scatter("age", "cgpa", "").sample(0); // panics: n must be between 1 and 50000, got 0
+    /// ```
     #[track_caller]
     pub fn sample(self, n: usize) -> Self {
         self.set(".sample", |s, _| {
@@ -562,6 +1096,36 @@ impl Figure {
     /// Category order: "value" (tallest first), "name" (A to Z, numbers by size), or "count"
     /// (the default: most rows first, numbers ascending). `.order` wins over it.
     /// (seaborn: `order=` from a sorted index)
+    ///
+    /// # Panics
+    ///
+    /// If `by` is not one of the three names.
+    ///
+    /// # Examples
+    ///
+    /// The batch with the highest mean CGPA first:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.bar("batch", "cgpa", "", "").sort("value").svg();
+    /// assert!(svg.find("batch = B13") < svg.find("batch = B15")); // 7.92, then 7.87
+    /// assert!(svg.find("batch = B15") < svg.find("batch = B14")); // then 6.38
+    /// ```
+    ///
+    /// Names from A to Z:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("name", "").sort("name").svg();
+    /// assert!(svg.find("name = Aarav Shah") < svg.find("name = Zoë Müller"));
+    /// ```
+    ///
+    /// Edge case: an unknown name:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").sort("size"); // panics: Use one of: value, name, count
+    /// ```
     #[track_caller]
     pub fn sort(self, by: &str) -> Self {
         self.set(".sort", |s, _| {
@@ -571,35 +1135,173 @@ impl Figure {
     }
 
     /// Bars sideways: categories down the left, values along the bottom. `.xlabel` still names
-    /// the categories and `.ylabel` the values. (seaborn: `orient="h"`)
+    /// the categories and `.ylabel` the values. Bar charts only. (seaborn: `orient="h"`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let up: String = ds.count("batch", "").svg();
+    /// let sideways: String = ds.count("batch", "").horizontal().svg();
+    /// assert_ne!(up, sideways);
+    /// ```
+    ///
+    /// Long names read better down the left. `.hline` then marks the value axis:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .bar("name", "cgpa", "", "")
+    ///     .horizontal()
+    ///     .sort("value")
+    ///     .hline(6.0, "pass mark")
+    ///     .svg();
+    /// assert!(svg.contains("pass mark"));
+    /// ```
+    ///
+    /// Edge case: a histogram's bins always stand up:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.hist("cgpa", "", 10).horizontal(); // panics: .horizontal() does not work on a hist chart
+    /// ```
     #[track_caller]
     pub fn horizontal(self) -> Self {
-        self.set(".horizontal", |s, _| {
-            s.horizontal = true;
-            Ok(())
-        })
+        self.put(".horizontal", |s| s.horizontal = true)
     }
 
-    /// Counts as a share of all rows, in percent. (seaborn: `stat="percent"`)
+    /// Counts as a share of all rows, in percent. On `count` and `hist` only.
+    /// (seaborn: `stat="percent"`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "").percent().svg();
+    /// assert!(svg.contains("percent = 33.33%"));
+    /// ```
+    ///
+    /// With a hue, each bar is a share of all rows, so all the bars add up to 100%:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.count("batch", "passed").percent().svg();
+    /// assert!(svg.contains("passed = true\npercent = 25%")); // 3 of 12 rows
+    /// ```
+    ///
+    /// Edge case: a mean is not a count, so it has no share:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// // panics: .percent() does not work on a bar chart
+    /// ds.bar("batch", "cgpa", "", "").percent();
+    /// ```
     #[track_caller]
     pub fn percent(self) -> Self {
-        self.set(".percent", |s, _| {
-            s.percent = true;
-            Ok(())
-        })
+        self.put(".percent", |s| s.percent = true)
     }
 
-    /// Hue groups on top of each other instead of side by side. (plotly: `barmode="stack"`)
+    /// A smooth density line over a histogram, scaled to the counts. On `hist` only.
+    /// (seaborn: `histplot(kde=True)`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.hist("cgpa", "", 10).kde().svg();
+    /// assert!(svg.contains("density of cgpa"));
+    /// ```
+    ///
+    /// One line per hue group, in the group's color:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.hist("cgpa", "passed", 6).kde().colors(&["seagreen", "tomato"]).svg();
+    /// assert!(svg.contains("#2E8B57") && svg.contains("#FF6347"));
+    /// ```
+    ///
+    /// Edge case: bars of categories have no density:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").kde(); // panics: .kde() does not work on a count chart
+    /// ```
+    #[track_caller]
+    pub fn kde(self) -> Self {
+        self.put(".kde", |s| s.kde = true)
+    }
+
+    /// Hue groups on top of each other instead of side by side. On `count` and `hist` only.
+    /// Without a hue there is one group, so nothing changes. (plotly: `barmode="stack"`)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let side: String = ds.count("batch", "passed").svg();
+    /// let stacked: String = ds.count("batch", "passed").stacked().svg();
+    /// assert_ne!(side, stacked);
+    /// ```
+    ///
+    /// Stacked histograms in percent:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.hist("cgpa", "passed", 6).stacked().percent().svg();
+    /// assert!(svg.contains("percent"));
+    /// ```
+    ///
+    /// Edge case: means don't add up, so they don't stack:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// // panics: .stacked() does not work on a bar chart
+    /// ds.bar("batch", "cgpa", "passed", "").stacked();
+    /// ```
     #[track_caller]
     pub fn stacked(self) -> Self {
-        self.set(".stacked", |s, _| {
-            s.stacked = true;
-            Ok(())
-        })
+        self.put(".stacked", |s| s.stacked = true)
     }
 
     /// A dashed line at value `y`, with a label (`""` for none). On horizontal bars it runs along
     /// the value axis. Call it again for more lines. (matplotlib: `ax.axhline`)
+    ///
+    /// # Panics
+    ///
+    /// If `y` isn't finite, or the chart has no value axis (pie, heatmap, pair and missing
+    /// matrix charts).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.bar("batch", "cgpa", "", "").hline(6.0, "pass mark").svg();
+    /// assert!(svg.contains("pass mark"));
+    /// ```
+    ///
+    /// Two lines:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .boxplot("batch", "cgpa", "")
+    ///     .hline(6.0, "pass mark")
+    ///     .hline(8.5, "distinction")
+    ///     .svg();
+    /// assert!(svg.contains("pass mark") && svg.contains("distinction"));
+    /// ```
+    ///
+    /// Edge case: NaN is not a place on the axis:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.bar("batch", "cgpa", "", "").hline(f64::NAN, ""); // panics: NaN is not a finite number
+    /// ```
     #[track_caller]
     pub fn hline(self, y: f64, label: &str) -> Self {
         self.set(".hline", |s, _| {
@@ -608,8 +1310,41 @@ impl Figure {
         })
     }
 
-    /// A dashed line at `x` on scatter, line, regplot and histogram charts. (matplotlib:
-    /// `ax.axvline`)
+    /// A dashed line at `x`, with a label (`""` for none), on charts with a number x axis:
+    /// scatter, line, regplot, histogram, density and Q-Q. Call it again for more lines.
+    /// (matplotlib: `ax.axvline`)
+    ///
+    /// # Panics
+    ///
+    /// If `x` isn't finite, or the chart has no number x axis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.scatter("age", "cgpa", "").vline(21.0, "median age").svg();
+    /// assert!(svg.contains("median age"));
+    /// ```
+    ///
+    /// Two lines on a histogram:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .hist("cgpa", "", 10)
+    ///     .vline(6.0, "pass mark")
+    ///     .vline(8.5, "distinction")
+    ///     .svg();
+    /// assert!(svg.contains("pass mark") && svg.contains("distinction"));
+    /// ```
+    ///
+    /// Edge case: bars have categories, not a number x axis:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").vline(1.0, ""); // panics: .vline() does not work on a count chart
+    /// ```
     #[track_caller]
     pub fn vline(self, x: f64, label: &str) -> Self {
         self.set(".vline", |s, _| {
@@ -618,7 +1353,40 @@ impl Figure {
         })
     }
 
-    /// Where the legend goes: "right" (default), "bottom", or "none". (seaborn: `legend=False`)
+    /// Where the legend goes: "right" (the default), "bottom", or "none".
+    /// (seaborn: `legend=False`)
+    ///
+    /// A legend lists the hue groups, so charts without a hue draw none.
+    ///
+    /// # Panics
+    ///
+    /// If `at` is not one of the three names.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let right: String = ds.count("batch", "passed").svg();
+    /// let bottom: String = ds.count("batch", "passed").legend("bottom").svg();
+    /// assert_ne!(right, bottom);
+    /// ```
+    ///
+    /// No legend:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let with: String = ds.count("batch", "passed").svg();
+    /// let without: String = ds.count("batch", "passed").legend("none").svg();
+    /// assert!(without.len() < with.len());
+    /// ```
+    ///
+    /// Edge case: an unknown place:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "passed").legend("left"); // panics: Use one of: right, bottom, none
+    /// ```
     #[track_caller]
     pub fn legend(self, at: &str) -> Self {
         self.set(".legend", |s, _| {
@@ -628,7 +1396,38 @@ impl Figure {
     }
 
     /// The color range of a heatmap: greens, viridis, magma, blues (low to high), or
-    /// redgreen, coolwarm, rdbu (negative to positive). (seaborn: `cmap=`)
+    /// redgreen, coolwarm, rdbu (negative to positive). On `heatmap` and `corrplot` only.
+    /// (seaborn: `cmap=`)
+    ///
+    /// A diverging range (negative to positive) puts its middle color at 0.
+    ///
+    /// # Panics
+    ///
+    /// If the name is unknown, or the chart isn't a heatmap.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.heatmap("batch", "passed", "cgpa", "mean").cmap("viridis").svg();
+    /// assert!(svg.contains("Heatmap: batch × passed (mean cgpa)"));
+    /// ```
+    ///
+    /// A diverging range on correlations, where 0 is the middle:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.corrplot().cmap("coolwarm").svg();
+    /// assert!(svg.contains("#B40426")); // coolwarm's red, at a correlation of 1
+    /// ```
+    ///
+    /// Edge case: bars have no color range:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// # let ds = read_csv("tests/data/students.csv");
+    /// ds.count("batch", "").cmap("viridis"); // panics: .cmap() does not work on a count chart
+    /// ```
     #[track_caller]
     pub fn cmap(self, name: &str) -> Self {
         self.set(".cmap", |s, _| {
@@ -665,11 +1464,22 @@ const LEGENDS: &[(&str, Legend)] = &[
     ("none", Legend::None),
 ];
 
+fn limits(option: &'static str, low: f64, high: f64) -> Result<(f64, f64), PlotError> {
+    if (high - low).is_finite() && low < high {
+        Ok((low, high))
+    } else {
+        Err(invalid(
+            option,
+            format!("({low:?}, {high:?}) is not a range: use finite numbers with low below high"),
+        ))
+    }
+}
+
 fn finite(option: &'static str, v: f64) -> Result<f64, PlotError> {
     if v.is_finite() {
         Ok(v)
     } else {
-        Err(invalid(option, format!("{v} is not a number")))
+        Err(invalid(option, format!("{v:?} is not a finite number")))
     }
 }
 
@@ -689,7 +1499,10 @@ fn paint(option: &'static str, color: &str, palette: &[String]) -> Result<String
         }
     } else if let Some(i) = name.strip_prefix('c').and_then(|d| d.parse::<usize>().ok()) {
         return palette.get(i).cloned().ok_or_else(|| {
-            invalid(option, format!("'{color}': the palette has only {} colors", palette.len()))
+            invalid(
+                option,
+                format!("'{color}': the palette has only {} colors", palette.len()),
+            )
         });
     } else if let Some(hex) = TABLEAU
         .iter()
@@ -739,43 +1552,154 @@ const TABLEAU: [(&str, &str); 11] = [
 
 /// The 148 CSS color names, which matplotlib also uses.
 const NAMED: [(&str, &str); 148] = [
-    ("aliceblue", "F0F8FF"), ("antiquewhite", "FAEBD7"), ("aqua", "00FFFF"), ("aquamarine", "7FFFD4"),
-    ("azure", "F0FFFF"), ("beige", "F5F5DC"), ("bisque", "FFE4C4"), ("black", "000000"),
-    ("blanchedalmond", "FFEBCD"), ("blue", "0000FF"), ("blueviolet", "8A2BE2"), ("brown", "A52A2A"),
-    ("burlywood", "DEB887"), ("cadetblue", "5F9EA0"), ("chartreuse", "7FFF00"), ("chocolate", "D2691E"),
-    ("coral", "FF7F50"), ("cornflowerblue", "6495ED"), ("cornsilk", "FFF8DC"), ("crimson", "DC143C"),
-    ("cyan", "00FFFF"), ("darkblue", "00008B"), ("darkcyan", "008B8B"), ("darkgoldenrod", "B8860B"),
-    ("darkgray", "A9A9A9"), ("darkgreen", "006400"), ("darkgrey", "A9A9A9"), ("darkkhaki", "BDB76B"),
-    ("darkmagenta", "8B008B"), ("darkolivegreen", "556B2F"), ("darkorange", "FF8C00"), ("darkorchid", "9932CC"),
-    ("darkred", "8B0000"), ("darksalmon", "E9967A"), ("darkseagreen", "8FBC8F"), ("darkslateblue", "483D8B"),
-    ("darkslategray", "2F4F4F"), ("darkslategrey", "2F4F4F"), ("darkturquoise", "00CED1"), ("darkviolet", "9400D3"),
-    ("deeppink", "FF1493"), ("deepskyblue", "00BFFF"), ("dimgray", "696969"), ("dimgrey", "696969"),
-    ("dodgerblue", "1E90FF"), ("firebrick", "B22222"), ("floralwhite", "FFFAF0"), ("forestgreen", "228B22"),
-    ("fuchsia", "FF00FF"), ("gainsboro", "DCDCDC"), ("ghostwhite", "F8F8FF"), ("gold", "FFD700"),
-    ("goldenrod", "DAA520"), ("gray", "808080"), ("green", "008000"), ("greenyellow", "ADFF2F"),
-    ("grey", "808080"), ("honeydew", "F0FFF0"), ("hotpink", "FF69B4"), ("indianred", "CD5C5C"),
-    ("indigo", "4B0082"), ("ivory", "FFFFF0"), ("khaki", "F0E68C"), ("lavender", "E6E6FA"),
-    ("lavenderblush", "FFF0F5"), ("lawngreen", "7CFC00"), ("lemonchiffon", "FFFACD"), ("lightblue", "ADD8E6"),
-    ("lightcoral", "F08080"), ("lightcyan", "E0FFFF"), ("lightgoldenrodyellow", "FAFAD2"), ("lightgray", "D3D3D3"),
-    ("lightgreen", "90EE90"), ("lightgrey", "D3D3D3"), ("lightpink", "FFB6C1"), ("lightsalmon", "FFA07A"),
-    ("lightseagreen", "20B2AA"), ("lightskyblue", "87CEFA"), ("lightslategray", "778899"), ("lightslategrey", "778899"),
-    ("lightsteelblue", "B0C4DE"), ("lightyellow", "FFFFE0"), ("lime", "00FF00"), ("limegreen", "32CD32"),
-    ("linen", "FAF0E6"), ("magenta", "FF00FF"), ("maroon", "800000"), ("mediumaquamarine", "66CDAA"),
-    ("mediumblue", "0000CD"), ("mediumorchid", "BA55D3"), ("mediumpurple", "9370DB"), ("mediumseagreen", "3CB371"),
-    ("mediumslateblue", "7B68EE"), ("mediumspringgreen", "00FA9A"), ("mediumturquoise", "48D1CC"), ("mediumvioletred", "C71585"),
-    ("midnightblue", "191970"), ("mintcream", "F5FFFA"), ("mistyrose", "FFE4E1"), ("moccasin", "FFE4B5"),
-    ("navajowhite", "FFDEAD"), ("navy", "000080"), ("oldlace", "FDF5E6"), ("olive", "808000"),
-    ("olivedrab", "6B8E23"), ("orange", "FFA500"), ("orangered", "FF4500"), ("orchid", "DA70D6"),
-    ("palegoldenrod", "EEE8AA"), ("palegreen", "98FB98"), ("paleturquoise", "AFEEEE"), ("palevioletred", "DB7093"),
-    ("papayawhip", "FFEFD5"), ("peachpuff", "FFDAB9"), ("peru", "CD853F"), ("pink", "FFC0CB"),
-    ("plum", "DDA0DD"), ("powderblue", "B0E0E6"), ("purple", "800080"), ("rebeccapurple", "663399"),
-    ("red", "FF0000"), ("rosybrown", "BC8F8F"), ("royalblue", "4169E1"), ("saddlebrown", "8B4513"),
-    ("salmon", "FA8072"), ("sandybrown", "F4A460"), ("seagreen", "2E8B57"), ("seashell", "FFF5EE"),
-    ("sienna", "A0522D"), ("silver", "C0C0C0"), ("skyblue", "87CEEB"), ("slateblue", "6A5ACD"),
-    ("slategray", "708090"), ("slategrey", "708090"), ("snow", "FFFAFA"), ("springgreen", "00FF7F"),
-    ("steelblue", "4682B4"), ("tan", "D2B48C"), ("teal", "008080"), ("thistle", "D8BFD8"),
-    ("tomato", "FF6347"), ("turquoise", "40E0D0"), ("violet", "EE82EE"), ("wheat", "F5DEB3"),
-    ("white", "FFFFFF"), ("whitesmoke", "F5F5F5"), ("yellow", "FFFF00"), ("yellowgreen", "9ACD32"),
+    ("aliceblue", "F0F8FF"),
+    ("antiquewhite", "FAEBD7"),
+    ("aqua", "00FFFF"),
+    ("aquamarine", "7FFFD4"),
+    ("azure", "F0FFFF"),
+    ("beige", "F5F5DC"),
+    ("bisque", "FFE4C4"),
+    ("black", "000000"),
+    ("blanchedalmond", "FFEBCD"),
+    ("blue", "0000FF"),
+    ("blueviolet", "8A2BE2"),
+    ("brown", "A52A2A"),
+    ("burlywood", "DEB887"),
+    ("cadetblue", "5F9EA0"),
+    ("chartreuse", "7FFF00"),
+    ("chocolate", "D2691E"),
+    ("coral", "FF7F50"),
+    ("cornflowerblue", "6495ED"),
+    ("cornsilk", "FFF8DC"),
+    ("crimson", "DC143C"),
+    ("cyan", "00FFFF"),
+    ("darkblue", "00008B"),
+    ("darkcyan", "008B8B"),
+    ("darkgoldenrod", "B8860B"),
+    ("darkgray", "A9A9A9"),
+    ("darkgreen", "006400"),
+    ("darkgrey", "A9A9A9"),
+    ("darkkhaki", "BDB76B"),
+    ("darkmagenta", "8B008B"),
+    ("darkolivegreen", "556B2F"),
+    ("darkorange", "FF8C00"),
+    ("darkorchid", "9932CC"),
+    ("darkred", "8B0000"),
+    ("darksalmon", "E9967A"),
+    ("darkseagreen", "8FBC8F"),
+    ("darkslateblue", "483D8B"),
+    ("darkslategray", "2F4F4F"),
+    ("darkslategrey", "2F4F4F"),
+    ("darkturquoise", "00CED1"),
+    ("darkviolet", "9400D3"),
+    ("deeppink", "FF1493"),
+    ("deepskyblue", "00BFFF"),
+    ("dimgray", "696969"),
+    ("dimgrey", "696969"),
+    ("dodgerblue", "1E90FF"),
+    ("firebrick", "B22222"),
+    ("floralwhite", "FFFAF0"),
+    ("forestgreen", "228B22"),
+    ("fuchsia", "FF00FF"),
+    ("gainsboro", "DCDCDC"),
+    ("ghostwhite", "F8F8FF"),
+    ("gold", "FFD700"),
+    ("goldenrod", "DAA520"),
+    ("gray", "808080"),
+    ("green", "008000"),
+    ("greenyellow", "ADFF2F"),
+    ("grey", "808080"),
+    ("honeydew", "F0FFF0"),
+    ("hotpink", "FF69B4"),
+    ("indianred", "CD5C5C"),
+    ("indigo", "4B0082"),
+    ("ivory", "FFFFF0"),
+    ("khaki", "F0E68C"),
+    ("lavender", "E6E6FA"),
+    ("lavenderblush", "FFF0F5"),
+    ("lawngreen", "7CFC00"),
+    ("lemonchiffon", "FFFACD"),
+    ("lightblue", "ADD8E6"),
+    ("lightcoral", "F08080"),
+    ("lightcyan", "E0FFFF"),
+    ("lightgoldenrodyellow", "FAFAD2"),
+    ("lightgray", "D3D3D3"),
+    ("lightgreen", "90EE90"),
+    ("lightgrey", "D3D3D3"),
+    ("lightpink", "FFB6C1"),
+    ("lightsalmon", "FFA07A"),
+    ("lightseagreen", "20B2AA"),
+    ("lightskyblue", "87CEFA"),
+    ("lightslategray", "778899"),
+    ("lightslategrey", "778899"),
+    ("lightsteelblue", "B0C4DE"),
+    ("lightyellow", "FFFFE0"),
+    ("lime", "00FF00"),
+    ("limegreen", "32CD32"),
+    ("linen", "FAF0E6"),
+    ("magenta", "FF00FF"),
+    ("maroon", "800000"),
+    ("mediumaquamarine", "66CDAA"),
+    ("mediumblue", "0000CD"),
+    ("mediumorchid", "BA55D3"),
+    ("mediumpurple", "9370DB"),
+    ("mediumseagreen", "3CB371"),
+    ("mediumslateblue", "7B68EE"),
+    ("mediumspringgreen", "00FA9A"),
+    ("mediumturquoise", "48D1CC"),
+    ("mediumvioletred", "C71585"),
+    ("midnightblue", "191970"),
+    ("mintcream", "F5FFFA"),
+    ("mistyrose", "FFE4E1"),
+    ("moccasin", "FFE4B5"),
+    ("navajowhite", "FFDEAD"),
+    ("navy", "000080"),
+    ("oldlace", "FDF5E6"),
+    ("olive", "808000"),
+    ("olivedrab", "6B8E23"),
+    ("orange", "FFA500"),
+    ("orangered", "FF4500"),
+    ("orchid", "DA70D6"),
+    ("palegoldenrod", "EEE8AA"),
+    ("palegreen", "98FB98"),
+    ("paleturquoise", "AFEEEE"),
+    ("palevioletred", "DB7093"),
+    ("papayawhip", "FFEFD5"),
+    ("peachpuff", "FFDAB9"),
+    ("peru", "CD853F"),
+    ("pink", "FFC0CB"),
+    ("plum", "DDA0DD"),
+    ("powderblue", "B0E0E6"),
+    ("purple", "800080"),
+    ("rebeccapurple", "663399"),
+    ("red", "FF0000"),
+    ("rosybrown", "BC8F8F"),
+    ("royalblue", "4169E1"),
+    ("saddlebrown", "8B4513"),
+    ("salmon", "FA8072"),
+    ("sandybrown", "F4A460"),
+    ("seagreen", "2E8B57"),
+    ("seashell", "FFF5EE"),
+    ("sienna", "A0522D"),
+    ("silver", "C0C0C0"),
+    ("skyblue", "87CEEB"),
+    ("slateblue", "6A5ACD"),
+    ("slategray", "708090"),
+    ("slategrey", "708090"),
+    ("snow", "FFFAFA"),
+    ("springgreen", "00FF7F"),
+    ("steelblue", "4682B4"),
+    ("tan", "D2B48C"),
+    ("teal", "008080"),
+    ("thistle", "D8BFD8"),
+    ("tomato", "FF6347"),
+    ("turquoise", "40E0D0"),
+    ("violet", "EE82EE"),
+    ("wheat", "F5DEB3"),
+    ("white", "FFFFFF"),
+    ("whitesmoke", "F5F5F5"),
+    ("yellow", "FFFF00"),
+    ("yellowgreen", "9ACD32"),
 ];
 
 fn known(option: &'static str, name: &str, categories: &[String]) -> Result<(), PlotError> {
@@ -809,7 +1733,9 @@ mod tests {
         assert_eq!(paint(".color", "Teal", &palette).unwrap(), "#008080");
         assert_eq!(paint(".color", "tab:blue", &palette).unwrap(), "#1F77B4");
         assert_eq!(paint(".color", "C1", &palette).unwrap(), RUSMLAI[1]);
-        let typo: String = paint(".color", "tomatoe", &palette).unwrap_err().to_string();
+        let typo: String = paint(".color", "tomatoe", &palette)
+            .unwrap_err()
+            .to_string();
         assert!(typo.contains("tomato"), "{typo}");
     }
 }

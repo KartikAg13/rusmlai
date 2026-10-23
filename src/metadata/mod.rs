@@ -2,9 +2,8 @@ use indexmap::IndexMap;
 use polars::frame::DataFrame;
 use std::{
     ffi::OsString,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
-    io,
     sync::{Arc, PoisonError, RwLock},
 };
 
@@ -13,17 +12,15 @@ use crate::{
     error::{OrFatal, warn},
     metadata::{
         constants::{DATASET_CACHE, PLOTS_CACHE},
-        error::MetadataError,
         dataset::{
             DatasetCache,
             dto::{ColumnInfoDTO, DatasetCacheDTO},
             info::ColumnInfo,
             stats::ColumnStats,
         },
+        error::MetadataError,
         plot::PlotCache,
-        utils::{
-            append_jsonl, cache_path, file_fingerprint, print_saved, read_jsonl, write_jsonl,
-        },
+        utils::{append_jsonl, cache_path, file_fingerprint, print_saved, read_jsonl, write_jsonl},
     },
     plot::{result::PlotResult, spec::PlotSpec},
 };
@@ -136,7 +133,10 @@ impl Metadata {
                     });
                 match written {
                     Ok(()) => print_saved(&columns_path),
-                    Err(e) => warn(format_args!("could not write {}: {e}", columns_path.display())),
+                    Err(e) => warn(format_args!(
+                        "could not write {}: {e}",
+                        columns_path.display()
+                    )),
                 }
                 m
             }
@@ -149,7 +149,10 @@ impl Metadata {
             }
             None => {
                 if let Err(e) = write_jsonl::<()>(&plots_path, fingerprint, &[]) {
-                    warn(format_args!("could not write {}: {e}", plots_path.display()));
+                    warn(format_args!(
+                        "could not write {}: {e}",
+                        plots_path.display()
+                    ));
                 }
             }
         }
@@ -162,14 +165,24 @@ impl Metadata {
         compute: impl FnOnce() -> Result<PlotResult, E>,
     ) -> Result<PlotResult, E> {
         let entries = &self.plot_cache.entries;
-        if let Some(hit) = entries.read().unwrap_or_else(PoisonError::into_inner).get(&spec) {
+        if let Some(hit) = entries
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&spec)
+        {
             return Ok(hit.clone());
         }
         let result: PlotResult = compute()?;
         if let Some(path) = &self.filepath {
             let plots_path: PathBuf = cache_path(Path::new(path), PLOTS_CACHE);
-            if let Err(e) = append_jsonl(&plots_path, &(&spec, &result)) {
-                warn(format_args!("could not update {}: {e}", plots_path.display()));
+            // No file: the dataset wasn't loaded by `read_csv` (`Dataset::new`), so it has no cache.
+            if let Err(e) = append_jsonl(&plots_path, &(&spec, &result))
+                && e.kind() != io::ErrorKind::NotFound
+            {
+                warn(format_args!(
+                    "could not update {}: {e}",
+                    plots_path.display()
+                ));
             }
         }
         entries

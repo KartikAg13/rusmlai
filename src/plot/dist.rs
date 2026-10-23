@@ -1,38 +1,35 @@
 //! `hist`, `boxplot` and `stripplot`: how a numeric column is spread out.
 
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{BuildHasher, BuildHasherDefault},
-};
-
-use polars::prelude::{
-    DataFrame, DataType, Expr, IdxCa, IdxSize, IntoLazy, PlSmallStr, QuantileMethod, col, len,
-    lit, when,
-};
+use polars::prelude::{DataFrame, DataType, Expr, LazyFrame, QuantileMethod, col, len, lit, when};
 
 use crate::{
     dataset::Dataset,
     display::{Figure, escape},
+    error::OrFatal,
     metadata::dataset::stats::NumericStats,
     plot::{
-        bar::{TOP, index, labels, ordered, pick, strings},
-        chart::{Chart, Texts},
+        BOUND, SAMPLE, VALUE,
+        chart::{Body, Texts},
+        check_columns, density,
         error::PlotError,
+        f64s, labels, optional,
         result::PlotResult,
+        rows, sample, sample_subtitle, slots,
         spec::PlotSpec,
-        style::{Legend, Style, Theme},
-        svg::{self, HEIGHT, MIN_CLUSTER_BAR, Tick, WIDTH, YScale},
+        style::{Style, Theme},
+        svg::{
+            self, Layout, MIN_CLUSTER_BAR, TOP, Tick, YScale, finish, hlines, layout, legend_items,
+            ordered, percent_factor, pick, range, tick_mode, unit, value_label,
+        },
+        thin, unique,
     },
 };
 
 const MAX_BINS: usize = 1000;
-pub(crate) const SAMPLE: usize = 2500; // points that strip, scatter and regplot draw by default
-pub(crate) const MAX_SAMPLE: usize = 50_000; // points kept from the data, the most .sample(n) draws
-// ponytail: at most 100 outliers per box, evenly spread by rank with both ends kept; raise it if
-// the dots look sparse.
+// At most 100 outlier rings per box, evenly spread by rank with both ends kept: past that they
+// pile up on one axis line anyway, and the SVG and the cache line stay small (like `SAMPLE`).
 const MAX_OUTLIERS: usize = 100;
 const BIN: &str = "__rusmlai_bin";
-const COUNT: &str = "__rusmlai_count";
 const OUTLIERS: &str = "__rusmlai_outliers";
 const ALL: &str = "__rusmlai_all"; // the one x group of a box plot without x
 const FIVE: [&str; 5] = [
@@ -43,49 +40,429 @@ const FIVE: [&str; 5] = [
     "__rusmlai_max",
 ];
 
-/// Counts in `bins` equal bins. The edges come from the cached min and max, so every hue
-/// group shares them.
-pub(crate) fn try_hist(
+impl Dataset {
+    /// How many values of `column` fall in each of `bins` equal bins, split by `hue`.
+    /// (seaborn: `histplot`)
+    ///
+    /// `bins` goes from 1 to 1,000. The counts are cached in at least 1,000 fine bins, so
+    /// `.xlim` can re-bin inside a new range without a pass over the data. Hue groups share the
+    /// same edges and overlap; `.stacked()` piles them. Nulls, NaN and infinities are left out.
+    ///
+    /// Options: `.title`, `.subtitle`, `.xlabel`, `.ylabel`, `.theme`, `.palette`, `.colors`,
+    /// `.color`, `.color_map`, `.size`, `.hue_order`, `.values`, `.ylim`, `.xlim`, `.percent`,
+    /// `.stacked`, `.kde`, `.hline`, `.vline` and `.legend`.
+    ///
+    /// # Panics
+    ///
+    /// If a column doesn't exist, `column` isn't numeric, or `bins` is 0 or above 1,000.
+    /// [`Dataset::try_hist`] returns these as errors.
+    ///
+    /// # Examples
+    ///
+    /// CGPA in 10 bins:
+    /// ```
+    /// use rusmlai::prelude::*;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.hist("cgpa", "", 10); // saves metadata/plots/Histogram cgpa.png
+    /// ```
+    ///
+    /// Split by `passed`, stacked, in percent, with a density line and most options:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .hist("cgpa", "passed", 8)
+    ///     .stacked()
+    ///     .percent()
+    ///     .kde()
+    ///     .title("CGPA of passed and failed")
+    ///     .subtitle("8 bins")
+    ///     .xlabel("CGPA")
+    ///     .ylabel("share of students")
+    ///     .theme("light")
+    ///     .colors(&["seagreen", "tomato"])
+    ///     .hue_order(&["true", "false"])
+    ///     .size(800.0, 450.0)
+    ///     .xlim(5.0, 9.5)
+    ///     .vline(6.0, "pass mark")
+    ///     .hline(10.0, "")
+    ///     .values(false)
+    ///     .legend("bottom")
+    ///     .svg(); // the SVG text, and no auto-save
+    /// assert!(svg.contains("CGPA of passed and failed"));
+    /// assert!(svg.contains("#2E8B57") && svg.contains("#FF6347")); // seagreen, tomato
+    /// ```
+    ///
+    /// Edge case: a text column has no bins:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.hist("batch", "", 10); // panics: column 'batch' is not numeric (found str)
+    /// ```
+    #[track_caller]
+    pub fn hist(&self, column: &str, hue: &str, bins: usize) -> Figure {
+        self.try_hist(column, hue, bins).or_fatal()
+    }
+
+    /// [`Dataset::hist`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// - `PlotError::InvalidBins` when `bins` is 0 or above 1,000.
+    /// - `PlotError::Dataset` when a column doesn't exist or `column` isn't numeric.
+    /// - `PlotError::EmptyResult` when the column has no finite values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # use rusmlai::plot::error::PlotError;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.try_hist("age", "", 6)?.svg();
+    /// assert!(svg.contains("Histogram: age"));
+    /// # Ok::<(), PlotError>(())
+    /// ```
+    ///
+    /// Zero bins:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// use rusmlai::plot::error::PlotError;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// assert!(matches!(ds.try_hist("cgpa", "", 0), Err(PlotError::InvalidBins(0))));
+    /// ```
+    pub fn try_hist(&self, column: &str, hue: &str, bins: usize) -> Result<Figure, PlotError> {
+        if !(1..=MAX_BINS).contains(&bins) {
+            return Err(PlotError::InvalidBins(bins));
+        }
+        let hue: Option<String> = optional(hue);
+        let result: PlotResult = fine_bins(self, column, hue.as_deref(), bins)?;
+        let texts: Texts = Texts {
+            title: format!("Histogram: {column}"),
+            x: column.to_string(),
+            y: "count".to_string(),
+            value: "count".to_string(),
+            hue: hue.unwrap_or_default(),
+            ..Texts::default()
+        };
+        Ok(self.figure("hist", texts, Body::Hist { result, bins }))
+    }
+
+    /// A box of `y` for each `x` category, split by `hue`: the quartiles, the median, and
+    /// whiskers. (seaborn: `boxplot`)
+    ///
+    /// Like seaborn, the whiskers stop at the last value within 1.5 × IQR of the box, and the
+    /// values past them are drawn as points (at most 100 per box). `x = ""` draws one box for
+    /// the whole column. The boxes are cached next to the CSV.
+    ///
+    /// Options: `.title`, `.subtitle`, `.xlabel`, `.ylabel`, `.theme`, `.palette`, `.colors`,
+    /// `.color`, `.color_map`, `.size`, `.order`, `.hue_order`, `.top`, `.ylim`, `.sort`,
+    /// `.hline` and `.legend`.
+    ///
+    /// # Panics
+    ///
+    /// If a column doesn't exist, `y` isn't numeric, `hue` is set without `x`, or no row has
+    /// values. [`Dataset::try_boxplot`] returns these as errors.
+    ///
+    /// # Examples
+    ///
+    /// CGPA in each batch:
+    /// ```
+    /// use rusmlai::prelude::*;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.boxplot("batch", "cgpa", ""); // saves metadata/plots/Box batch vs cgpa.png
+    /// ```
+    ///
+    /// Split by `passed`, with most options:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .boxplot("batch", "cgpa", "passed")
+    ///     .title("CGPA by batch")
+    ///     .subtitle("whiskers at 1.5 × IQR")
+    ///     .xlabel("batch")
+    ///     .ylabel("CGPA")
+    ///     .theme("light")
+    ///     .palette("deep")
+    ///     .color_map(&[("false", "tomato")])
+    ///     .size(800.0, 480.0)
+    ///     .order(&["B13", "B14", "B15"])
+    ///     .hue_order(&["true", "false"])
+    ///     .ylim(4.0, 10.0)
+    ///     .hline(6.0, "pass mark")
+    ///     .legend("bottom")
+    ///     .svg(); // the SVG text, and no auto-save
+    /// assert!(svg.contains("CGPA by batch"));
+    /// assert!(svg.contains("#FF6347")); // tomato
+    /// ```
+    ///
+    /// Edge case: `x = ""` draws one box of all 11 CGPA values (one is null):
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.boxplot("", "cgpa", "").svg();
+    /// assert!(svg.contains("Box: cgpa") && svg.contains("median = 7.40"));
+    /// ```
+    #[track_caller]
+    pub fn boxplot(&self, x: &str, y: &str, hue: &str) -> Figure {
+        self.try_boxplot(x, y, hue).or_fatal()
+    }
+
+    /// [`Dataset::boxplot`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// - `PlotError::Dataset` when a column doesn't exist or `y` isn't numeric.
+    /// - `PlotError::HueNeedsX` when `hue` is set and `x` is `""`.
+    /// - `PlotError::EmptyResult` when no row has values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # use rusmlai::plot::error::PlotError;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.try_boxplot("passed", "age", "")?.svg();
+    /// assert!(svg.contains("Box: passed vs age"));
+    /// # Ok::<(), PlotError>(())
+    /// ```
+    ///
+    /// A hue without an x column:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// use rusmlai::plot::error::PlotError;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let result = ds.try_boxplot("", "cgpa", "passed");
+    /// assert!(matches!(result, Err(PlotError::HueNeedsX)));
+    /// ```
+    pub fn try_boxplot(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
+        let (result, x, hue): (PlotResult, Option<String>, Option<String>) =
+            boxes(self, x, y, hue)?;
+        Ok(self.figure("boxplot", spread_texts("Box", x, y, hue), Body::Box(result)))
+    }
+
+    /// One dot per row: the values of `y` in each `x` category, spread sideways and colored by
+    /// `hue`. (seaborn: `stripplot`)
+    ///
+    /// It draws 2,500 sampled rows by default, from up to 50,000 kept. The seed is fixed, so the
+    /// same data draws the same picture. `x = ""` draws one strip. Raw rows aren't cached.
+    ///
+    /// Options: `.title`, `.subtitle`, `.xlabel`, `.ylabel`, `.theme`, `.palette`, `.colors`,
+    /// `.color`, `.color_map`, `.size`, `.order`, `.hue_order`, `.top`, `.ylim`, `.sort`,
+    /// `.sample`, `.hline` and `.legend`.
+    ///
+    /// # Panics
+    ///
+    /// If a column doesn't exist, `y` isn't numeric, `hue` is set without `x`, or no row has
+    /// values. [`Dataset::try_stripplot`] returns these as errors.
+    ///
+    /// # Examples
+    ///
+    /// Each student's CGPA, by batch:
+    /// ```
+    /// use rusmlai::prelude::*;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.stripplot("batch", "cgpa", ""); // saves metadata/plots/Strip batch vs cgpa.png
+    /// ```
+    ///
+    /// Colored by `passed`, with 6 sampled dots and most options:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .stripplot("batch", "cgpa", "passed")
+    ///     .sample(6)
+    ///     .title("CGPA of each student")
+    ///     .subtitle("6 of 11 rows")
+    ///     .xlabel("batch")
+    ///     .ylabel("CGPA")
+    ///     .theme("light")
+    ///     .colors(&["#2E8B57", "tomato"])
+    ///     .size(700.0, 450.0)
+    ///     .order(&["B13", "B15"])
+    ///     .hue_order(&["true", "false"])
+    ///     .ylim(4.0, 10.0)
+    ///     .hline(6.0, "pass mark")
+    ///     .legend("bottom")
+    ///     .svg(); // the SVG text, and no auto-save
+    /// assert!(svg.contains("CGPA of each student"));
+    /// assert!(svg.contains("#2E8B57"));
+    /// ```
+    ///
+    /// Edge case: a hue needs an x column to split:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.stripplot("", "cgpa", "passed"); // panics: hue needs an x column
+    /// ```
+    #[track_caller]
+    pub fn stripplot(&self, x: &str, y: &str, hue: &str) -> Figure {
+        self.try_stripplot(x, y, hue).or_fatal()
+    }
+
+    /// [`Dataset::stripplot`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// - `PlotError::Dataset` when a column doesn't exist or `y` isn't numeric.
+    /// - `PlotError::HueNeedsX` when `hue` is set and `x` is `""`.
+    /// - `PlotError::EmptyResult` when no row has values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # use rusmlai::plot::error::PlotError;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.try_stripplot("", "age", "")?.svg();
+    /// assert!(svg.contains("Strip: age"));
+    /// # Ok::<(), PlotError>(())
+    /// ```
+    ///
+    /// A text column as `y`:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let result = ds.try_stripplot("batch", "name", "");
+    /// assert!(matches!(
+    ///     result,
+    ///     Err(PlotError::Dataset(DatasetError::ColumnNotNumeric { .. }))
+    /// ));
+    /// ```
+    pub fn try_stripplot(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
+        self.try_numeric_stats(y)?;
+        let (x, hue): (Option<String>, Option<String>) = (optional(x), optional(hue));
+        check_columns(self, x.as_deref(), hue.as_deref())?;
+        let columns: Vec<&str> = [Some(y), x.as_deref(), hue.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        let (sample, rows): (DataFrame, usize) = sample(self, &columns)?;
+
+        let x_labels: Vec<String> = match &x {
+            Some(x) => labels(self, &sample, x)?,
+            None => vec![y.to_string()],
+        };
+        let hue_labels: Vec<String> = match &hue {
+            Some(hue) => labels(self, &sample, hue)?,
+            None => Vec::new(),
+        };
+        let cells = slots(&sample, x.as_deref(), &x_labels)?
+            .into_iter()
+            .zip(slots(&sample, hue.as_deref(), &hue_labels)?);
+        let points: Vec<(usize, usize, f64)> = cells
+            .zip(f64s(&sample, y)?)
+            .filter_map(|((i, j), y)| Some((i?, j?, y)))
+            .collect();
+        if points.is_empty() {
+            return Err(PlotError::EmptyResult(y.to_string()));
+        }
+        let body: Body = Body::Strip {
+            x_labels,
+            hue_labels,
+            points,
+            rows,
+        };
+        Ok(self.figure("stripplot", spread_texts("Strip", x, y, hue), body))
+    }
+}
+
+/// The cached counts of `column` in fine bins (a multiple of `bins`, at least 1,000), split by
+/// `hue`. The edges come from the cached min and max, so every hue group shares them.
+pub(crate) fn fine_bins(
     dataset: &Dataset,
     column: &str,
-    hue: &str,
+    hue: Option<&str>,
     bins: usize,
-) -> Result<Figure, PlotError> {
-    if !(1..=MAX_BINS).contains(&bins) {
-        return Err(PlotError::InvalidBins(bins));
-    }
+) -> Result<PlotResult, PlotError> {
     let stats: &NumericStats = dataset.try_numeric_stats(column)?;
-    let hue: Option<String> = optional(hue);
-    if let Some(hue) = &hue {
+    if let Some(hue) = hue {
         dataset.try_column_info(hue)?;
     }
-    if !stats.min.is_finite() {
+    // The cached min and max keep ±inf (and values past BOUND); the bins need the drawn range.
+    let (lo, hi): (f64, f64) = if stats.min.abs() <= BOUND && stats.max.abs() <= BOUND {
+        (stats.min, stats.max)
+    } else {
+        let v = || col(column).cast(DataType::Float64);
+        let edges: DataFrame = rows(dataset, &[column])
+            .select([v().min().alias("lo"), v().max().alias("hi")])
+            .collect()?;
+        (f64s(&edges, "lo")?[0], f64s(&edges, "hi")?[0])
+    };
+    if !lo.is_finite() {
         return Err(PlotError::EmptyResult(column.to_string()));
     }
     let spec: PlotSpec = PlotSpec::Histogram {
         column: column.to_string(),
-        hue: hue.clone(),
+        hue: hue.map(str::to_string),
         bins,
     };
     let fine: usize = bins * MAX_BINS.div_ceil(bins);
+    dataset
+        .metadata
+        .plot(spec, || compute_hist(dataset, column, hue, fine, lo, hi))
+}
+
+/// The cached boxes of `y` per `x` category and `hue` group (also a violin's inner box), and
+/// the two columns as options.
+pub(crate) fn boxes(
+    dataset: &Dataset,
+    x: &str,
+    y: &str,
+    hue: &str,
+) -> Result<(PlotResult, Option<String>, Option<String>), PlotError> {
+    dataset.try_numeric_stats(y)?;
+    let (x, hue): (Option<String>, Option<String>) = (optional(x), optional(hue));
+    check_columns(dataset, x.as_deref(), hue.as_deref())?;
+    let spec: PlotSpec = PlotSpec::Boxplot {
+        x: x.clone().unwrap_or_default(),
+        y: y.to_string(),
+        hue: hue.clone(),
+    };
     let result: PlotResult = dataset.metadata.plot(spec, || {
-        compute_hist(dataset, column, hue.as_deref(), fine, stats.min, stats.max)
+        compute_boxes(dataset, x.as_deref(), y, hue.as_deref())
     })?;
-    Ok(Figure::new(
-        Chart::Hist {
-            texts: Texts {
-                title: format!("Histogram: {column}"),
-                x: column.to_string(),
-                y: "count".to_string(),
-                value: "count".to_string(),
-                hue: hue.unwrap_or_default(),
-            },
-            result,
-            bins,
-            subtitle: String::new(),
+    if result.is_empty() {
+        return Err(PlotError::EmptyResult(y.to_string()));
+    }
+    Ok((result, x, hue))
+}
+
+/// The hover text of one box: its category, hue group, fences and quartiles.
+pub(crate) fn box_hover(texts: &Texts, x: &str, hue: Option<&str>, five: [f64; 5]) -> String {
+    let mut hover: String = format!("{} = {x}", texts.x);
+    if let Some(hue) = hue {
+        hover += &format!("\n{} = {hue}", texts.hue);
+    }
+    for (name, v) in ["upper fence", "q75", "median", "q25", "lower fence"]
+        .iter()
+        .zip([five[4], five[3], five[2], five[1], five[0]])
+    {
+        hover += &format!("\n{name} = {}", svg::format_value(v));
+    }
+    hover
+}
+
+/// `Box: day vs tip` / `Box: tip` (no x).
+pub(crate) fn spread_texts(kind: &str, x: Option<String>, y: &str, hue: Option<String>) -> Texts {
+    Texts {
+        title: match &x {
+            Some(x) => format!("{kind}: {x} vs {y}"),
+            None => format!("{kind}: {y}"),
         },
-        dataset.metadata.filepath.as_deref(),
-    ))
+        x: x.unwrap_or_else(|| y.to_string()),
+        y: y.to_string(),
+        value: y.to_string(),
+        hue: hue.unwrap_or_default(),
+        ..Texts::default()
+    }
 }
 
 /// `fine` bin counts over [`lo`, `hi`] regrouped into `bins` equal bins over `range`, by each fine
@@ -126,41 +503,28 @@ fn compute_hist(
         .then(lit(last))
         .otherwise(raw)
         .alias(BIN);
-    let mut columns: Vec<Expr> = vec![col(column)];
     let mut keys: Vec<Expr> = vec![col(BIN)];
-    if let Some(hue) = hue {
-        columns.push(col(hue));
-        keys.push(col(hue));
-    }
-    let grouped: DataFrame = dataset
-        .dataframe
-        .clone()
-        .lazy()
-        .select(columns)
-        .drop_nulls(None)
+    keys.extend(hue.map(col));
+    let columns: Vec<&str> = [Some(column), hue].into_iter().flatten().collect();
+    let grouped: DataFrame = rows(dataset, &columns)
         .with_column(bin)
         .group_by(keys)
-        .agg([len().cast(DataType::Float64).alias(COUNT)])
+        .agg([len().cast(DataType::Float64).alias(VALUE)])
         .collect()?;
 
     let names: Vec<String> = match hue {
         Some(hue) => labels(dataset, &grouped, hue)?,
         None => vec![column.to_string()],
     };
-    let hues: Option<Vec<String>> = hue.map(|hue| strings(&grouped, hue)).transpose()?;
-    let name_index = index(&names);
-    let counts_column: Vec<f64> = f64s(&grouped, COUNT)?;
     let mut counts: Vec<Vec<f64>> = vec![vec![0.0; bins]; names.len()];
-    for (row, bin) in grouped.column(BIN)?.i64()?.iter().enumerate() {
-        let Some(bin) = bin else {
-            continue; // NaN values have no bin
-        };
-        let series: Option<usize> = match &hues {
-            Some(hues) => name_index.get(hues[row].as_str()).copied(),
-            None => Some(0),
-        };
-        if let Some(series) = series {
-            counts[series][bin as usize] = counts_column[row];
+    let bins_column = grouped.column(BIN)?.i64()?.iter();
+    for ((bin, s), n) in bins_column
+        .zip(slots(&grouped, hue, &names)?)
+        .zip(f64s(&grouped, VALUE)?)
+    {
+        // NaN values have no bin.
+        if let (Some(bin), Some(s)) = (bin, s) {
+            counts[s][bin as usize] = n;
         }
     }
     Ok(PlotResult::Hist {
@@ -171,67 +535,20 @@ fn compute_hist(
     })
 }
 
-/// One box per `x` category (split by `hue`), or one box with no `x`. Like seaborn, the
-/// whiskers stop at the last value within 1.5 × IQR of the box; values past them are points.
-pub(crate) fn try_boxplot(
-    dataset: &Dataset,
-    x: &str,
-    y: &str,
-    hue: &str,
-) -> Result<Figure, PlotError> {
-    dataset.try_numeric_stats(y)?;
-    let (x, hue): (Option<String>, Option<String>) = (optional(x), optional(hue));
-    check_columns(dataset, x.as_deref(), hue.as_deref())?;
-    let spec: PlotSpec = PlotSpec::Boxplot {
-        x: x.clone().unwrap_or_default(),
-        y: y.to_string(),
-        hue: hue.clone(),
-    };
-    let result: PlotResult = dataset.metadata.plot(spec, || {
-        compute_boxes(dataset, x.as_deref(), y, hue.as_deref())
-    })?;
-    let PlotResult::Boxes { boxes, .. } = &result else {
-        unreachable!("box plots hold Boxes results");
-    };
-    if !boxes.iter().flatten().any(|five| five[2].is_finite()) {
-        return Err(PlotError::EmptyResult(y.to_string()));
-    }
-    Ok(Figure::new(
-        Chart::Box {
-            texts: Texts {
-                title: match &x {
-                    Some(x) => format!("Box: {x} vs {y}"),
-                    None => format!("Box: {y}"),
-                },
-                x: x.unwrap_or_else(|| y.to_string()),
-                y: y.to_string(),
-                value: y.to_string(),
-                hue: hue.unwrap_or_default(),
-            },
-            result,
-            subtitle: String::new(),
-        },
-        dataset.metadata.filepath.as_deref(),
-    ))
-}
-
 fn compute_boxes(
     dataset: &Dataset,
     x: Option<&str>,
     y: &str,
     hue: Option<&str>,
 ) -> Result<PlotResult, PlotError> {
-    let key: &str = x.unwrap_or(ALL);
-    let mut columns: Vec<Expr> = vec![col(y)];
-    let mut keys: Vec<Expr> = vec![col(key)];
-    columns.extend(x.map(col));
-    if let Some(hue) = hue {
-        columns.push(col(hue));
-        keys.push(col(hue));
-    }
-    let mut rows = dataset.dataframe.clone().lazy().select(columns).drop_nulls(None);
+    let keys: Vec<Expr> = unique([Some(x.unwrap_or(ALL)), hue].into_iter().flatten())
+        .into_iter()
+        .map(col)
+        .collect();
+    let columns: Vec<&str> = [Some(y), x, hue].into_iter().flatten().collect();
+    let mut frame: LazyFrame = rows(dataset, &columns);
     if x.is_none() {
-        rows = rows.with_column(lit(y).alias(ALL));
+        frame = frame.with_column(lit(y).alias(ALL));
     }
     let v = || col(y).cast(DataType::Float64);
     let q = |p: f64| v().quantile(lit(p), QuantileMethod::Linear);
@@ -239,7 +556,7 @@ fn compute_boxes(
     let inside: Expr = v()
         .gt_eq(q(0.25) - reach.clone())
         .and(v().lt_eq(q(0.75) + reach));
-    let grouped: DataFrame = rows
+    let grouped: DataFrame = frame
         .group_by(keys)
         .agg([
             v().filter(inside.clone()).min().alias(FIVE[0]),
@@ -259,8 +576,6 @@ fn compute_boxes(
         Some(hue) => labels(dataset, &grouped, hue)?,
         None => Vec::new(),
     };
-    let xs: Vec<String> = strings(&grouped, key)?;
-    let hues: Option<Vec<String>> = hue.map(|hue| strings(&grouped, hue)).transpose()?;
     let five: Vec<Vec<f64>> = FIVE
         .iter()
         .map(|name| f64s(&grouped, name))
@@ -268,7 +583,12 @@ fn compute_boxes(
     let mut past: Vec<Vec<f64>> = Vec::with_capacity(grouped.height());
     for group in grouped.column(OUTLIERS)?.list()?.series_iter() {
         let mut values: Vec<f64> = match group {
-            Some(values) => values.f64()?.iter().flatten().filter(|v| v.is_finite()).collect(),
+            Some(values) => values
+                .f64()?
+                .iter()
+                .flatten()
+                .filter(|v| v.is_finite())
+                .collect(),
             None => Vec::new(),
         };
         values.sort_by(f64::total_cmp);
@@ -280,23 +600,17 @@ fn compute_boxes(
         }
         past.push(values);
     }
-    let (x_index, hue_index) = (index(&x_labels), index(&hue_labels));
     let k: usize = hue_labels.len().max(1);
     let mut boxes: Vec<Vec<[f64; 5]>> = vec![vec![[f64::NAN; 5]; k]; x_labels.len()];
     let mut outliers: Vec<Vec<Vec<f64>>> = vec![vec![Vec::new(); k]; x_labels.len()];
-    for row in 0..grouped.height() {
-        let Some(&i) = x_index.get(xs[row].as_str()) else {
-            continue;
-        };
-        let j: usize = match &hues {
-            Some(hues) => match hue_index.get(hues[row].as_str()) {
-                Some(&j) => j,
-                None => continue,
-            },
-            None => 0,
-        };
-        boxes[i][j] = [0, 1, 2, 3, 4].map(|k| five[k][row]);
-        outliers[i][j] = std::mem::take(&mut past[row]);
+    let cells = slots(&grouped, x, &x_labels)?
+        .into_iter()
+        .zip(slots(&grouped, hue, &hue_labels)?);
+    for (row, cell) in cells.enumerate() {
+        if let (Some(i), Some(j)) = cell {
+            boxes[i][j] = [0, 1, 2, 3, 4].map(|k| five[k][row]);
+            outliers[i][j] = std::mem::take(&mut past[row]);
+        }
     }
     Ok(PlotResult::Boxes {
         x_labels,
@@ -306,302 +620,11 @@ fn compute_boxes(
     })
 }
 
-/// Sampled rows, spread sideways inside each `x` category. Raw rows, so nothing is cached.
-pub(crate) fn try_stripplot(
-    dataset: &Dataset,
-    x: &str,
-    y: &str,
-    hue: &str,
-) -> Result<Figure, PlotError> {
-    dataset.try_numeric_stats(y)?;
-    let (x, hue): (Option<String>, Option<String>) = (optional(x), optional(hue));
-    check_columns(dataset, x.as_deref(), hue.as_deref())?;
-    let columns: Vec<&str> = [Some(y), x.as_deref(), hue.as_deref()]
-        .into_iter()
-        .flatten()
-        .collect();
-    let (sample, rows): (DataFrame, usize) = sample(dataset, &columns)?;
-
-    let ys: Vec<f64> = f64s(&sample, y)?;
-    let x_labels: Vec<String> = match &x {
-        Some(x) => labels(dataset, &sample, x)?,
-        None => vec![y.to_string()],
-    };
-    let hue_labels: Vec<String> = match &hue {
-        Some(hue) => labels(dataset, &sample, hue)?,
-        None => Vec::new(),
-    };
-    let xs: Option<Vec<String>> = x.as_deref().map(|x| strings(&sample, x)).transpose()?;
-    let hues: Option<Vec<String>> = hue.as_deref().map(|h| strings(&sample, h)).transpose()?;
-    let (x_index, hue_index) = (index(&x_labels), index(&hue_labels));
-    let points: Vec<(usize, usize, f64)> = (0..sample.height())
-        .filter_map(|row| {
-            let i: usize = match &xs {
-                Some(xs) => *x_index.get(xs[row].as_str())?,
-                None => 0,
-            };
-            let j: usize = match &hues {
-                Some(hues) => *hue_index.get(hues[row].as_str())?,
-                None => 0,
-            };
-            Some((i, j, ys[row]))
-        })
-        .collect();
-    if points.is_empty() {
-        return Err(PlotError::EmptyResult(y.to_string()));
-    }
-    Ok(Figure::new(
-        Chart::Strip {
-            texts: Texts {
-                title: match &x {
-                    Some(x) => format!("Strip: {x} vs {y}"),
-                    None => format!("Strip: {y}"),
-                },
-                x: x.unwrap_or_else(|| y.to_string()),
-                y: y.to_string(),
-                value: y.to_string(),
-                hue: hue.unwrap_or_default(),
-            },
-            x_labels,
-            hue_labels,
-            points,
-            rows,
-            subtitle: String::new(),
-        },
-        dataset.metadata.filepath.as_deref(),
-    ))
-}
-
-/// Up to `MAX_SAMPLE` rows with no nulls in `columns`: one random row from each run of k rows.
-/// The seed is fixed, so the same data draws the same picture. Returns them and how many rows
-/// had values.
-pub(crate) fn sample(dataset: &Dataset, columns: &[&str]) -> Result<(DataFrame, usize), PlotError> {
-    let rows: DataFrame = dataset
-        .dataframe
-        .clone()
-        .lazy()
-        .select(columns.iter().map(|c| col(*c)).collect::<Vec<Expr>>())
-        .drop_nulls(None)
-        .collect()?;
-    let step: usize = rows.height().div_ceil(MAX_SAMPLE).max(1);
-    if step == 1 {
-        let n: usize = rows.height();
-        return Ok((rows, n));
-    }
-    let seed: BuildHasherDefault<DefaultHasher> = BuildHasherDefault::default();
-    let picks: Vec<IdxSize> = (0..rows.height() / step)
-        .map(|run| (run * step + (seed.hash_one(run) % step as u64) as usize) as IdxSize)
-        .collect();
-    Ok((rows.take(&IdxCa::from_vec(PlSmallStr::EMPTY, picks))?, rows.height()))
-}
-
-/// `n` evenly spaced items, or all of them when there are fewer (`.sample(n)` on the stored
-/// sample points).
-pub(crate) fn thin<T: Copy>(items: &[T], n: usize) -> Vec<T> {
-    if items.len() <= n {
-        return items.to_vec();
-    }
-    (0..n).map(|i| items[i * items.len() / n]).collect()
-}
-
-/// "2500 of 630000 rows" when a sample is drawn, unless a subtitle is set.
-pub(crate) fn sample_subtitle(style: &Style, subtitle: &str, shown: usize, rows: usize) -> String {
-    match &style.subtitle {
-        Some(text) => text.clone(),
-        None if subtitle.is_empty() && shown < rows => format!("{shown} of {rows} rows"),
-        None => subtitle.to_string(),
-    }
-}
-
-pub(crate) fn optional(column: &str) -> Option<String> {
-    (!column.is_empty()).then(|| column.to_string())
-}
-
-pub(crate) fn check_columns(
-    dataset: &Dataset,
-    x: Option<&str>,
-    hue: Option<&str>,
-) -> Result<(), PlotError> {
-    if hue.is_some() && x.is_none() {
-        return Err(PlotError::HueNeedsX);
-    }
-    for column in x.into_iter().chain(hue) {
-        dataset.try_column_info(column)?;
-    }
-    Ok(())
-}
-
-pub(crate) fn f64s(frame: &DataFrame, column: &str) -> Result<Vec<f64>, PlotError> {
-    Ok(frame
-        .column(column)?
-        .cast(&DataType::Float64)?
-        .f64()?
-        .iter()
-        .map(|v| v.unwrap_or(f64::NAN))
-        .collect())
-}
-
-/// Padding, card size and plot area shared by the charts. `legend_h` is the room a bottom
-/// legend takes under the axis name.
-pub(crate) struct Layout {
-    pub left: f64,
-    pub right: f64,
-    pub top: f64,
-    pub plot_w: f64,
-    pub plot_h: f64,
-    pub width: f64,
-    pub height: f64,
-    pub legend_h: f64,
-}
-
-/// `items` is the legend: right of the plot, under it, or nowhere (`.legend`).
-pub(crate) fn layout(
-    style: &Style,
-    subtitle: &str,
-    slots: usize,
-    min_slot: f64,
-    items: &[(String, String)],
-) -> Layout {
-    let (card_w, height): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
-    let at: Legend = legend_at(style, items);
-    let (left, top): (f64, f64) = (72.0, if subtitle.is_empty() { 92.0 } else { 110.0 });
-    let right: f64 = if at == Legend::Right { svg::legend_width(items) } else { 36.0 };
-    let plot_w: f64 = (card_w - left - right).max(slots.max(1) as f64 * min_slot);
-    let width: f64 = left + plot_w + right;
-    let legend_h: f64 = bottom_legend_h(at, items, width);
-    Layout {
-        left,
-        right,
-        top,
-        plot_w,
-        plot_h: height - top - 70.0 - legend_h,
-        width,
-        height,
-        legend_h,
-    }
-}
-
-/// Tilts the category names when one is wider than its slot. The card grows taller for them
-/// (the flat row already has about 18 px), and the plot moves right when a name near the left
-/// would hang past the card's edge.
-pub(crate) fn tick_mode(l: &mut Layout, labels: &[impl AsRef<str>], slot: f64) -> Tick {
-    if !svg::tilts(labels, slot) {
-        return Tick::Flat;
-    }
-    l.height += (svg::tilt_room(labels) - 18.0).max(0.0);
-    let shift: f64 = labels
-        .iter()
-        .enumerate()
-        .map(|(i, label)| svg::tilt_reach(label.as_ref()) - (i as f64 + 0.5) * slot + 8.0 - l.left)
-        .fold(0.0, f64::max);
-    l.left += shift;
-    l.width += shift;
-    Tick::Down
-}
-
-/// Where the legend goes: nowhere without items, else `.legend` (right by default).
-pub(crate) fn legend_at(style: &Style, items: &[(String, String)]) -> Legend {
-    if items.is_empty() {
-        Legend::None
-    } else {
-        style.legend.unwrap_or(Legend::Right)
-    }
-}
-
-pub(crate) fn bottom_legend_h(at: Legend, items: &[(String, String)], width: f64) -> f64 {
-    if at == Legend::Bottom {
-        svg::legend_rows(items, width - 72.0) as f64 * 20.0 + 8.0
-    } else {
-        0.0
-    }
-}
-
-/// The value axis: `.ylim`, else the data range with 0 and every `.hline` included.
-pub(crate) fn range(style: &Style, values: impl Iterator<Item = f64>) -> (f64, f64) {
-    style.ylim.unwrap_or_else(|| {
-        values
-            .chain(style.hlines.iter().map(|line| line.0))
-            .filter(|v| v.is_finite())
-            .fold((0.0, 0.0), |(lo, hi): (f64, f64), v| (lo.min(v), hi.max(v)))
-    })
-}
-
-pub(crate) fn title(texts: &Texts, style: &Style) -> String {
-    style.title.clone().unwrap_or_else(|| texts.title.clone())
-}
-
-/// The axis names: `.xlabel` / `.ylabel`, else the column names.
-pub(crate) fn names<'a>(style: &'a Style, texts: &'a Texts) -> (&'a str, &'a str) {
-    (
-        style.xlabel.as_deref().unwrap_or(&texts.x),
-        style.ylabel.as_deref().unwrap_or(&texts.y),
-    )
-}
-
-/// `.hline` lines across the plot.
-pub(crate) fn hlines(out: &mut String, theme: &Theme, style: &Style, scale: &YScale, l: &Layout) {
-    for (v, label) in &style.hlines {
-        svg::ref_line(out, theme, true, scale.y(*v), l.left, l.width - l.right, label, *v);
-    }
-}
-
-/// 100 / the sum of the finite values with `.percent`, else 1.
-pub(crate) fn percent_factor(style: &Style, values: impl Iterator<Item = f64>) -> f64 {
-    if !style.percent {
-        return 1.0;
-    }
-    let total: f64 = values.filter(|v| v.is_finite()).sum();
-    if total > 0.0 { 100.0 / total } else { 0.0 }
-}
-
-/// A value as a label: "12.5%" with `.percent`.
-pub(crate) fn unit(style: &Style, v: f64) -> String {
-    if style.percent {
-        format!("{}%", svg::format_value(v))
-    } else {
-        svg::format_value(v)
-    }
-}
-
-/// Legend, axis names, and the closing tag.
-pub(crate) fn finish(
-    out: &mut String,
-    theme: &Theme,
-    style: &Style,
-    (x_name, y_name): (&str, &str),
-    items: &[(String, String)],
-    l: &Layout,
-) {
-    match legend_at(style, items) {
-        Legend::Right => svg::legend(out, theme, items, l.width - l.right + 16.0, l.top + 8.0),
-        Legend::Bottom => svg::legend_flow(
-            out,
-            theme,
-            items,
-            36.0,
-            l.height - l.legend_h + 12.0,
-            l.width - 72.0,
-        ),
-        Legend::None => {}
-    }
-    svg::axis_names(
-        out,
-        theme,
-        x_name,
-        y_name,
-        l.left + l.plot_w / 2.0,
-        l.top + l.plot_h / 2.0,
-        l.height - l.legend_h,
-    );
-    out.push_str("</svg>");
-}
-
 /// The old histogram: bars per bin (grouped or stacked by hue), bin ticks, five edge labels.
 pub(crate) fn render_hist(
     texts: &Texts,
     result: &PlotResult,
     bins: usize,
-    subtitle: &str,
     style: &Style,
 ) -> String {
     let PlotResult::Hist {
@@ -628,7 +651,8 @@ pub(crate) fn render_hist(
         .iter()
         .enumerate()
         .map(|(j, series)| {
-            let (counts, out): (Vec<f64>, f64) = regroup(series, (*data_lo, *data_hi), (lo, hi), bins);
+            let (counts, out): (Vec<f64>, f64) =
+                regroup(series, (*data_lo, *data_hi), (lo, hi), bins);
             if cols.contains(&j) {
                 outside += out;
             }
@@ -649,17 +673,14 @@ pub(crate) fn render_hist(
         k as f64 * MIN_CLUSTER_BAR / fill
     };
     let items: Vec<(String, String)> = if grouped {
-        cols.iter()
-            .enumerate()
-            .map(|(s, &j)| (groups[j].clone(), style.group_color(s, &groups[j])))
-            .collect()
+        legend_items(style, groups, &cols)
     } else {
         Vec::new()
     };
     let left_out: String = if outside > 0.0 {
         format!("{} rows outside the range", svg::format_value(outside))
     } else {
-        subtitle.to_string()
+        texts.subtitle.clone()
     };
     let subtitle: &str = style.subtitle.as_deref().unwrap_or(&left_out);
     let l: Layout = layout(style, subtitle, bins, min_slot, &items);
@@ -668,9 +689,33 @@ pub(crate) fn render_hist(
             .map(|b| cols.iter().map(|&j| counts[j][b]).sum())
             .collect()
     } else {
-        cols.iter().flat_map(|&j| counts[j].iter().copied()).collect()
+        cols.iter()
+            .flat_map(|&j| counts[j].iter().copied())
+            .collect()
     };
-    let (y_lo, y_hi): (f64, f64) = range(style, heights.into_iter());
+    // `.kde()`: each series' density at 200 points of the drawn range, in rows per drawn bin.
+    let curves: Vec<density::Curve> = if style.kde {
+        cols.iter()
+            .enumerate()
+            .filter_map(|(s, &j)| {
+                let h: f64 = density::scott(&fine[j], (*data_lo, *data_hi))?;
+                let per_bin: f64 = fine[j].iter().sum::<f64>() * (hi - lo) / bins as f64 * factor;
+                let xs: Vec<f64> = density::linspace(lo, hi);
+                let ys: Vec<f64> = density::kde(&fine[j], (*data_lo, *data_hi), h, &xs);
+                Some((
+                    s,
+                    j,
+                    xs.into_iter()
+                        .zip(ys.into_iter().map(|d| d * per_bin))
+                        .collect(),
+                ))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let curve_tops = curves.iter().flat_map(|c| c.2.iter().map(|p| p.1));
+    let (y_lo, y_hi): (f64, f64) = range(style, heights.into_iter().chain(curve_tops));
     let scale: YScale = YScale::new(y_lo, y_hi, l.top, l.plot_h);
     let (slot, span): (f64, f64) = (l.plot_w / bins as f64, (hi - lo).max(1e-9));
     let (inner, base): (f64, f64) = (slot * fill, scale.bottom());
@@ -697,7 +742,7 @@ pub(crate) fn render_hist(
         }
     };
 
-    let mut out: String = svg::card(&theme, &title(texts, style), subtitle, l.width, l.height);
+    let mut out: String = svg::card(&theme, &texts.title(style), subtitle, l.width, l.height);
     scale.draw(&mut out, &theme, l.left, l.width - l.right);
     for b in 0..=bins {
         let x: f64 = l.left + b as f64 * slot;
@@ -722,7 +767,13 @@ pub(crate) fn render_hist(
                 }
             }
             if show_values && sum > 0.0 {
-                value_label(&mut out, &theme, x + w / 2.0, scale.y(sum) - 8.0, &unit(style, sum));
+                value_label(
+                    &mut out,
+                    &theme,
+                    x + w / 2.0,
+                    scale.y(sum) - 8.0,
+                    &unit(style, sum),
+                );
             }
         }
     } else {
@@ -730,13 +781,32 @@ pub(crate) fn render_hist(
             for (b, &value) in counts[j].iter().enumerate() {
                 let x: f64 = l.left + b as f64 * slot + (slot - inner) / 2.0 + s as f64 * bar_w;
                 let w: f64 = (bar_w - 1.2).max(1.0);
-                out.push_str(&svg::bar(&scale, x, w, value, &color(s, j), &hover(b, j, value)));
+                out.push_str(&svg::bar(
+                    &scale,
+                    x,
+                    w,
+                    value,
+                    &color(s, j),
+                    &hover(b, j, value),
+                ));
                 if show_values && value > 0.0 {
                     let text: String = unit(style, value);
                     value_label(&mut out, &theme, x + w / 2.0, scale.y(value) - 8.0, &text);
                 }
             }
         }
+    }
+    for (s, j, points) in &curves {
+        let d: String = svg::polyline(
+            points
+                .iter()
+                .map(|&(x, y)| (l.left + (x - lo) / span * l.plot_w, scale.y(y))),
+        );
+        let mut hover: String = format!("density of {}", texts.x);
+        if grouped {
+            hover += &format!("\n{} = {}", texts.hue, groups[*j]);
+        }
+        density::halo_path(&mut out, &theme, &d, &color(*s, *j), &hover);
     }
     let mut ticks: Vec<usize> = (0..=4).map(|t| t * bins / 4).collect();
     ticks.dedup();
@@ -755,19 +825,18 @@ pub(crate) fn render_hist(
         let x: f64 = l.left + (v - lo) / span * l.plot_w;
         svg::ref_line(&mut out, &theme, false, x, l.top, base, label, *v);
     }
-    let (x_name, y_name): (&str, &str) = names(style, texts);
-    let y_name: &str = if style.percent && style.ylabel.is_none() { "percent" } else { y_name };
+    let (x_name, y_name): (&str, &str) = texts.names(style);
+    let y_name: &str = if style.percent && style.ylabel.is_none() {
+        "percent"
+    } else {
+        y_name
+    };
     finish(&mut out, &theme, style, (x_name, y_name), &items, &l);
     out
 }
 
 /// The box from q25 to q75 with a median line, whiskers to the fences, outliers as rings.
-pub(crate) fn render_box(
-    texts: &Texts,
-    result: &PlotResult,
-    subtitle: &str,
-    style: &Style,
-) -> String {
+pub(crate) fn render_box(texts: &Texts, result: &PlotResult, style: &Style) -> String {
     let PlotResult::Boxes {
         x_labels,
         hue_labels,
@@ -779,7 +848,10 @@ pub(crate) fn render_box(
     };
     let theme: Theme = style.theme();
     let grouped: bool = !hue_labels.is_empty();
-    let medians: Vec<f64> = boxes.iter().map(|row| mean(row.iter().map(|five| five[2]))).collect();
+    let medians: Vec<f64> = boxes
+        .iter()
+        .map(|row| mean(row.iter().map(|five| five[2])))
+        .collect();
     let rows: Vec<usize> = pick(x_labels, style, &medians, style.top.unwrap_or(TOP));
     let cols: Vec<usize> = if grouped {
         ordered(hue_labels, style.hue_order.as_deref())
@@ -795,14 +867,11 @@ pub(crate) fn render_box(
     }
     .max(svg::label_width(&shown));
     let items: Vec<(String, String)> = if grouped {
-        cols.iter()
-            .enumerate()
-            .map(|(s, &j)| (hue_labels[j].clone(), style.group_color(s, &hue_labels[j])))
-            .collect()
+        legend_items(style, hue_labels, &cols)
     } else {
         Vec::new()
     };
-    let subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
+    let subtitle: &str = texts.subtitle(style);
     let mut l: Layout = layout(style, subtitle, rows.len(), min_slot, &items);
     let (lo, hi): (f64, f64) = range(
         style,
@@ -823,7 +892,7 @@ pub(crate) fn render_box(
         slot * 0.42
     };
 
-    let mut out: String = svg::card(&theme, &title(texts, style), subtitle, l.width, l.height);
+    let mut out: String = svg::card(&theme, &texts.title(style), subtitle, l.width, l.height);
     scale.draw(&mut out, &theme, l.left, l.width - l.right);
     for (n, &i) in rows.iter().enumerate() {
         let slot_x: f64 = l.left + n as f64 * slot;
@@ -838,16 +907,12 @@ pub(crate) fn render_box(
             } else {
                 style.category_color(n, &x_labels[i])
             };
-            let mut hover: String = format!("{} = {}", texts.x, x_labels[i]);
-            if grouped {
-                hover += &format!("\n{} = {}", texts.hue, hue_labels[j]);
-            }
-            for (name, v) in ["upper fence", "q75", "median", "q25", "lower fence"]
-                .iter()
-                .zip([five[4], five[3], five[2], five[1], five[0]])
-            {
-                hover += &format!("\n{name} = {}", svg::format_value(v));
-            }
+            let hover: String = box_hover(
+                texts,
+                &x_labels[i],
+                grouped.then(|| hue_labels[j].as_str()),
+                five,
+            );
             let w: f64 = if grouped { box_w * 0.8 } else { box_w };
             let cx: f64 = start + (s as f64 + 0.5) * box_w;
             out.push_str(&box_svg(&scale, cx, w, five, &color, theme.value, &hover));
@@ -871,7 +936,7 @@ pub(crate) fn render_box(
         );
     }
     hlines(&mut out, &theme, style, &scale, &l);
-    finish(&mut out, &theme, style, names(style, texts), &items, &l);
+    finish(&mut out, &theme, style, texts.names(style), &items, &l);
     out
 }
 
@@ -902,7 +967,6 @@ pub(crate) fn render_strip(
     hue_labels: &[String],
     points: &[(usize, usize, f64)],
     rows_with_values: usize,
-    subtitle: &str,
     style: &Style,
 ) -> String {
     let theme: Theme = style.theme();
@@ -931,7 +995,7 @@ pub(crate) fn render_strip(
         .map(|(i, x)| style.category_color(slot_of[i].unwrap_or(0), x))
         .collect();
     let shown: Vec<&String> = rows.iter().map(|&i| &x_labels[i]).collect();
-    let subtitle: String = sample_subtitle(style, subtitle, points.len(), rows_with_values);
+    let subtitle: String = sample_subtitle(style, &texts.subtitle, points.len(), rows_with_values);
     let subtitle: &str = &subtitle;
     let items: Vec<(String, String)> = cols
         .iter()
@@ -955,7 +1019,7 @@ pub(crate) fn render_strip(
     let slot: f64 = l.plot_w / rows.len().max(1) as f64;
     let tick: Tick = tick_mode(&mut l, &shown, slot);
 
-    let mut out: String = svg::card(&theme, &title(texts, style), subtitle, l.width, l.height);
+    let mut out: String = svg::card(&theme, &texts.title(style), subtitle, l.width, l.height);
     scale.draw(&mut out, &theme, l.left, l.width - l.right);
     for (k, &(i, j, y)) in points.iter().enumerate() {
         let Some(n) = slot_of[i] else {
@@ -1000,23 +1064,16 @@ pub(crate) fn render_strip(
         );
     }
     hlines(&mut out, &theme, style, &scale, &l);
-    finish(&mut out, &theme, style, names(style, texts), &items, &l);
+    finish(&mut out, &theme, style, texts.names(style), &items, &l);
     out
 }
 
 /// Mean of the finite values; NaN when there are none.
-fn mean(values: impl Iterator<Item = f64>) -> f64 {
+pub(crate) fn mean(values: impl Iterator<Item = f64>) -> f64 {
     let (sum, n): (f64, usize) = values
         .filter(|v| v.is_finite())
         .fold((0.0, 0), |(sum, n), v| (sum + v, n + 1));
     if n == 0 { f64::NAN } else { sum / n as f64 }
-}
-
-pub(crate) fn value_label(out: &mut String, theme: &Theme, x: f64, y: f64, text: &str) {
-    out.push_str(&format!(
-        r##"<text x="{x}" y="{y}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="middle">{text}</text>"##,
-        theme.value
-    ));
 }
 
 #[cfg(test)]
@@ -1045,16 +1102,5 @@ mod tests {
         assert_eq!((counts, outside), (vec![250.0; 4], 0.0));
         let (counts, outside): (Vec<f64>, f64) = regroup(&fine, (0.0, 100.0), (25.0, 75.0), 2);
         assert_eq!((counts, outside), (vec![250.0; 2], 500.0));
-    }
-
-    #[test]
-    fn sample_takes_one_row_from_each_run() {
-        let ys: Vec<f64> = (0..100_000).map(f64::from).collect();
-        let ds: Dataset = Dataset::new(df!("y" => ys).unwrap(), "");
-        let (sample, rows): (DataFrame, usize) = sample(&ds, &["y"]).unwrap();
-        assert_eq!((sample.height(), rows), (MAX_SAMPLE, 100_000));
-        let picked: Vec<f64> = f64s(&sample, "y").unwrap();
-        assert!(picked.iter().enumerate().all(|(run, &y)| y as usize / 2 == run));
-        assert_eq!(thin(&picked, 8000).len(), 8000);
     }
 }

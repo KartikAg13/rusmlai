@@ -7,9 +7,14 @@ use std::{
     fmt, fs, io,
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, OnceLock},
 };
 
 use comfy_table::{Table, presets::UTF8_FULL};
+use resvg::{
+    tiny_skia::{IntSize, Pixmap, Transform},
+    usvg::{self, fontdb},
+};
 
 use crate::{
     error::{OrFatal, warn},
@@ -17,9 +22,14 @@ use crate::{
     plot::{chart::Chart, style::Style},
 };
 
+/// PNGs are drawn at twice the chart's size, so they stay sharp on high-DPI screens.
+const PNG_SCALE: f32 = 2.0;
+/// A bigger card (`.size`, many categories) gets a smaller scale: 40 M pixels are 160 MB.
+const MAX_PNG_PIXELS: f32 = 40e6;
+
 /// A chart. When it goes out of scope it shows itself in a notebook if nothing displayed it.
-/// In a program it saves itself to `metadata/plots/{title}.svg` (next to the CSV) unless
-/// `.save` or `.svg` was called.
+/// In a program it saves itself to `metadata/plots/{title}.png` (next to the CSV) unless
+/// `.save` or `.svg` was called. A PNG opens as an image in any editor; an SVG opens as text.
 pub struct Figure {
     pub(crate) chart: Chart,
     pub(crate) style: Style,
@@ -49,8 +59,9 @@ impl Figure {
         self.render()
     }
 
-    /// Writes the SVG file (creating folders) in place of the auto-save. In a notebook it
-    /// also shows the chart. Never opens a viewer, so it is safe in loops.
+    /// Writes the chart (creating folders) in place of the auto-save: a PNG for `.png`, the SVG
+    /// for `.svg`, like matplotlib's `savefig`. In a notebook it also shows the chart. Never
+    /// opens a viewer, so it is safe in loops.
     #[track_caller]
     pub fn save(&self, path: impl AsRef<Path>) {
         self.write(path.as_ref()).or_fatal();
@@ -61,7 +72,7 @@ impl Figure {
     }
 
     /// Notebook: shows the chart inline. Program: saves it where the auto-save would
-    /// (`metadata/plots/{title}.svg`) and opens it in the system viewer.
+    /// (`metadata/plots/{title}.png`) and opens it in the system viewer.
     #[track_caller]
     pub fn show(&self) {
         if in_notebook() {
@@ -92,26 +103,105 @@ impl Figure {
         self.chart.render(&self.style.resolved())
     }
 
-    /// `metadata/plots/{title}.svg` next to the CSV.
+    /// `metadata/plots/{title}.png` next to the CSV.
     fn auto_path(&self) -> PathBuf {
         let name: String = self
             .chart
+            .texts
             .title(&self.style.resolved())
             .chars()
             .filter(|c| c.is_alphanumeric() || " -_.".contains(*c))
             .collect();
-        self.folder.join(format!("{name}.svg"))
+        // A title of only symbols or dots would make a hidden ".png" with no name.
+        let name: &str = match name.trim_matches(['.', ' ']) {
+            "" => self.chart.name,
+            name => name,
+        };
+        self.folder.join(format!("{name}.png"))
     }
 
     fn write(&self, path: &Path) -> Result<(), String> {
-        let fail = |e: io::Error| format!("could not save {}: {e}", path.display());
+        let fail = |e: String| format!("could not save {}: {e}", path.display());
+        let bytes: Vec<u8> = match path.extension().and_then(OsStr::to_str) {
+            Some(ext) if ext.eq_ignore_ascii_case("svg") => self.render().into_bytes(),
+            Some(ext) if ext.eq_ignore_ascii_case("png") => png(&self.render()).map_err(fail)?,
+            _ => return Err(fail("name the file .png or .svg".to_string())),
+        };
         if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-            fs::create_dir_all(dir).map_err(fail)?;
+            fs::create_dir_all(dir).map_err(|e: io::Error| fail(e.to_string()))?;
         }
-        fs::write(path, self.render()).map_err(fail)?;
+        fs::write(path, bytes).map_err(|e: io::Error| fail(e.to_string()))?;
         print_saved(path);
         Ok(())
     }
+}
+
+/// The SVG drawn at `PNG_SCALE` times its size with the system's fonts.
+fn png(svg: &str) -> Result<Vec<u8>, String> {
+    let options: usvg::Options = usvg::Options {
+        fontdb: fonts(),
+        ..usvg::Options::default()
+    };
+    let tree: usvg::Tree = usvg::Tree::from_str(svg, &options).map_err(|e| e.to_string())?;
+    let (w, h): (f32, f32) = (tree.size().width(), tree.size().height());
+    let scale: f32 = PNG_SCALE.min((MAX_PNG_PIXELS / (w * h)).sqrt());
+    let size: IntSize = tree
+        .size()
+        .to_int_size()
+        .scale_by(scale)
+        .ok_or("the chart is too large for a PNG")?;
+    let mut pixmap: Pixmap =
+        Pixmap::new(size.width(), size.height()).ok_or("the chart is too large for a PNG")?;
+    resvg::render(
+        &tree,
+        Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    // Fast compression: tiny-skia's `encode_png` level takes about 0.4 s per chart in a debug
+    // build, which is how most programs run. The card is opaque, so the premultiplied pixels
+    // are the plain ones and need no copy.
+    let mut bytes: Vec<u8> = Vec::new();
+    let mut encoder: png::Encoder<&mut Vec<u8>> =
+        png::Encoder::new(&mut bytes, size.width(), size.height());
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_compression(png::Compression::Fast);
+    let mut writer: png::Writer<&mut Vec<u8>> =
+        encoder.write_header().map_err(|e| e.to_string())?;
+    writer
+        .write_image_data(pixmap.data())
+        .map_err(|e| e.to_string())?;
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(bytes)
+}
+
+/// The system fonts, loaded once per program: scanning them takes longer than drawing a chart.
+/// A read-only cache, so evcxr's per-cell copy of this static is harmless (unlike a setting).
+fn fonts() -> Arc<fontdb::Database> {
+    static FONTS: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
+    FONTS
+        .get_or_init(|| {
+            let mut db: fontdb::Database = fontdb::Database::new();
+            db.load_system_fonts();
+            // fontdb takes "sans-serif" to mean Arial, which Linux rarely has.
+            let sans: Option<&str> = [
+                "Noto Sans",
+                "DejaVu Sans",
+                "Liberation Sans",
+                "Arial",
+                "Helvetica",
+            ]
+            .into_iter()
+            .find(|name| {
+                db.faces()
+                    .any(|face| face.families.iter().any(|(family, _)| family == name))
+            });
+            match sans {
+                Some(name) => db.set_sans_serif_family(name),
+                None => warn("no sans-serif font found, so PNG charts have no text; save as .svg"),
+            }
+            Arc::new(db)
+        })
+        .clone()
 }
 
 impl Drop for Figure {
@@ -137,7 +227,7 @@ fn in_notebook() -> bool {
 
 impl fmt::Display for Figure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<Figure: {}>", self.chart.name())
+        write!(f, "<Figure: {}>", self.chart.name)
     }
 }
 
@@ -216,4 +306,23 @@ pub(crate) fn escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn png_is_twice_the_size_and_draws_text() {
+        let chart = |text: &str| {
+            format!(
+                r#"<svg width="30" height="20" xmlns="http://www.w3.org/2000/svg"><rect width="30" height="20" fill="white"/><text x="2" y="14" font-family="sans-serif" font-size="12">{text}</text></svg>"#
+            )
+        };
+        let bytes: Vec<u8> = png(&chart("Ab")).unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        let ihdr = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!((ihdr(16), ihdr(20)), (60, 40));
+        assert_ne!(bytes, png(&chart("")).unwrap(), "no font drew the text");
+    }
 }

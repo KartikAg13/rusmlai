@@ -45,18 +45,10 @@ impl Dataset {
         if columns.is_empty() {
             return Err(DatasetError::EmptySelect);
         }
-        for column in columns {
-            if !self.metadata.dataset_cache.columns.contains_key(*column) {
-                return Err(DatasetError::ColumnNotFound {
-                    requested: column.to_string(),
-                    available: self.columns().join(","),
-                });
-            }
-        }
         let picked: Vec<Column> = columns
             .iter()
             .map(|name| self.column(name).cloned())
-            .collect::<Result<_, _>>()?;
+            .collect::<Result<Vec<Column>, DatasetError>>()?;
         Ok(Self {
             dataframe: DataFrame::new(self.dataframe.height(), picked)?,
             metadata: self.metadata.select(columns),
@@ -65,12 +57,7 @@ impl Dataset {
 
     fn try_drop(&self, columns: &[&str]) -> Result<Dataset, DatasetError> {
         for column in columns {
-            if !self.metadata.dataset_cache.columns.contains_key(*column) {
-                return Err(DatasetError::ColumnNotFound {
-                    requested: column.to_string(),
-                    available: self.columns().join(","),
-                });
-            }
+            self.try_column_info(column)?;
         }
 
         let remaining: Vec<&str> = self

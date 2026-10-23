@@ -6,11 +6,13 @@ const DIAGNOSIS: &[(&str, &str)] = &[("Presence", "#D1495B"), ("Absence", "#0079
 fn main() {
     let dataset: Dataset =
         read_csv("/home/kartikag234/Documents/rusmlai/tests/fixtures/s6e2/train.csv");
+    dataset.metadata(&[]);
     dataset.head(5);
     dataset.describe();
+    dataset.info();
 
     // Every chart below starts from a light card with seaborn's "deep" colors.
-    // Each chart saves itself to tests/fixtures/s6e2/metadata/plots/{title}.svg.
+    // Each chart saves itself to tests/fixtures/s6e2/metadata/plots/{title}.png.
     set_theme("light");
     set_palette("deep");
 
@@ -162,4 +164,29 @@ fn main() {
         .sort("value")
         .color_map(DIAGNOSIS)
         .legend("bottom");
+
+    // Shapes and gaps: pair plot, densities, violins, a Q-Q plot, missing values.
+    dataset
+        .pairplot(
+            &["Age", "BP", "Cholesterol", "Max HR", "ST depression"],
+            "Heart Disease",
+        )
+        .title("Vitals in pairs")
+        .color_map(DIAGNOSIS);
+    dataset
+        .kdeplot("Max HR", "Heart Disease")
+        .title("Max heart rate density by diagnosis")
+        .color_map(DIAGNOSIS);
+    dataset
+        .hist("Cholesterol", "", 40)
+        .title("Cholesterol with a density line")
+        .xlim(100.0, 400.0)
+        .kde();
+    dataset
+        .violinplot("Heart Disease", "Age", "Sex")
+        .title("Age by diagnosis and sex");
+    dataset
+        .qqplot("Cholesterol")
+        .title("Is cholesterol normal?");
+    dataset.missing();
 }

@@ -3,10 +3,11 @@ use thiserror::Error;
 
 use crate::dataset::error::DatasetError;
 
+/// Why a chart or a chart option failed. The `try_*` chart methods return it.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum PlotError {
-    #[error("unknown estimator: {0}")]
+    #[error("unknown estimator '{0}'. Use one of: mean, median, sum, min, max, std, count")]
     UnknownEstimator(String),
 
     #[error("x must name a column")]
@@ -17,8 +18,14 @@ pub enum PlotError {
     )]
     EstimatorNeedsY(String),
 
-    #[error("nothing to plot: no rows are left in {0} after nulls are dropped")]
+    #[error("nothing to plot: no rows of {0} have values (nulls, NaN and infinities are left out)")]
     EmptyResult(String),
+
+    #[error("nothing to plot: {0}")]
+    Undefined(String),
+
+    #[error("{0} has a single value, so it has no shape to draw")]
+    NoSpread(String),
 
     #[error("bins must be between 1 and 1000, got {0}")]
     InvalidBins(usize),

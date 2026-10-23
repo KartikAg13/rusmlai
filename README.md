@@ -47,11 +47,17 @@ ds.bar("course", "exam_score", "", "mean")
     .hline(62.5, "overall mean");
 ```
 
-- The charts are `bar`, `count`, `describe_bar`, `pie`, `hist`, `boxplot`, `stripplot`, `heatmap`, `corrplot`, `scatter`, `line` and `regplot`.
-- Options chain like keyword arguments in Python: `title`, `subtitle`, `xlabel`, `ylabel`, `palette`, `colors`, `color`, `color_map`, `theme`, `size`, `order`, `hue_order`, `sort`, `top`, `values`, `ylim`, `xlim`, `cmap`, `sample`, `horizontal`, `percent`, `stacked`, `hline`, `vline`, `legend`. `set_theme` and `set_palette` set defaults for a whole notebook.
+- The charts are `bar`, `count`, `describe_bar`, `pie`, `hist`, `boxplot`, `stripplot`, `violinplot`, `kdeplot`, `qqplot`, `heatmap`, `corrplot`, `scatter`, `line`, `regplot`, `pairplot`, `missing` and `missing_matrix`.
+- Options chain like keyword arguments in Python: `title`, `subtitle`, `xlabel`, `ylabel`, `palette`, `colors`, `color`, `color_map`, `theme`, `size`, `order`, `hue_order`, `sort`, `top`, `values`, `ylim`, `xlim`, `cmap`, `sample`, `horizontal`, `percent`, `stacked`, `hline`, `vline`, `legend`, `kde`. `set_theme` and `set_palette` set defaults for a whole notebook.
 - Colors take hex codes or names: `"teal"`, `"tab:blue"`, or `"C0"` for the first color of the current palette. By default each category gets its own color from the `rusmlai` palette; `colorblind`, `tab10`, `deep` and five more palettes are options.
 - Heatmaps draw a color scale. Long category names tilt instead of being cut.
-- In a notebook, a chart shows itself. In a program, it saves itself to `metadata/plots/{title}.svg` next to the CSV, unless you call `.save(path)`.
+- In a notebook, a chart shows itself. In a program, it saves itself to `metadata/plots/{title}.png` next to the CSV, unless you call `.save(path)` (`.png` or `.svg`).
+- A PNG takes about 0.1 s to draw when dependencies are optimized, and about 0.5 s in a plain debug build. To make `cargo run` fast for charts and for Polars, add this to your `Cargo.toml` (the first build then takes longer):
+
+  ```toml
+  [profile.dev.package."*"]
+  opt-level = 3
+  ```
 
 On a 630,000-row, 13-column Kaggle CSV (an i5-1135G7 laptop):
 

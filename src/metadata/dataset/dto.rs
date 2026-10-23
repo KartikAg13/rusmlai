@@ -1,11 +1,10 @@
+use std::sync::OnceLock;
+
 use indexmap::IndexMap;
 use polars::datatypes::DataType;
 use serde::{Deserialize, Serialize};
 
-use crate::metadata::{
-    dataset::{info::ColumnInfo, stats::ColumnStats},
-    utils::option_to_oncelock,
-};
+use crate::metadata::dataset::{info::ColumnInfo, stats::ColumnStats};
 
 #[derive(Serialize, Deserialize)]
 pub struct DatasetCacheDTO {
@@ -25,7 +24,7 @@ impl From<ColumnInfoDTO> for ColumnInfo {
         Self {
             dtype: dto.dtype,
             null_count: dto.null_count,
-            stats: option_to_oncelock(dto.stats),
+            stats: dto.stats.map_or_else(OnceLock::new, OnceLock::from),
         }
     }
 }

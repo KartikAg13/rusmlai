@@ -61,9 +61,10 @@ impl DatasetCache {
         let names: Vec<String> = stale.iter().map(|c| c.name().to_string()).collect();
         let mut fresh: IndexMap<String, ColumnStats> = names
             .into_iter()
-            .zip(
-                ColumnStats::compute_stats(&DataFrame::new(dataframe.height(), stale)?)?,
-            )
+            .zip(ColumnStats::compute_stats(&DataFrame::new(
+                dataframe.height(),
+                stale,
+            )?)?)
             .collect();
 
         let data: IndexMap<String, Arc<ColumnInfo>> = dataframe
@@ -135,7 +136,10 @@ impl DatasetCache {
         };
         TableView::new(
             caption,
-            &["columns", "count", "mean", "std", "min", "25%", "50%", "75%", "max"].map(String::from),
+            &[
+                "columns", "count", "mean", "std", "min", "25%", "50%", "75%", "max",
+            ]
+            .map(String::from),
             &rows,
         )
     }

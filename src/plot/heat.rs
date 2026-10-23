@@ -1,77 +1,371 @@
 //! `heatmap` and `corrplot`: a grid of colored cells.
 
-use polars::prelude::{DataFrame, DataType, Expr, IntoLazy, col, len};
+use polars::prelude::{DataFrame, DataType, Expr, IntoLazy, SortMultipleOptions, col, len, lit};
 
 use crate::{
     dataset::Dataset,
     display::{Figure, escape},
+    error::OrFatal,
     plot::{
-        bar::{index, labels, strings},
-        chart::{Chart, Texts},
-        dist::{f64s, title},
+        VALUE,
+        chart::{Body, Texts},
         error::PlotError,
+        f64s, labels, optional,
         result::PlotResult,
+        rows, slots,
         spec::{Estimator, PlotSpec},
         style::Style,
-        svg::{self, HEIGHT, Tick, WIDTH},
+        svg::{self, HEIGHT, Tick, WIDTH, extent},
+        unique,
     },
 };
 
-const VALUE: &str = "__rusmlai_value";
-
-/// `estimator(value)` for each pair of `x` and `y` categories. `value = ""` counts rows.
-pub(crate) fn try_heatmap(
-    dataset: &Dataset,
-    x: &str,
-    y: &str,
-    value: &str,
-    estimator: &str,
-) -> Result<Figure, PlotError> {
-    dataset.try_column_info(x)?;
-    dataset.try_column_info(y)?;
-    let value: Option<String> = (!value.is_empty()).then(|| value.to_string());
-    let estimator: Estimator = match (&value, estimator) {
-        (None, "" | "count") => Estimator::Count,
-        (None, other) => return Err(PlotError::EstimatorNeedsY(other.to_string())),
-        (Some(_), "") => Estimator::Mean,
-        (Some(_), other) => Estimator::parse(other)?,
-    };
-    if let Some(value) = &value {
-        dataset.try_numeric_stats(value)?;
+impl Dataset {
+    /// A grid of colored cells: the mean of `value`, or another `estimator`, for each pair of
+    /// `x` and `y` categories. (seaborn: `heatmap` of a pivot table)
+    ///
+    /// `value = ""` counts rows, and then `estimator` must be `""` or "count". With a `value`,
+    /// `estimator = ""` means "mean"; the others are median, sum, min, max, std and count. A pair
+    /// with no rows stays empty. A color bar shows the scale. The cells are cached next to the
+    /// CSV.
+    ///
+    /// Options: `.title`, `.subtitle`, `.xlabel`, `.ylabel`, `.theme`, `.size`, `.cmap` and
+    /// `.values`.
+    ///
+    /// # Panics
+    ///
+    /// If a column doesn't exist, `value` isn't numeric, the estimator is unknown or needs a
+    /// `value`, or no row has values. [`Dataset::try_heatmap`] returns these as errors.
+    ///
+    /// # Examples
+    ///
+    /// Students in each batch who passed and failed:
+    /// ```
+    /// use rusmlai::prelude::*;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.heatmap("batch", "passed", "", ""); // saves metadata/plots/Heatmap batch vs passed.png
+    /// ```
+    ///
+    /// The mean CGPA of each cell, with every option:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .heatmap("batch", "passed", "cgpa", "mean")
+    ///     .title("Mean CGPA")
+    ///     .subtitle("by batch and result")
+    ///     .xlabel("batch")
+    ///     .ylabel("passed")
+    ///     .theme("light")
+    ///     .size(700.0, 400.0)
+    ///     .cmap("viridis")
+    ///     .values(true)
+    ///     .svg(); // the SVG text, and no auto-save
+    /// assert!(svg.contains("Mean CGPA"));
+    /// assert!(svg.contains("batch = B13\npassed = true\nmean cgpa = 8.33"));
+    /// ```
+    ///
+    /// Edge case: a mean needs a column of values:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.heatmap("batch", "passed", "", "mean"); // panics: estimator needs a column of values
+    /// ```
+    #[track_caller]
+    pub fn heatmap(&self, x: &str, y: &str, value: &str, estimator: &str) -> Figure {
+        self.try_heatmap(x, y, value, estimator).or_fatal()
     }
-    let spec: PlotSpec = PlotSpec::Heatmap {
-        x: x.to_string(),
-        y: y.to_string(),
-        value: value.clone(),
-        estimator,
-    };
-    let result: PlotResult = dataset.metadata.plot(spec, || {
-        compute_heatmap(dataset, x, y, value.as_deref(), estimator)
-    })?;
-    check_values(&result, &format!("{x}, {y}"))?;
-    let (title, what): (String, String) = match &value {
-        Some(v) => (
-            format!("Heatmap: {x} × {y} ({} {v})", estimator.as_str()),
-            format!("{} {v}", estimator.as_str()),
-        ),
-        None => (format!("Heatmap: {x} vs {y}"), "count".to_string()),
-    };
-    Ok(Figure::new(
-        Chart::Matrix {
-            name: "heatmap",
-            texts: Texts {
-                title,
-                x: x.to_string(),
-                y: y.to_string(),
-                value: what,
-                hue: String::new(),
+
+    /// [`Dataset::heatmap`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// - `PlotError::Dataset` when a column doesn't exist or `value` isn't numeric.
+    /// - `PlotError::UnknownEstimator` for an estimator name it doesn't know.
+    /// - `PlotError::EstimatorNeedsY` for an estimator other than count without a `value`.
+    /// - `PlotError::EmptyResult` when no row has values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # use rusmlai::plot::error::PlotError;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.try_heatmap("batch", "passed", "", "")?.svg();
+    /// assert!(svg.contains("batch = B13\npassed = true\ncount = 3"));
+    /// # Ok::<(), PlotError>(())
+    /// ```
+    ///
+    /// An estimator it doesn't know:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// use rusmlai::plot::error::PlotError;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let result = ds.try_heatmap("batch", "passed", "cgpa", "mode");
+    /// assert!(matches!(result, Err(PlotError::UnknownEstimator(_))));
+    /// ```
+    pub fn try_heatmap(
+        &self,
+        x: &str,
+        y: &str,
+        value: &str,
+        estimator: &str,
+    ) -> Result<Figure, PlotError> {
+        self.try_column_info(x)?;
+        self.try_column_info(y)?;
+        let value: Option<String> = optional(value);
+        let estimator: Estimator = Estimator::pick(value.is_some(), estimator)?;
+        if let Some(value) = &value {
+            self.try_numeric_stats(value)?;
+        }
+        let spec: PlotSpec = PlotSpec::Heatmap {
+            x: x.to_string(),
+            y: y.to_string(),
+            value: value.clone(),
+            estimator,
+        };
+        let result: PlotResult = self.metadata.plot(spec, || {
+            compute_heatmap(self, x, y, value.as_deref(), estimator)
+        })?;
+        if result.is_empty() {
+            return Err(PlotError::EmptyResult(format!("{x}, {y}")));
+        }
+        let (title, what): (String, String) = match &value {
+            Some(v) => (
+                format!("Heatmap: {x} × {y} ({} {v})", estimator.as_str()),
+                format!("{} {v}", estimator.as_str()),
+            ),
+            None => (format!("Heatmap: {x} vs {y}"), "count".to_string()),
+        };
+        let texts: Texts = Texts {
+            title,
+            x: x.to_string(),
+            y: y.to_string(),
+            value: what,
+            ..Texts::default()
+        };
+        Ok(self.figure(
+            "heatmap",
+            texts,
+            Body::Matrix {
+                result,
+                fixed: None,
             },
+        ))
+    }
+
+    /// Where the nulls are: one band per column, rows top to bottom in file order, with gaps
+    /// where values are missing. The rows are grouped into 250 bands. (missingno: `matrix`)
+    ///
+    /// One group-by counts the nulls of every column in every band, and the result is cached
+    /// next to the CSV. Hover a column for its null count.
+    ///
+    /// Options: `.title`, `.subtitle`, `.theme`, `.size`, `.palette`, `.colors` and `.color`.
+    /// The color is the color of the values.
+    ///
+    /// # Examples
+    ///
+    /// Where the 3 nulls are:
+    /// ```
+    /// use rusmlai::prelude::*;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.missing_matrix(); // saves metadata/plots/Missing values by row.png
+    /// ```
+    ///
+    /// With every option:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .missing_matrix()
+    ///     .title("Nulls by row")
+    ///     .subtitle("students.csv")
+    ///     .theme("light")
+    ///     .size(700.0, 500.0)
+    ///     .color("steelblue")
+    ///     .svg(); // the SVG text, and no auto-save
+    /// assert!(svg.contains("Nulls by row"));
+    /// assert!(svg.contains("#4682B4")); // steelblue
+    /// ```
+    ///
+    /// Edge case: columns with no nulls draw full bands:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.select(&["id", "batch"]).missing_matrix().svg();
+    /// assert!(svg.contains("no missing values"));
+    /// ```
+    #[track_caller]
+    pub fn missing_matrix(&self) -> Figure {
+        self.try_missing_matrix().or_fatal()
+    }
+
+    /// [`Dataset::missing_matrix`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// `PlotError::EmptyResult` for a dataset with no columns. `read_csv` and `select` never
+    /// make one, so in practice this returns `Ok`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # use rusmlai::plot::error::PlotError;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.try_missing_matrix()?.svg();
+    /// assert!(svg.contains("3 nulls in 3 of 6 columns"));
+    /// # Ok::<(), PlotError>(())
+    /// ```
+    pub fn try_missing_matrix(&self) -> Result<Figure, PlotError> {
+        let columns: Vec<String> = self.columns();
+        if columns.is_empty() {
+            return Err(PlotError::EmptyResult("the dataset".to_string()));
+        }
+        let spec: PlotSpec = PlotSpec::Missing {
+            columns: columns.clone(),
+        };
+        let result: PlotResult = self
+            .metadata
+            .plot(spec, || compute_missing(self, &columns))?;
+        let nulls: Vec<usize> = columns
+            .iter()
+            .map(|c| Ok(self.try_column_info(c)?.null_count))
+            .collect::<Result<_, PlotError>>()?;
+        let with_nulls: usize = nulls.iter().filter(|n| **n > 0).count();
+        let texts: Texts = Texts {
+            title: "Missing values by row".to_string(),
+            subtitle: match with_nulls {
+                0 => "no missing values".to_string(),
+                k => format!(
+                    "{} nulls in {k} of {} columns",
+                    nulls.iter().sum::<usize>(),
+                    columns.len()
+                ),
+            },
+            y: "row".to_string(),
+            ..Texts::default()
+        };
+        let body: Body = Body::Missing {
             result,
-            fixed: None,
-            subtitle: String::new(),
-        },
-        dataset.metadata.filepath.as_deref(),
-    ))
+            nulls,
+            rows: self.metadata.height,
+        };
+        Ok(self.figure("missing_matrix", texts, body))
+    }
+
+    /// The Pearson correlation of every pair of numeric columns. (seaborn: `heatmap(df.corr())`)
+    ///
+    /// Like pandas, each pair uses the rows where both columns have values. The color range is
+    /// fixed at -1 to 1. Text columns are skipped. To pick columns, call it on a
+    /// [`Dataset::select`]. The matrix is cached next to the CSV.
+    ///
+    /// Options: `.title`, `.subtitle`, `.xlabel`, `.ylabel`, `.theme`, `.size`, `.cmap` and
+    /// `.values`.
+    ///
+    /// # Panics
+    ///
+    /// If the dataset has no numeric column, or no pair has a correlation.
+    /// [`Dataset::try_corrplot`] returns these as errors.
+    ///
+    /// # Examples
+    ///
+    /// Every numeric column against every other:
+    /// ```
+    /// use rusmlai::prelude::*;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.corrplot(); // saves metadata/plots/Corrplot Correlation Matrix.png
+    /// ```
+    ///
+    /// Age and CGPA only, with every option:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds
+    ///     .select(&["age", "cgpa"])
+    ///     .corrplot()
+    ///     .title("Age vs CGPA")
+    ///     .subtitle("Pearson")
+    ///     .xlabel("column")
+    ///     .ylabel("column")
+    ///     .theme("light")
+    ///     .size(500.0, 420.0)
+    ///     .cmap("coolwarm")
+    ///     .values(true)
+    ///     .svg(); // the SVG text, and no auto-save
+    /// assert!(svg.contains("Age vs CGPA"));
+    /// assert!(svg.contains("age × age\ncorrelation = 1"));
+    /// ```
+    ///
+    /// Edge case: text columns have no correlation:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// ds.select(&["name", "batch"]).corrplot(); // panics: nothing to plot
+    /// ```
+    #[track_caller]
+    pub fn corrplot(&self) -> Figure {
+        self.try_corrplot().or_fatal()
+    }
+
+    /// [`Dataset::corrplot`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// - `PlotError::EmptyResult` when the dataset has no numeric column.
+    /// - `PlotError::Undefined` when no pair has 2 or more rows with different values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # use rusmlai::plot::error::PlotError;
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let svg = ds.try_corrplot()?.svg();
+    /// assert!(svg.contains("cgpa × cgpa\ncorrelation = 1"));
+    /// # Ok::<(), PlotError>(())
+    /// ```
+    ///
+    /// No numeric column:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// use rusmlai::plot::error::PlotError;
+    ///
+    /// let ds = read_csv("tests/data/students.csv");
+    /// let result = ds.select(&["name", "batch"]).try_corrplot();
+    /// assert!(matches!(result, Err(PlotError::EmptyResult(_))));
+    /// ```
+    pub fn try_corrplot(&self) -> Result<Figure, PlotError> {
+        let columns: Vec<String> = self
+            .columns()
+            .into_iter()
+            .filter(|name| self.try_numeric_stats(name).is_ok())
+            .collect();
+        if columns.is_empty() {
+            return Err(PlotError::EmptyResult("the numeric columns".to_string()));
+        }
+        let spec: PlotSpec = PlotSpec::Corrplot {
+            columns: columns.clone(),
+        };
+        let result: PlotResult = self.metadata.plot(spec, || compute_corr(self, &columns))?;
+        if result.is_empty() {
+            return Err(PlotError::Undefined(
+                "no two numeric columns have a correlation: each needs 2 or more rows with different values"
+                    .to_string(),
+            ));
+        }
+        let texts: Texts = Texts {
+            title: "Corrplot: Correlation Matrix".to_string(),
+            value: "correlation".to_string(),
+            ..Texts::default()
+        };
+        let fixed: Option<(f64, f64)> = Some((-1.0, 1.0));
+        Ok(self.figure("corrplot", texts, Body::Matrix { result, fixed }))
+    }
 }
 
 fn compute_heatmap(
@@ -81,34 +375,26 @@ fn compute_heatmap(
     value: Option<&str>,
     estimator: Estimator,
 ) -> Result<PlotResult, PlotError> {
-    let mut columns: Vec<Expr> = vec![col(x), col(y)];
-    columns.extend(value.map(col));
+    let columns: Vec<&str> = [Some(x), Some(y), value].into_iter().flatten().collect();
+    let keys: Vec<Expr> = unique([x, y]).into_iter().map(col).collect();
     let agg: Expr = match value {
         Some(value) => estimator.expr(value),
         None => len(),
     };
-    let grouped: DataFrame = dataset
-        .dataframe
-        .clone()
-        .lazy()
-        .select(columns)
-        .drop_nulls(None)
-        .group_by([col(x), col(y)])
+    let grouped: DataFrame = rows(dataset, &columns)
+        .group_by(keys)
         .agg([agg.cast(DataType::Float64).alias(VALUE)])
         .collect()?;
     let (x_labels, y_labels): (Vec<String>, Vec<String>) =
         (labels(dataset, &grouped, x)?, labels(dataset, &grouped, y)?);
-    let (xs, ys, values): (Vec<String>, Vec<String>, Vec<f64>) = (
-        strings(&grouped, x)?,
-        strings(&grouped, y)?,
-        f64s(&grouped, VALUE)?,
-    );
-    let (x_index, y_index) = (index(&x_labels), index(&y_labels));
     let mut grid: Vec<Vec<f64>> = vec![vec![f64::NAN; x_labels.len()]; y_labels.len()];
-    for row in 0..grouped.height() {
-        if let (Some(&i), Some(&j)) = (x_index.get(xs[row].as_str()), y_index.get(ys[row].as_str()))
-        {
-            grid[j][i] = values[row];
+    let cells =
+        slots(&grouped, Some(x), &x_labels)?
+            .into_iter()
+            .zip(slots(&grouped, Some(y), &y_labels)?);
+    for ((i, j), value) in cells.zip(f64s(&grouped, VALUE)?) {
+        if let (Some(i), Some(j)) = (i, j) {
+            grid[j][i] = value;
         }
     }
     Ok(PlotResult::Matrix {
@@ -118,39 +404,49 @@ fn compute_heatmap(
     })
 }
 
-/// Pearson correlation of every pair of numeric columns, on the rows where none is null.
-pub(crate) fn try_corrplot(dataset: &Dataset) -> Result<Figure, PlotError> {
-    let columns: Vec<String> = dataset
-        .columns()
+const BANDS: usize = 250; // row bands of missing_matrix, like missingno's usual sample
+const ROW: &str = "__rusmlai_row";
+const BAND: &str = "__rusmlai_band";
+
+/// The share of nulls in each band of rows, per column: `grid[band][column]`.
+fn compute_missing(dataset: &Dataset, columns: &[String]) -> Result<PlotResult, PlotError> {
+    let height: usize = dataset.metadata.height;
+    let size: usize = height.div_ceil(BANDS).max(1);
+    let band: Expr = (col(ROW).cast(DataType::Float64) / lit(size as f64)).cast(DataType::Int64);
+    let grouped: DataFrame = dataset
+        .dataframe
+        .clone()
+        .lazy()
+        .with_row_index(ROW, None)
+        .group_by([band.alias(BAND)])
+        .agg(
+            columns
+                .iter()
+                .map(|c| col(c.as_str()).null_count().cast(DataType::Float64))
+                .collect::<Vec<Expr>>(),
+        )
+        .sort([BAND], SortMultipleOptions::default())
+        .collect()?;
+    let bands: Vec<usize> = f64s(&grouped, BAND)?
         .into_iter()
-        .filter(|name| dataset.try_numeric_stats(name).is_ok())
+        .map(|b| b as usize)
         .collect();
-    if columns.is_empty() {
-        return Err(PlotError::EmptyResult("the numeric columns".to_string()));
+    let rows_in = |b: usize| (height - b * size).min(size) as f64;
+    let mut grid: Vec<Vec<f64>> = vec![Vec::with_capacity(columns.len()); bands.len()];
+    for c in columns {
+        for (k, nulls) in f64s(&grouped, c)?.into_iter().enumerate() {
+            grid[k].push(nulls / rows_in(bands[k]));
+        }
     }
-    let spec: PlotSpec = PlotSpec::Corrplot {
-        columns: columns.clone(),
-    };
-    let result: PlotResult = dataset
-        .metadata
-        .plot(spec, || compute_corr(dataset, &columns))?;
-    check_values(&result, "the numeric columns")?;
-    Ok(Figure::new(
-        Chart::Matrix {
-            name: "corrplot",
-            texts: Texts {
-                title: "Corrplot: Correlation Matrix".to_string(),
-                x: String::new(),
-                y: String::new(),
-                value: "correlation".to_string(),
-                hue: String::new(),
-            },
-            result,
-            fixed: Some((-1.0, 1.0)),
-            subtitle: String::new(),
-        },
-        dataset.metadata.filepath.as_deref(),
-    ))
+    let y_labels: Vec<String> = bands
+        .iter()
+        .map(|&b| format!("rows {} to {}", b * size + 1, (b * size + size).min(height)))
+        .collect();
+    Ok(PlotResult::Matrix {
+        x_labels: columns.to_vec(),
+        y_labels,
+        grid,
+    })
 }
 
 /// Pearson correlation of each pair on the rows where both values are present, like pandas.
@@ -185,7 +481,8 @@ fn compute_corr(dataset: &Dataset, columns: &[String]) -> Result<PlotResult, Plo
 /// Σ(da·db) / √(Σda² · Σdb²) over the rows where `a` and `b` are both present, two passes. A
 /// constant column gives 0 / 0 = NaN (no correlation), not 0.
 fn pearson(a: &str, b: &str) -> Expr {
-    let both: Expr = col(a).is_not_null().and(col(b).is_not_null());
+    let finite = |c: &str| col(c).cast(DataType::Float64).is_finite(); // null and NaN are false
+    let both: Expr = finite(a).and(finite(b));
     let centered = |c: &str| {
         let v: Expr = col(c).cast(DataType::Float64).filter(both.clone());
         v.clone() - v.mean()
@@ -194,24 +491,12 @@ fn pearson(a: &str, b: &str) -> Expr {
     (da.clone() * db.clone()).sum() / ((da.clone() * da).sum() * (db.clone() * db).sum()).sqrt()
 }
 
-fn check_values(result: &PlotResult, columns: &str) -> Result<(), PlotError> {
-    let PlotResult::Matrix { grid, .. } = result else {
-        unreachable!("heatmaps hold Matrix results");
-    };
-    if grid.iter().flatten().any(|v| v.is_finite()) {
-        Ok(())
-    } else {
-        Err(PlotError::EmptyResult(columns.to_string()))
-    }
-}
-
 /// The old matrix: y labels on the left, x labels on top, rounded cells with numbers.
 /// `fixed` pins the color range (corrplot uses -1 to 1).
 pub(crate) fn render_matrix(
     texts: &Texts,
     result: &PlotResult,
     fixed: Option<(f64, f64)>,
-    subtitle: &str,
     style: &Style,
 ) -> String {
     let PlotResult::Matrix {
@@ -226,26 +511,30 @@ pub(crate) fn render_matrix(
     let (card_w, card_h): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
     // Row names fit the left margin; column names tilt up when wider than a cell, and the top
     // and right margins grow for them.
-    let longest: f64 = y_labels.iter().map(|label| svg::text_px(label)).fold(0.0, f64::max);
+    let longest: f64 = y_labels
+        .iter()
+        .map(|label| svg::text_px(label))
+        .fold(0.0, f64::max);
     let (left, bottom): (f64, f64) = ((longest.min(svg::MAX_LABEL) + 40.0).max(110.0), 70.0);
     let (nx, ny): (usize, usize) = (x_labels.len().max(1), y_labels.len().max(1));
     let cell = |right: f64| ((card_w - left - right) / nx as f64).max(28.0);
-    let tick: Tick = if svg::tilts(x_labels, cell(100.0)) { Tick::Up } else { Tick::Flat };
-    let room: f64 = if tick == Tick::Up { svg::tilt_room(x_labels) } else { 0.0 };
+    let tick: Tick = if svg::tilts(x_labels, cell(100.0)) {
+        Tick::Up
+    } else {
+        Tick::Flat
+    };
+    let room: f64 = if tick == Tick::Up {
+        svg::tilt_room(x_labels)
+    } else {
+        0.0
+    };
     let (top, right): (f64, f64) = (100.0f64.max(92.0 + room), 100.0f64.max(room + 8.0));
     let cell_w: f64 = cell(right);
     let cell_h: f64 = ((card_h - top - bottom) / ny as f64).max(28.0);
     let width: f64 = (left + cell_w * nx as f64 + right).max(card_w);
     let height: f64 = (top + cell_h * ny as f64 + bottom).max(card_h);
 
-    let (vmin, vmax): (f64, f64) = fixed.unwrap_or_else(|| {
-        grid.iter()
-            .flatten()
-            .filter(|v| v.is_finite())
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &v| {
-                (lo.min(v), hi.max(v))
-            })
-    });
+    let (vmin, vmax): (f64, f64) = fixed.unwrap_or_else(|| extent(grid.iter().flatten().copied()));
     let diverging: bool = style.cmap.map_or(vmin < 0.0, |c| c.diverging);
     let stops: Vec<&str> = match style.cmap {
         Some(cmap) => cmap.stops.to_vec(),
@@ -263,9 +552,9 @@ pub(crate) fn render_matrix(
         svg::mix(&stops, t)
     };
     let show_values: bool = style.values.unwrap_or(true);
-    let subtitle: &str = style.subtitle.as_deref().unwrap_or(subtitle);
+    let subtitle: &str = texts.subtitle(style);
 
-    let mut out: String = svg::card(&theme, &title(texts, style), subtitle, width, height);
+    let mut out: String = svg::card(&theme, &texts.title(style), subtitle, width, height);
     for (c, x_label) in x_labels.iter().enumerate() {
         svg::x_tick(
             &mut out,
@@ -321,7 +610,11 @@ pub(crate) fn render_matrix(
             }
         }
     }
-    let (lo, hi): (f64, f64) = if diverging { (-reach, reach) } else { (vmin, vmax) };
+    let (lo, hi): (f64, f64) = if diverging {
+        (-reach, reach)
+    } else {
+        (vmin, vmax)
+    };
     svg::colorbar(
         &mut out,
         &theme,
@@ -332,8 +625,7 @@ pub(crate) fn render_matrix(
         top,
         (cell_h * ny as f64).max(120.0),
     );
-    let x_name: &str = style.xlabel.as_deref().unwrap_or(&texts.x);
-    let y_name: &str = style.ylabel.as_deref().unwrap_or(&texts.y);
+    let (x_name, y_name): (&str, &str) = texts.names(style);
     if !x_name.is_empty() || !y_name.is_empty() {
         svg::axis_names(
             &mut out,
@@ -345,6 +637,101 @@ pub(crate) fn render_matrix(
             height,
         );
     }
+    out.push_str("</svg>");
+    out
+}
+
+/// One band per column in the palette's first color, with a gap in the card color where a band
+/// of rows has nulls (darker for more nulls). Column names on top, tilted when they don't fit.
+pub(crate) fn render_missing(
+    texts: &Texts,
+    result: &PlotResult,
+    nulls: &[usize],
+    rows: usize,
+    style: &Style,
+) -> String {
+    let PlotResult::Matrix {
+        x_labels,
+        y_labels,
+        grid,
+    } = result
+    else {
+        unreachable!("missing_matrix holds a Matrix result");
+    };
+    let theme = style.theme();
+    let (card_w, card_h): (f64, f64) = style.size.unwrap_or((WIDTH, HEIGHT));
+    let (left, right): (f64, f64) = (72.0, 36.0);
+    let n: usize = x_labels.len().max(1);
+    let cell_w: f64 = ((card_w - left - right) / n as f64).max(14.0);
+    let tick: Tick = if svg::tilts(x_labels, cell_w) {
+        Tick::Up
+    } else {
+        Tick::Flat
+    };
+    let room: f64 = if tick == Tick::Up {
+        svg::tilt_room(x_labels)
+    } else {
+        0.0
+    };
+    let top: f64 = 100f64.max(92.0 + room);
+    let plot_h: f64 = (card_h - top - 40.0).max(200.0);
+    let width: f64 = (left + cell_w * n as f64 + right).max(card_w);
+    let height: f64 = top + plot_h + 40.0;
+    let band_h: f64 = plot_h / grid.len().max(1) as f64;
+    let color: String = style.single_color("");
+    let subtitle: &str = texts.subtitle(style);
+
+    let mut out: String = svg::card(&theme, &texts.title(style), subtitle, width, height);
+    for (c, name) in x_labels.iter().enumerate() {
+        let x: f64 = left + c as f64 * cell_w + 1.0;
+        let w: f64 = (cell_w - 2.0).max(1.0);
+        let share: f64 = nulls[c] as f64 / rows.max(1) as f64 * 100.0;
+        let hover: String = format!(
+            "{name}\nnulls = {} ({}%)",
+            nulls[c],
+            svg::format_value(share)
+        );
+        out.push_str(&svg::rect(x, top, w, plot_h, &color, &hover));
+        for (b, row) in grid.iter().enumerate().filter(|(_, row)| row[c] > 0.0) {
+            out.push_str(&format!(
+                r##"<rect x="{x:.2}" y="{:.2}" width="{w:.2}" height="{:.2}" fill="{}" fill-opacity="{:.2}"><title>{}</title></rect>"##,
+                top + b as f64 * band_h,
+                band_h.max(1.0),
+                theme.background,
+                0.35 + 0.65 * row[c],
+                escape(&format!("{name}, {}: {}% missing", y_labels[b], svg::format_value(row[c] * 100.0)))
+            ));
+        }
+        svg::x_tick(
+            &mut out,
+            &theme,
+            name,
+            x + w / 2.0,
+            top - 12.0,
+            cell_w,
+            tick,
+        );
+    }
+    for (y, label) in [
+        (top + 12.0, "1".to_string()),
+        (top + plot_h, rows.to_string()),
+    ] {
+        out.push_str(&format!(
+            r##"<text x="{}" y="{y:.2}" font-family="sans-serif" font-size="12" fill="{}" text-anchor="end">{label}</text>"##,
+            left - 8.0,
+            theme.tick
+        ));
+    }
+    let (x_name, y_name): (&str, &str) = texts.names(style);
+    svg::axis_names(
+        &mut out,
+        &theme,
+        x_name,
+        y_name,
+        left + cell_w * n as f64 / 2.0,
+        top + plot_h / 2.0,
+        height,
+    );
     out.push_str("</svg>");
     out
 }
@@ -371,5 +758,22 @@ mod tests {
         };
         assert!((grid[0][1] - 0.8).abs() < 1e-12); // all 4 rows; dropping row 1 would give 0.5
         assert!((grid[0][2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn missing_bands_hold_null_shares() {
+        let frame: DataFrame = df!(
+            "a" => [Some(1.0), None, Some(3.0)],
+            "b" => [None, None, Some("x")]
+        )
+        .unwrap();
+        let ds: Dataset = Dataset::new(frame, "");
+        let PlotResult::Matrix { y_labels, grid, .. } =
+            compute_missing(&ds, &["a", "b"].map(String::from)).unwrap()
+        else {
+            unreachable!()
+        };
+        assert_eq!(grid, vec![vec![0.0, 1.0], vec![1.0, 1.0], vec![0.0, 0.0]]);
+        assert_eq!(y_labels[1], "rows 2 to 2");
     }
 }
