@@ -42,14 +42,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.scatter("age", "cgpa", ""); // saves metadata/plots/Scatter age vs cgpa.png
     /// ```
     ///
     /// Colored by `passed`, with 8 sampled dots and most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .scatter("age", "cgpa", "passed")
     ///     .sample(8)
@@ -75,7 +75,7 @@ impl Dataset {
     /// Edge case: one row has no age and another no CGPA, so 10 of the 12 rows get a dot:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.scatter("age", "cgpa", "").svg();
     /// assert_eq!(svg.matches("<circle").count(), 10);
     /// ```
@@ -96,7 +96,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_scatter("id", "cgpa", "batch")?.svg();
     /// assert!(svg.contains("Scatter: id vs cgpa"));
     /// # Ok::<(), PlotError>(())
@@ -107,7 +107,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_scatter("age", "gpa", "");
     /// assert!(matches!(
     ///     result,
@@ -137,14 +137,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.regplot("age", "cgpa", ""); // saves metadata/plots/Regplot age vs cgpa.png
     /// ```
     ///
     /// With most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .regplot("age", "cgpa", "batch")
     ///     .sample(10)
@@ -169,7 +169,7 @@ impl Dataset {
     /// Edge case: a column against itself fits the line y = x:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.regplot("age", "age", "").svg();
     /// assert!(svg.contains("Regplot: age vs age"));
     /// ```
@@ -190,7 +190,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_regplot("id", "age", "")?.svg();
     /// assert!(svg.contains("Regplot: id vs age"));
     /// # Ok::<(), PlotError>(())
@@ -201,7 +201,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_regplot("batch", "cgpa", "");
     /// assert!(matches!(
     ///     result,
@@ -233,14 +233,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.line("age", "cgpa", ""); // saves metadata/plots/Line mean cgpa vs age.png
     /// ```
     ///
     /// One line for passed and one for failed, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .line("age", "cgpa", "passed")
     ///     .title("CGPA by age")
@@ -264,7 +264,7 @@ impl Dataset {
     /// Edge case: three students are 19, so the line passes through their mean, 8.1:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.line("age", "cgpa", "").svg();
     /// assert!(svg.contains("age = 19\ncgpa = 8.10"));
     /// ```
@@ -285,7 +285,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_line("id", "cgpa", "")?.svg();
     /// assert!(svg.contains("Line: mean cgpa vs id"));
     /// # Ok::<(), PlotError>(())
@@ -296,7 +296,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_line("age", "name", "");
     /// assert!(matches!(
     ///     result,

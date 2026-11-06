@@ -200,14 +200,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.kdeplot("cgpa", ""); // saves metadata/plots/Density cgpa.png
     /// ```
     ///
     /// One curve for passed and one for failed, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .kdeplot("cgpa", "passed")
     ///     .title("CGPA density")
@@ -232,7 +232,7 @@ impl Dataset {
     /// Edge case: every name belongs to one student, so no group has a shape:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.kdeplot("cgpa", "name"); // panics: cgpa has a single value, so it has no shape to draw
     /// ```
     #[track_caller]
@@ -253,7 +253,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_kdeplot("age", "batch")?.svg();
     /// assert!(svg.contains("Density: age"));
     /// # Ok::<(), PlotError>(())
@@ -264,7 +264,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_kdeplot("gpa", "");
     /// assert!(matches!(
     ///     result,
@@ -311,14 +311,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.violinplot("batch", "cgpa", ""); // saves metadata/plots/Violin batch vs cgpa.png
     /// ```
     ///
     /// Split by `passed`, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .violinplot("batch", "cgpa", "passed")
     ///     .title("CGPA by batch")
@@ -343,7 +343,7 @@ impl Dataset {
     /// student's CGPA:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.violinplot("name", "cgpa", "").svg();
     /// assert!(svg.contains("name = Aarav Shah\nupper fence = 8.10"));
     /// ```
@@ -365,7 +365,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_violinplot("", "age", "")?.svg();
     /// assert!(svg.contains("Violin: age"));
     /// # Ok::<(), PlotError>(())
@@ -376,7 +376,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::plot::error::PlotError;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_violinplot("", "cgpa", "batch");
     /// assert!(matches!(result, Err(PlotError::HueNeedsX)));
     /// ```
@@ -454,14 +454,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.qqplot("cgpa"); // saves metadata/plots/Q-Q plot cgpa.png
     /// ```
     ///
     /// With 5 points and most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .qqplot("cgpa")
     ///     .sample(5)
@@ -484,7 +484,7 @@ impl Dataset {
     /// Edge case: a text column has no quantiles:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.qqplot("batch"); // panics: column 'batch' is not numeric (found str)
     /// ```
     #[track_caller]
@@ -504,7 +504,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_qqplot("age")?.svg();
     /// assert!(svg.contains("Q-Q plot: age"));
     /// # Ok::<(), PlotError>(())
@@ -515,7 +515,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_qqplot("name");
     /// assert!(matches!(
     ///     result,

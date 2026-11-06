@@ -1,3 +1,5 @@
+//! [`ColumnInfo`]: dtype, null count and the lazily computed stats of one column.
+
 use polars::{
     datatypes::DataType,
     frame::{DataFrame, column::Column},
@@ -9,15 +11,41 @@ use crate::metadata::{
     error::MetadataError,
 };
 
+/// What is known about one column: dtype, null count and stats.
+///
+/// ```
+/// use rusmlai::prelude::*;
+/// use polars::prelude::DataType;
+/// let ds = read_csv("tests/fixtures/data/students.csv");
+/// let info = ds.try_column_info("cgpa").unwrap();
+/// assert_eq!(info.dtype, DataType::Float64);
+/// assert_eq!(info.null_count, 1);
+/// assert!(info.stats.get().is_some()); // read_csv computes every column
+/// ```
+///
+/// [`ColumnInfo::new`] leaves the stats empty, and [`ColumnInfo::ensure_stats`] fills them once:
+///
+/// ```
+/// use polars::prelude::Column;
+/// use rusmlai::metadata::dataset::{info::ColumnInfo, stats::ColumnStats};
+/// let column = Column::new("x".into(), [1.0, 2.0, 3.0]);
+/// let info = ColumnInfo::new(&column);
+/// assert!(info.stats.get().is_none());
+/// let Ok(ColumnStats::Numeric(stats)) = info.ensure_stats(&column) else { panic!() };
+/// assert_eq!(stats.median, 2.0);
+/// ```
 #[derive(Debug, Clone)]
 pub struct ColumnInfo {
+    /// The column's Polars dtype.
     pub dtype: DataType,
+    /// Null values in the column.
     pub null_count: usize,
-
+    /// The stats, empty until computed. Set at most once.
     pub stats: OnceLock<ColumnStats>,
 }
 
 impl ColumnInfo {
+    /// Dtype and null count of `column`, with no stats yet.
     pub fn new(column: &Column) -> Self {
         ColumnInfo {
             dtype: column.dtype().clone(),
@@ -26,6 +54,7 @@ impl ColumnInfo {
         }
     }
 
+    /// Dtype and null count of `column`, with `stats` already computed.
     pub fn with_stats(column: &Column, stats: ColumnStats) -> Self {
         ColumnInfo {
             stats: OnceLock::from(stats),

@@ -1,3 +1,5 @@
+//! Per-column metadata: [`DatasetCache`] holds one [`ColumnInfo`] per column.
+
 use std::sync::Arc;
 
 use indexmap::IndexMap;
@@ -19,16 +21,30 @@ pub mod dto;
 pub mod info;
 pub mod stats;
 
+/// The [`ColumnInfo`] of every column, in column order.
+///
+/// ```
+/// use rusmlai::prelude::*;
+/// let ds = read_csv("tests/fixtures/data/students.csv");
+/// let names: Vec<&String> = ds.metadata.dataset_cache.columns.keys().collect();
+/// assert_eq!(names, ["id", "name", "age", "cgpa", "batch", "passed"]);
+/// assert_eq!(ds.metadata.dataset_cache.columns["cgpa"].null_count, 1);
+/// ```
 #[derive(Debug, Clone)]
 pub struct DatasetCache {
+    /// Column name to its info. `Arc`, so `select` and `drop` share it.
     pub columns: IndexMap<String, Arc<ColumnInfo>>,
 }
 
 impl DatasetCache {
+    /// Wraps an existing map.
     pub fn new(columns: IndexMap<String, Arc<ColumnInfo>>) -> Self {
         Self { columns }
     }
 
+    /// The metadata of `new_dataset`, made from this one. Recomputes the stats of
+    /// `affected_columns` and of new columns only, or of every column if the row count changed.
+    /// The result has no file and an empty plot cache.
     #[track_caller]
     pub fn after_transform(
         &self,
@@ -40,6 +56,7 @@ impl DatasetCache {
             .or_fatal()
     }
 
+    /// [`DatasetCache::after_transform`] that returns the error.
     pub fn try_after_transform(
         &self,
         new_dataset: &Dataset,
@@ -89,6 +106,7 @@ impl DatasetCache {
         })
     }
 
+    /// One row per column: position, name, non-null count, dtype.
     pub fn info_table(&self, height: usize, width: usize) -> TableView {
         let rows: Vec<Vec<String>> = self
             .columns
@@ -110,6 +128,7 @@ impl DatasetCache {
         )
     }
 
+    /// One row per numeric column whose stats are computed: count, mean, std, min, quartiles, max.
     pub fn describe_table(&self, height: usize) -> TableView {
         let rows: Vec<Vec<String>> = self
             .columns
@@ -144,6 +163,7 @@ impl DatasetCache {
         )
     }
 
+    /// Every cached stat of every column not in `skip`, under a caption with the file and shape.
     pub fn metadata_table(
         &self,
         skip: &[&str],

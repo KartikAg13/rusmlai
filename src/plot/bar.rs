@@ -51,14 +51,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.bar("batch", "cgpa", "", ""); // saves metadata/plots/Bar batch vs cgpa.png
     /// ```
     ///
     /// The median, split by `passed`, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .bar("batch", "cgpa", "passed", "median")
     ///     .title("Median CGPA by batch")
@@ -83,7 +83,7 @@ impl Dataset {
     /// Edge case: std needs 2 values in a group, and every name belongs to one student:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.bar("name", "cgpa", "", "std"); // panics: no name group has 2 or more values of cgpa
     /// ```
     #[track_caller]
@@ -106,7 +106,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_bar("batch", "cgpa", "", "sum")?.svg();
     /// assert!(svg.contains("sum cgpa"));
     /// # Ok::<(), PlotError>(())
@@ -117,7 +117,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::plot::error::PlotError;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_bar("batch", "cgpa", "", "mode");
     /// assert!(matches!(result, Err(PlotError::UnknownEstimator(name)) if name == "mode"));
     /// ```
@@ -186,14 +186,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.count("batch", ""); // saves metadata/plots/Count batch vs count.png
     /// ```
     ///
     /// Pass and fail stacked in each batch, as percentages, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .count("batch", "passed")
     ///     .stacked()
@@ -215,7 +215,7 @@ impl Dataset {
     /// ascending:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.count("age", "").svg();
     /// assert!(svg.contains("age = 19\ncount = 3")); // the hover text of the first bar
     /// ```
@@ -245,14 +245,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.describe_bar("cgpa", ""); // saves metadata/plots/Describe statistic vs cgpa.png
     /// ```
     ///
     /// The median of every numeric column, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .describe_bar("", "median")
     ///     .title("Medians")
@@ -274,7 +274,7 @@ impl Dataset {
     /// Edge case: with `column = ""`, text columns are skipped and count leaves out nulls:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.describe_bar("", "count").svg();
     /// assert!(svg.contains("column = age\ncount = 11")); // one age is null
     /// assert!(!svg.contains("column = batch"));
@@ -297,7 +297,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_describe_bar("cgpa", "max")?.svg();
     /// assert!(svg.contains("statistic = max\ncgpa = 9"));
     /// # Ok::<(), PlotError>(())
@@ -308,7 +308,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_describe_bar("batch", "");
     /// assert!(matches!(
     ///     result,
@@ -396,14 +396,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.missing(); // saves metadata/plots/Missing values.png
     /// ```
     ///
     /// With most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .missing()
     ///     .title("Nulls per column")
@@ -426,7 +426,7 @@ impl Dataset {
     /// Edge case: no nulls at all still draws a chart, with zero-length bars:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.select(&["id", "batch"]).missing().svg();
     /// assert!(svg.contains("no missing values"));
     /// ```
@@ -447,7 +447,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_missing()?.svg();
     /// assert!(svg.contains("3 of 6 columns have nulls"));
     /// # Ok::<(), PlotError>(())
@@ -507,14 +507,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.pie("batch"); // saves metadata/plots/Distribution batch.png
     /// ```
     ///
     /// With most options. B14 is not in `.order`, so it goes into "Other":
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .pie("batch")
     ///     .title("Batches")
@@ -534,7 +534,7 @@ impl Dataset {
     /// 3 share "Other":
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.pie("name").svg();
     /// assert!(svg.contains("Other  3  (27%)"));
     /// ```
@@ -555,7 +555,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_pie("passed")?.svg();
     /// assert!(svg.contains("true  8  (67%)"));
     /// # Ok::<(), PlotError>(())
@@ -566,7 +566,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_pie("grade");
     /// assert!(matches!(
     ///     result,
@@ -626,7 +626,7 @@ fn bar_texts(spec: &BarSpec, x_stats: Option<&CategoricalStats>, nulls: usize) -
                 stats.unique_count,
                 svg::shorten(&stats.mode, 160.0),
                 mode_count as f64 / n.max(1) as f64 * 100.0,
-                entropy(&stats.categories),
+                stats.entropy,
             );
             if hue.is_empty() {
                 facts
@@ -643,17 +643,6 @@ fn bar_texts(spec: &BarSpec, x_stats: Option<&CategoricalStats>, nulls: usize) -
         value,
         hue: spec.hue.clone().unwrap_or_default(),
     }
-}
-
-/// Shannon entropy of the category counts in nats, like `scipy.stats.entropy` of the value
-/// counts: 0 for one category, ln(unique) when every category is equally common.
-fn entropy(categories: &[(String, u64)]) -> f64 {
-    let n: f64 = categories.iter().map(|&(_, count)| count as f64).sum();
-    categories
-        .iter()
-        .map(|&(_, count)| count as f64 / n)
-        .filter(|p| *p > 0.0)
-        .fold(0.0, |h, p| h + p * (1.0 / p).ln()) // p ln(1/p) is +0 at p = 1, so never "-0.00"
 }
 
 fn stat(
@@ -1147,6 +1136,7 @@ mod tests {
             unique_count: 2,
             categories: vec![("a".to_string(), 3), ("b".to_string(), 1)],
             mode: "a".to_string(),
+            entropy: 0.562_335_144_618_808_3,
         };
         let spec: BarSpec = BarSpec::new("c", "", "", "").unwrap();
         // scipy.stats.entropy([3, 1]) = 0.5623
@@ -1154,6 +1144,5 @@ mod tests {
             bar_texts(&spec, Some(&stats), 2).subtitle,
             "unique=2,  mode='a' (75%),  entropy=0.56,  n=4,  nulls=2"
         );
-        assert_eq!(format!("{:.2}", entropy(&[("a".to_string(), 5)])), "0.00");
     }
 }

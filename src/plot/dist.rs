@@ -63,14 +63,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.hist("cgpa", "", 10); // saves metadata/plots/Histogram cgpa.png
     /// ```
     ///
     /// Split by `passed`, stacked, in percent, with a density line and most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .hist("cgpa", "passed", 8)
     ///     .stacked()
@@ -97,7 +97,7 @@ impl Dataset {
     /// Edge case: a text column has no bins:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.hist("batch", "", 10); // panics: column 'batch' is not numeric (found str)
     /// ```
     #[track_caller]
@@ -118,7 +118,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_hist("age", "", 6)?.svg();
     /// assert!(svg.contains("Histogram: age"));
     /// # Ok::<(), PlotError>(())
@@ -129,7 +129,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::plot::error::PlotError;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// assert!(matches!(ds.try_hist("cgpa", "", 0), Err(PlotError::InvalidBins(0))));
     /// ```
     pub fn try_hist(&self, column: &str, hue: &str, bins: usize) -> Result<Figure, PlotError> {
@@ -171,14 +171,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.boxplot("batch", "cgpa", ""); // saves metadata/plots/Box batch vs cgpa.png
     /// ```
     ///
     /// Split by `passed`, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .boxplot("batch", "cgpa", "passed")
     ///     .title("CGPA by batch")
@@ -202,7 +202,7 @@ impl Dataset {
     /// Edge case: `x = ""` draws one box of all 11 CGPA values (one is null):
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.boxplot("", "cgpa", "").svg();
     /// assert!(svg.contains("Box: cgpa") && svg.contains("median = 7.40"));
     /// ```
@@ -224,7 +224,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_boxplot("passed", "age", "")?.svg();
     /// assert!(svg.contains("Box: passed vs age"));
     /// # Ok::<(), PlotError>(())
@@ -235,7 +235,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::plot::error::PlotError;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_boxplot("", "cgpa", "passed");
     /// assert!(matches!(result, Err(PlotError::HueNeedsX)));
     /// ```
@@ -266,14 +266,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.stripplot("batch", "cgpa", ""); // saves metadata/plots/Strip batch vs cgpa.png
     /// ```
     ///
     /// Colored by `passed`, with 6 sampled dots and most options:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .stripplot("batch", "cgpa", "passed")
     ///     .sample(6)
@@ -297,7 +297,7 @@ impl Dataset {
     /// Edge case: a hue needs an x column to split:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.stripplot("", "cgpa", "passed"); // panics: hue needs an x column
     /// ```
     #[track_caller]
@@ -318,7 +318,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_stripplot("", "age", "")?.svg();
     /// assert!(svg.contains("Strip: age"));
     /// # Ok::<(), PlotError>(())
@@ -329,7 +329,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_stripplot("batch", "name", "");
     /// assert!(matches!(
     ///     result,

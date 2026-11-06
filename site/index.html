@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rusmlai: pandas and seaborn names in Rust</title>
+  <meta name="description" content="A Rust library for tabular machine learning, with the names you know from pandas, scikit-learn and seaborn. Polars underneath. Works in .rs programs and Jupyter notebooks.">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="style.css">
+  <script>document.documentElement.className = "js";</script>
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="wordmark" href="index.html"><span class="mark" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>rusmlai</a>
+    <nav class="site-nav" aria-label="Site">
+      <a href="docs/index.html">Guide</a>
+      <a href="docs/charts.html">Charts</a>
+      <a href="https://github.com/KartikAg13/rusmlai">GitHub</a>
+    </nav>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <h1>The pandas and seaborn names you know, in Rust.</h1>
+      <p class="lede">rusmlai reads a CSV, works out every column’s statistics once and keeps them next to the file. Then each chart is one line. Polars does the heavy work, and the same code runs in a <code>.rs</code> program and in a Jupyter notebook.</p>
+      <div class="actions">
+        <button class="install" type="button" data-copy="cargo add rusmlai"><code>cargo add rusmlai</code><span>Copy</span></button>
+        <a href="docs/index.html">Read the guide</a>
+      </div>
+      <p class="status">Early days: loading data, column statistics and 18 charts work now. Preprocessing and models come next.</p>
+    </section>
+
+    <figure class="cell">
+      <div class="cell-in">
+        <span class="prompt">In [<span data-run>1</span>]:</span>
+        <pre data-nocopy><code class="rust">let ds: Dataset = read_csv("train.csv");
+ds.count("course", "");</code></pre>
+        <button class="run" type="button">Run again</button>
+      </div>
+      <p class="cell-status" aria-live="polite"><b>120 ms</b> read_csv parsed 630,000 rows, computed stats for 13 columns and saved them to metadata/train.json. count() drew from those stats.</p>
+      <div class="chart">
+        <svg viewBox="0 0 720 469" role="img" aria-labelledby="hero-title hero-desc">
+          <title id="hero-title">Students per course</title>
+          <desc id="hero-desc">Bar chart of 630,000 students in 7 courses: b.tech 131,236, b.sc 111,554, b.com 110,932, bca 88,721, bba 75,644, ba 61,989, diploma 49,924.</desc>
+          <text class="title" x="36" y="48">Students per course</text>
+          <text class="subtitle" x="36" y="71">unique=7, mode='b.tech' (21%), entropy=1.90, n=630000, nulls=0</text>
+          <line class="grid" x1="72" x2="684" y1="132" y2="132"/>
+          <line class="grid" x1="72" x2="684" y1="195.55" y2="195.55"/>
+          <line class="grid" x1="72" x2="684" y1="297.27" y2="297.27"/>
+          <text class="ytick" x="64" y="136">131236</text>
+          <text class="ytick" x="64" y="199.5">100000</text>
+          <text class="ytick" x="64" y="301.3">50000</text>
+          <text class="ytick" x="64" y="403">0</text>
+          <text class="label" transform="translate(16 266) rotate(-90)">count</text>
+          <g class="bar" style="--c: var(--k1)"><path d="M90 399V136.00Q90 132.00 94 132.00H137Q141 132.00 141 136.00V399Z"/><title>b.tech: 131236</title></g><text class="value" x="115.5" y="124">131236</text><text class="xtick" x="115.5" y="420">b.tech</text>
+          <g class="bar" style="--c: var(--k2)"><path d="M177.5 399V176.04Q177.5 172.04 181.5 172.04H224.5Q228.5 172.04 228.5 176.04V399Z"/><title>b.sc: 111554</title></g><text class="value" x="203" y="164.04">111554</text><text class="xtick" x="203" y="420">b.sc</text>
+          <g class="bar" style="--c: var(--k3)"><path d="M265 399V177.31Q265 173.31 269 173.31H312Q316 173.31 316 177.31V399Z"/><title>b.com: 110932</title></g><text class="value" x="290.5" y="165.31">110932</text><text class="xtick" x="290.5" y="420">b.com</text>
+          <g class="bar" style="--c: var(--k4)"><path d="M352.5 399V222.50Q352.5 218.50 356.5 218.50H399.5Q403.5 218.50 403.5 222.50V399Z"/><title>bca: 88721</title></g><text class="value" x="378" y="210.5">88721</text><text class="xtick" x="378" y="420">bca</text>
+          <g class="bar" style="--c: var(--k5)"><path d="M440 399V249.10Q440 245.10 444 245.10H487Q491 245.10 491 249.10V399Z"/><title>bba: 75644</title></g><text class="value" x="465.5" y="237.1">75644</text><text class="xtick" x="465.5" y="420">bba</text>
+          <g class="bar" style="--c: var(--k6)"><path d="M527.5 399V276.88Q527.5 272.88 531.5 272.88H574.5Q578.5 272.88 578.5 276.88V399Z"/><title>ba: 61989</title></g><text class="value" x="553" y="264.88">61989</text><text class="xtick" x="553" y="420">ba</text>
+          <g class="bar" style="--c: var(--k7)"><path d="M615 399V301.43Q615 297.43 619 297.43H662Q666 297.43 666 301.43V399Z"/><title>diploma: 49924</title></g><text class="value" x="640.5" y="289.43">49924</text><text class="xtick" x="640.5" y="420">diploma</text>
+          <line class="base" x1="72" x2="684" y1="399" y2="399"/>
+          <text class="label" x="378" y="452">course</text>
+        </svg>
+      </div>
+      <figcaption>The Kaggle Playground S6E1 training set. Hover a bar for its value, as in a notebook.</figcaption>
+    </figure>
+
+    <section class="section" aria-labelledby="names">
+      <h2 id="names">Write it the way you would in Python</h2>
+      <p>Methods keep their pandas and seaborn names, and defaults follow scikit-learn. Rust adds the types and the <code>&amp;</code>. An empty string means “not used”, the way <code>hue=None</code> does.</p>
+      <div class="table-wrap">
+        <table class="names">
+          <thead><tr><th scope="col">pandas / seaborn</th><th scope="col">rusmlai</th></tr></thead>
+          <tbody>
+            <tr><td><code>pd.read_csv("train.csv")</code></td><td><code>read_csv("train.csv")</code></td></tr>
+            <tr><td><code>df.describe()</code></td><td><code>ds.describe()</code></td></tr>
+            <tr><td><code>df.drop(columns=["id"])</code></td><td><code>ds.drop(&amp;["id"])</code></td></tr>
+            <tr><td><code>sns.countplot(df, x="course")</code></td><td><code>ds.count("course", "")</code></td></tr>
+            <tr><td><code>sns.histplot(df, x="exam_score", bins=30)</code></td><td><code>ds.hist("exam_score", "", 30)</code></td></tr>
+            <tr><td><code>sns.boxplot(df, x="course", y="exam_score")</code></td><td><code>ds.boxplot("course", "exam_score", "")</code></td></tr>
+            <tr><td><code>sns.heatmap(df.corr())</code></td><td><code>ds.corrplot()</code></td></tr>
+            <tr><td><code>plt.title("Scores")</code></td><td><code>.title("Scores")</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="more"><a href="docs/names.html">See every name</a></p>
+    </section>
+
+    <section class="section" aria-labelledby="charts">
+      <h2 id="charts">One line per chart, and options that chain</h2>
+      <p>Eighteen charts, drawn as SVG with values on hover. In a notebook a chart shows itself. In a program it saves itself as a PNG next to your data. All of these came from the same 630,000-row file.</p>
+      <div class="gallery">
+        <figure>
+          <img src="img/score-shapes-by-course.png" width="1440" height="938" loading="lazy" alt="Violin plots of exam score for each of the seven courses, sorted by median, each in its own palette color.">
+          <figcaption><code>ds.violinplot("course", "exam_score", "").sort("value")</code></figcaption>
+        </figure>
+        <figure>
+          <img src="img/mean-score-by-course-and-study-method.png" width="1440" height="938" loading="lazy" alt="Heatmap of mean exam score by course and study method, in the viridis color scale with the value in each cell.">
+          <figcaption><code>ds.heatmap("course", "study_method", "exam_score", "mean").cmap("viridis")</code></figcaption>
+        </figure>
+        <figure>
+          <img src="img/score-density-by-sleep-quality.png" width="1440" height="938" loading="lazy" alt="Three overlapping density curves of exam score, one for each sleep quality: poor, average and good.">
+          <figcaption><code>ds.kdeplot("exam_score", "sleep_quality")</code></figcaption>
+        </figure>
+        <figure>
+          <img src="img/what-correlates-with-the-score.png" width="1440" height="938" loading="lazy" alt="Correlation matrix of the numeric columns in a blue to red color scale.">
+          <figcaption><code>ds.drop(&amp;["id"]).corrplot().cmap("coolwarm")</code></figcaption>
+        </figure>
+      </div>
+      <p class="more"><a href="docs/charts.html">See all 18 charts</a></p>
+    </section>
+
+    <section class="section" aria-labelledby="speed">
+      <h2 id="speed">The second read skips the work</h2>
+      <p>The first <code>read_csv</code> computes every statistic in one pass and writes it to a small file next to the CSV. Later reads check the file’s size and modification time and load the stats back.</p>
+      <ol class="speed">
+        <li><span class="op">First <code>read_csv</code>: parse and compute stats</span><span class="track"><span class="fill" style="--w: 81.6%"></span></span><span class="t">120 ms</span></li>
+        <li><span class="op">Later <code>read_csv</code>: parse and load cached stats</span><span class="track"><span class="fill" style="--w: 75.8%"></span></span><span class="t">62 ms</span></li>
+        <li><span class="op">Stats for all 13 columns</span><span class="track"><span class="fill" style="--w: 75.3%"></span></span><span class="t">58 ms</span></li>
+        <li><span class="op">Load the cached stats alone</span><span class="track"><span class="fill" style="--w: 6.4%"></span></span><span class="t">21 µs</span></li>
+        <li aria-hidden="true"><span class="scale"><span>10 µs</span><span>100 µs</span><span>1 ms</span><span>10 ms</span><span>100 ms</span><span>1 s</span></span></li>
+      </ol>
+      <p class="speed-note">A 630,000-row, 13-column Kaggle CSV on an i5-1135G7 laptop. The scale is logarithmic: each grid step is ten times longer than the one before.</p>
+    </section>
+
+    <section class="section" aria-labelledby="status">
+      <h2 id="status">Where rusmlai stands</h2>
+      <div class="split">
+        <div>
+          <h3>Works now</h3>
+          <ul>
+            <li><code>read_csv</code>, <code>head</code>, <code>tail</code>, <code>info</code>, <code>describe</code>, <code>select</code>, <code>drop</code></li>
+            <li>Column statistics, cached next to the CSV</li>
+            <li>18 charts with seaborn’s names, cached the same way</li>
+            <li>HTML tables and inline charts in Jupyter through evcxr</li>
+          </ul>
+        </div>
+        <div>
+          <h3>Coming in 1.0</h3>
+          <ul>
+            <li>Scalers, encoders, imputers, <code>Pipeline</code> and <code>train_test_split</code></li>
+            <li>Linear models, decision trees and ensembles, kNN and naive Bayes</li>
+            <li><code>KMeans</code> and <code>PCA</code></li>
+            <li>Saved models that load in Python as scikit-learn objects</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>rusmlai, tabular machine learning in Rust</span>
+    <nav aria-label="Footer">
+      <a href="docs/index.html">Guide</a>
+      <a href="docs/names.html">Python names</a>
+      <a href="https://github.com/KartikAg13/rusmlai">GitHub</a>
+    </nav>
+  </footer>
+</body>
+</html>

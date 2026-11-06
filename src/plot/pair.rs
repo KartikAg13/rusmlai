@@ -45,14 +45,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.pairplot(&[], ""); // saves metadata/plots/Pairs 3 numeric columns.png
     /// ```
     ///
     /// Age and CGPA colored by `passed`, with every option:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .pairplot(&["age", "cgpa"], "passed")
     ///     .sample(8)
@@ -72,7 +72,7 @@ impl Dataset {
     /// Edge case: a text column in the list:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.pairplot(&["age", "batch"], ""); // panics: column 'batch' is not numeric (found str)
     /// ```
     #[track_caller]
@@ -92,7 +92,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_pairplot(&["age", "cgpa"], "batch")?.svg();
     /// assert!(svg.contains("Pairs: 2 numeric columns"));
     /// # Ok::<(), PlotError>(())
@@ -103,7 +103,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::plot::error::PlotError;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.select(&["name", "batch"]).try_pairplot(&[], "");
     /// assert!(matches!(result, Err(PlotError::EmptyResult(_))));
     /// ```

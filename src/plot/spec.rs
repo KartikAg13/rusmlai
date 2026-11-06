@@ -124,3 +124,42 @@ pub enum PlotSpec {
         columns: Vec<String>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_estimator_name_parses_and_unknown_names_fail() {
+        for (name, estimator) in ESTIMATORS {
+            assert_eq!(Estimator::parse(name).unwrap(), estimator);
+        }
+        assert!(
+            matches!(Estimator::parse("avg"), Err(PlotError::UnknownEstimator(n)) if n == "avg")
+        );
+        assert!(matches!(
+            Estimator::parse("Mean"),
+            Err(PlotError::UnknownEstimator(_))
+        ));
+    }
+
+    #[test]
+    fn pick_defaults_to_count_or_mean() {
+        assert_eq!(Estimator::pick(false, "").unwrap(), Estimator::Count);
+        assert_eq!(Estimator::pick(true, "").unwrap(), Estimator::Mean);
+        assert!(matches!(
+            Estimator::pick(false, "sum"),
+            Err(PlotError::EstimatorNeedsY(_))
+        ));
+    }
+
+    #[test]
+    fn bar_spec_treats_empty_as_none_and_drops_hue_equal_to_x() {
+        let spec: BarSpec = BarSpec::new("a", "", "a", "").unwrap();
+        assert_eq!((spec.y, spec.hue), (None, None));
+        assert!(matches!(
+            BarSpec::new("", "", "", ""),
+            Err(PlotError::EmptyX)
+        ));
+    }
+}

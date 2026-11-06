@@ -20,7 +20,8 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-fixtures/
+/tests/fixtures/*
+!/tests/fixtures/data/
 .claude/
 .codex/
 .serena/
@@ -34,4 +35,4 @@ notebooks/
 /plots/
 CLAUDE.md
 
-/tests/data/metadata/
+/tests/fixtures/data/metadata/

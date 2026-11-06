@@ -50,6 +50,11 @@ version = "0.8.2"
 default-features = false
 features = ["cargo_bench_support", "html_reports", "plotters"]
 
+[dev-dependencies.proptest]
+version = "1.7"
+default-features = false
+features = ["std"]
+
 [lib]
 bench = false
 

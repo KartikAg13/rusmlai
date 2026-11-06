@@ -43,14 +43,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.heatmap("batch", "passed", "", ""); // saves metadata/plots/Heatmap batch vs passed.png
     /// ```
     ///
     /// The mean CGPA of each cell, with every option:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .heatmap("batch", "passed", "cgpa", "mean")
     ///     .title("Mean CGPA")
@@ -69,7 +69,7 @@ impl Dataset {
     /// Edge case: a mean needs a column of values:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.heatmap("batch", "passed", "", "mean"); // panics: estimator needs a column of values
     /// ```
     #[track_caller]
@@ -91,7 +91,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_heatmap("batch", "passed", "", "")?.svg();
     /// assert!(svg.contains("batch = B13\npassed = true\ncount = 3"));
     /// # Ok::<(), PlotError>(())
@@ -102,7 +102,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::plot::error::PlotError;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.try_heatmap("batch", "passed", "cgpa", "mode");
     /// assert!(matches!(result, Err(PlotError::UnknownEstimator(_))));
     /// ```
@@ -171,14 +171,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.missing_matrix(); // saves metadata/plots/Missing values by row.png
     /// ```
     ///
     /// With every option:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .missing_matrix()
     ///     .title("Nulls by row")
@@ -194,7 +194,7 @@ impl Dataset {
     /// Edge case: columns with no nulls draw full bands:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.select(&["id", "batch"]).missing_matrix().svg();
     /// assert!(svg.contains("no missing values"));
     /// ```
@@ -215,7 +215,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_missing_matrix()?.svg();
     /// assert!(svg.contains("3 nulls in 3 of 6 columns"));
     /// # Ok::<(), PlotError>(())
@@ -277,14 +277,14 @@ impl Dataset {
     /// ```
     /// use rusmlai::prelude::*;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.corrplot(); // saves metadata/plots/Corrplot Correlation Matrix.png
     /// ```
     ///
     /// Age and CGPA only, with every option:
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
     ///     .select(&["age", "cgpa"])
     ///     .corrplot()
@@ -304,7 +304,7 @@ impl Dataset {
     /// Edge case: text columns have no correlation:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.select(&["name", "batch"]).corrplot(); // panics: nothing to plot
     /// ```
     #[track_caller]
@@ -324,7 +324,7 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.try_corrplot()?.svg();
     /// assert!(svg.contains("cgpa × cgpa\ncorrelation = 1"));
     /// # Ok::<(), PlotError>(())
@@ -335,7 +335,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// use rusmlai::plot::error::PlotError;
     ///
-    /// let ds = read_csv("tests/data/students.csv");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let result = ds.select(&["name", "batch"]).try_corrplot();
     /// assert!(matches!(result, Err(PlotError::EmptyResult(_))));
     /// ```

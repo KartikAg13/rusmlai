@@ -62,6 +62,38 @@ impl Figure {
     /// Writes the chart (creating folders) in place of the auto-save: a PNG for `.png`, the SVG
     /// for `.svg`, like matplotlib's `savefig`. In a notebook it also shows the chart. Never
     /// opens a viewer, so it is safe in loops.
+    ///
+    /// # Panics
+    ///
+    /// If the extension is not `.png` or `.svg`, or the file cannot be written.
+    ///
+    /// # Examples
+    ///
+    /// Basic:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let dir = std::env::temp_dir().join("rusmlai-save-doc");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
+    /// ds.hist("cgpa", "", 10).save(dir.join("cgpa.png"));
+    /// # assert!(dir.join("cgpa.png").is_file());
+    /// ```
+    ///
+    /// Advanced: one SVG per column, in a loop:
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// # let dir = std::env::temp_dir().join("rusmlai-save-doc");
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
+    /// for column in ["age", "cgpa"] {
+    ///     ds.hist(column, "", 10).title(column).save(dir.join(format!("{column}.svg")));
+    /// }
+    /// # assert!(std::fs::read_to_string(dir.join("age.svg")).unwrap().starts_with("<svg"));
+    /// ```
+    ///
+    /// Edge case: another extension panics instead of guessing a format:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// read_csv("tests/fixtures/data/students.csv").hist("cgpa", "", 10).save("cgpa.jpg"); // panics: name the file .png or .svg
+    /// ```
     #[track_caller]
     pub fn save(&self, path: impl AsRef<Path>) {
         self.write(path.as_ref()).or_fatal();
@@ -72,7 +104,22 @@ impl Figure {
     }
 
     /// Notebook: shows the chart inline. Program: saves it where the auto-save would
-    /// (`metadata/plots/{title}.png`) and opens it in the system viewer.
+    /// (`metadata/plots/{title}.png`) and opens it in the system viewer (`xdg-open` or
+    /// `open`). (matplotlib: `plt.show()`)
+    ///
+    /// # Panics
+    ///
+    /// If the PNG cannot be written.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
+    /// ds.count("batch", "").show();
+    /// ```
+    ///
+    /// In a loop, prefer [`Figure::save`]: `show` opens one viewer window per chart.
     #[track_caller]
     pub fn show(&self) {
         if in_notebook() {
@@ -91,6 +138,16 @@ impl Figure {
 
     /// evcxr calls this on a cell's last expression. Inline HTML (not image/svg+xml)
     /// keeps the `<title>` hover tooltips working.
+    ///
+    /// Outside a notebook it prints the HTML block to stdout, which is rarely what you want;
+    /// use [`Figure::svg`] for the text.
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let fig = read_csv("tests/fixtures/data/students.csv").count("batch", "");
+    /// fig.evcxr_display(); // prints EVCXR_BEGIN_CONTENT text/html ... EVCXR_END_CONTENT
+    /// # let _ = fig.svg();
+    /// ```
     pub fn evcxr_display(&self) {
         self.displayed.set(true);
         println!(
@@ -232,12 +289,44 @@ impl fmt::Display for Figure {
 }
 
 /// A table: comfy-table text in a terminal, an HTML table in a notebook.
+///
+/// `info`, `describe`, `metadata`, `head` and `tail` print one. The `try_*` versions on
+/// [`Metadata`](crate::metadata::Metadata) return it, so tests can read the text through
+/// `Display` (`to_string()`).
+///
+/// # Examples
+///
+/// Basic: build and print one:
+/// ```
+/// use rusmlai::prelude::*;
+///
+/// let headers = ["model", "accuracy"].map(String::from);
+/// let rows = vec![vec!["tree".to_string(), "0.91".to_string()]];
+/// TableView::new("Scores", &headers, &rows).show();
+/// ```
+///
+/// Advanced: the text has the caption, a blank line, then the table:
+/// ```
+/// # use rusmlai::prelude::*;
+/// let ds = read_csv("tests/fixtures/data/students.csv");
+/// let text: String = ds.metadata.try_info().to_string();
+/// assert!(text.starts_with("Dataset: 12 rows x 6 columns\n\n"));
+/// ```
+///
+/// Edge case: cells with newlines and HTML characters are safe:
+/// ```
+/// # use rusmlai::prelude::*;
+/// let table = TableView::new("", &["a".to_string()], &[vec!["<b>\nx".to_string()]]);
+/// assert!(table.to_string().contains("<b>"));
+/// ```
 pub struct TableView {
     text: String,
     html: String,
 }
 
 impl TableView {
+    /// A table with a caption (`""` for none) above it. Rows shorter than `headers` leave
+    /// cells empty. A `\n` in a cell starts a new line in the cell.
     pub fn new(caption: &str, headers: &[String], rows: &[Vec<String>]) -> Self {
         let mut table: Table = Table::new();
         table.load_style(UTF8_FULL);
@@ -286,6 +375,7 @@ impl TableView {
         }
     }
 
+    /// Prints the HTML table for evcxr. [`TableView::show`] calls it in a notebook.
     pub fn evcxr_display(&self) {
         println!(
             "EVCXR_BEGIN_CONTENT text/html\n{}\nEVCXR_END_CONTENT",
@@ -311,6 +401,41 @@ pub(crate) fn escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escape_covers_html_characters() {
+        assert_eq!(escape(r#"a & <b> "c""#), "a &amp; &lt;b&gt; &quot;c&quot;");
+    }
+
+    #[test]
+    fn table_text_has_caption_then_blank_line_and_html_styles_each_cell() {
+        let table: TableView =
+            TableView::new("Cap\ntwo", &["h".to_string()], &[vec!["1\n2".into()]]);
+        assert!(table.to_string().starts_with("Cap\ntwo\n\n┌"));
+        assert!(table.html.contains("Cap<br>two") && table.html.contains("1<br>2"));
+        let cells: usize =
+            table.html.matches("<td style=").count() + table.html.matches("<th style=").count();
+        assert_eq!(cells, 2);
+        assert!(
+            !TableView::new("", &["h".to_string()], &[])
+                .to_string()
+                .starts_with('\n')
+        );
+    }
+
+    #[test]
+    fn auto_save_name_keeps_safe_characters() {
+        let fig: Figure = crate::dataset::Dataset::new(polars::df!("a/b" => ["x"]).unwrap(), "")
+            .count("a/b", "")
+            .title("../a/b: c?");
+        let _ = fig.svg(); // no auto-save
+        assert_eq!(fig.auto_path(), Path::new("metadata/plots/ab c.png"));
+        let dots: Figure = crate::dataset::Dataset::new(polars::df!("x" => ["y"]).unwrap(), "")
+            .count("x", "")
+            .title("...");
+        let _ = dots.svg();
+        assert_eq!(dots.auto_path().file_name().unwrap(), "count.png");
+    }
 
     #[test]
     fn png_is_twice_the_size_and_draws_text() {
