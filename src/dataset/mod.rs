@@ -8,12 +8,12 @@ use polars::{
     datatypes::DataType,
     frame::{DataFrame, column::Column},
     lazy::{
-        dsl::{DslPlan, Engine, Expr, col, len, lit, when},
+        dsl::{DslPlan, Engine, Expr, len, lit, when},
         frame::{IntoLazy, LazyFrame},
     },
 };
 
-use crate::dataset::constants::BINS;
+use crate::utils::col;
 use crate::{
     dataset::{error::DatasetError, reader::Reader},
     display::TableView,
@@ -28,9 +28,11 @@ use crate::{
     },
 };
 
-pub mod constants;
 pub mod error;
 pub mod reader;
+
+/// Equal-width bins of a numeric column in `information_gain`.
+const BINS: i64 = 256;
 
 /// A table plus its cached column stats. (pandas: `DataFrame`)
 ///
@@ -363,6 +365,31 @@ impl Dataset {
         Ok((info, stats))
     }
 
+    /// Computes the stats that are still missing (the columns a transform made), in one pass
+    /// for all of them.
+    pub(crate) fn try_fill_stats(&self) -> Result<(), DatasetError> {
+        let missing: Vec<Column> = self
+            .dataframe
+            .columns()
+            .iter()
+            .filter(|column| {
+                self.try_column_info(column.name().as_str())
+                    .is_ok_and(|info| info.stats.get().is_none())
+            })
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let frame: DataFrame = DataFrame::new(self.dataframe.height(), missing)?;
+        let stats: Vec<ColumnStats> = ColumnStats::compute_stats(&frame)?;
+        for (column, stats) in frame.columns().iter().zip(stats) {
+            let info: &ColumnInfo = self.try_column_info(column.name().as_str())?;
+            let _ = info.stats.set(stats); // already set: another thread was faster
+        }
+        Ok(())
+    }
+
     /// A column as a group-by key: text as it is, a number as its bin among `BINS` equal bins
     /// between its finite min and max. NaN and ±inf become null, so they are left out.
     fn try_key(&self, column: &str) -> Result<Expr, DatasetError> {
@@ -517,7 +544,9 @@ impl Dataset {
     /// let table: String = ds.metadata.try_metadata(&["id", "name"]).to_string();
     /// assert!(table.contains("cgpa") && !table.contains("Zoë"));
     /// ```
+    #[track_caller]
     pub fn metadata(&self, skip_columns: &[&str]) {
+        self.try_fill_stats().or_fatal(); // a transformed column has no stats until asked
         self.metadata.try_metadata(skip_columns).show()
     }
 
@@ -542,7 +571,9 @@ impl Dataset {
     /// ds.describe();
     /// assert!(!ds.metadata.try_describe().to_string().contains("batch")); // text: left out
     /// ```
+    #[track_caller]
     pub fn describe(&self) {
+        self.try_fill_stats().or_fatal(); // a transformed column has no stats until asked
         self.metadata.try_describe().show()
     }
 
@@ -963,6 +994,21 @@ mod tests {
             .columns
             .insert("x".into(), std::sync::Arc::new(info));
         assert_eq!(ds.try_numeric_stats("x").unwrap().mean, 1.5);
+    }
+
+    #[test]
+    fn fill_stats_computes_what_a_transform_left_empty() {
+        use crate::preprocess::{StandardScaler, Transform};
+        let scaled: Dataset = StandardScaler::new().fit_transform(&small().select(&["x"]));
+        let empty: String = scaled.metadata.try_describe().to_string();
+        assert!(empty.starts_with("No numeric columns"), "{empty}");
+        scaled.try_fill_stats().unwrap();
+        let table: String = scaled.metadata.try_describe().to_string();
+        assert!(
+            table.contains("-1.0000") && table.contains("1.0000"),
+            "{table}"
+        );
+        scaled.try_fill_stats().unwrap(); // nothing missing: no work, no error
     }
 
     #[test]

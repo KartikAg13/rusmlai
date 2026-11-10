@@ -1,11 +1,13 @@
 //! `heatmap` and `corrplot`: a grid of colored cells.
 
-use polars::prelude::{DataFrame, DataType, Expr, IntoLazy, SortMultipleOptions, col, len, lit};
+use polars::prelude::{DataFrame, DataType, Expr, IntoLazy, SortMultipleOptions, len, lit};
 
+use crate::utils::col;
 use crate::{
     dataset::Dataset,
     display::{Figure, escape},
     error::OrFatal,
+    metadata::dataset::stats::NumericStats,
     plot::{
         VALUE,
         chart::{Body, Texts},
@@ -453,6 +455,20 @@ fn compute_missing(dataset: &Dataset, columns: &[String]) -> Result<PlotResult, 
 /// One Polars select for all pairs.
 fn compute_corr(dataset: &Dataset, columns: &[String]) -> Result<PlotResult, PlotError> {
     let n: usize = columns.len();
+    // The cached (mean, variance) of a column with a finite value in every row. A pair of two
+    // such columns uses every row, so it needs one pass and no filter: Σ(da·db) / ((n - 1)·sa·sb).
+    let whole: Vec<Option<(f64, f64)>> = columns
+        .iter()
+        .map(|c| {
+            let stats: &NumericStats = dataset.try_numeric_stats(c).ok()?;
+            let finite: bool = [stats.mean, stats.variance, stats.min, stats.max]
+                .iter()
+                .all(|v| v.is_finite());
+            (finite && dataset.try_column_info(c).ok()?.null_count == 0)
+                .then_some((stats.mean, stats.variance))
+        })
+        .collect();
+    let freedom: f64 = dataset.metadata.height as f64 - 1.0;
     let pairs: Vec<(usize, usize)> = (0..n).flat_map(|i| (i..n).map(move |j| (i, j))).collect();
     let rs: DataFrame = dataset
         .dataframe
@@ -461,13 +477,25 @@ fn compute_corr(dataset: &Dataset, columns: &[String]) -> Result<PlotResult, Plo
         .select(
             pairs
                 .iter()
-                .map(|&(i, j)| pearson(&columns[i], &columns[j]).alias(format!("{i},{j}")))
+                .map(|&(i, j)| {
+                    let (a, b): (&str, &str) = (&columns[i], &columns[j]);
+                    let r: Expr = match (whole[i], whole[j]) {
+                        (Some((mean_a, var_a)), Some((mean_b, var_b))) => {
+                            let d = |c: &str, mean: f64| col(c).cast(DataType::Float64) - lit(mean);
+                            (d(a, mean_a) * d(b, mean_b)).sum()
+                                / lit(freedom * var_a.sqrt() * var_b.sqrt())
+                        }
+                        _ => pearson(a, b),
+                    };
+                    r.alias(format!("{i},{j}"))
+                })
                 .collect::<Vec<Expr>>(),
         )
         .collect()?;
     let mut grid: Vec<Vec<f64>> = vec![vec![f64::NAN; n]; n];
     for (i, j) in pairs {
-        let r: f64 = f64s(&rs, &format!("{i},{j}"))?[0];
+        // Rounding can leave 1.0000000000000002, which is past the color scale.
+        let r: f64 = f64s(&rs, &format!("{i},{j}"))?[0].clamp(-1.0, 1.0);
         grid[i][j] = r;
         grid[j][i] = r;
     }
@@ -758,6 +786,38 @@ mod tests {
         };
         assert!((grid[0][1] - 0.8).abs() < 1e-12); // all 4 rows; dropping row 1 would give 0.5
         assert!((grid[0][2] - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn corr_from_the_cached_stats_agrees_with_the_filtered_pass() {
+        let frame: DataFrame = df!(
+            "a" => [1.0, 2.0, 4.0, 8.0],
+            "b" => [3.0, 1.0, 2.0, 9.0],
+            "same" => [5.0, 5.0, 5.0, 5.0],
+            "nan" => [1.0, f64::NAN, 2.0, 3.0]
+        )
+        .unwrap();
+        let ds: Dataset = Dataset::new(frame.clone(), "");
+        let PlotResult::Matrix { grid, .. } =
+            compute_corr(&ds, &["a", "b", "same", "nan"].map(String::from)).unwrap()
+        else {
+            unreachable!()
+        };
+        // a and b have a value in every row: one pass with the cached mean and variance.
+        let filtered: DataFrame = frame
+            .lazy()
+            .select([pearson("a", "b").alias("r")])
+            .collect()
+            .unwrap();
+        assert!((grid[0][1] - f64s(&filtered, "r").unwrap()[0]).abs() < 1e-12);
+        assert!((grid[0][0] - 1.0).abs() < 1e-12);
+        assert!(grid[0][2].is_nan() && grid[2][2].is_nan()); // a constant column: no correlation
+        // The NaN row is left out: a = 1, 4, 8 against 1, 2, 3.
+        assert!(
+            (grid[0][3] - 0.996_615_895_540_123_9).abs() < 1e-12,
+            "{}",
+            grid[0][3]
+        );
     }
 
     #[test]

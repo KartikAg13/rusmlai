@@ -15,7 +15,7 @@ features = ['serde']
 [dependencies.polars]
 version = "0.55.2"
 default-features = false
-features = ["csv", "fmt_no_tty", "lazy", "serde"]
+features = ["csv", "fmt_no_tty", "lazy", "replace", "serde"]
 
 # SVG to pixels, for the PNG a chart saves (`display::png`).
 [dependencies.resvg]
@@ -55,6 +55,9 @@ version = "1.7"
 default-features = false
 features = ["std"]
 
+[profile.dev.package."*"]
+debug = false
+
 [lib]
 bench = false
 
@@ -89,4 +92,12 @@ harness = false
 
 [[bench]]
 name = "cache"
+harness = false
+
+[[bench]]
+name = "plot"
+harness = false
+
+[[bench]]
+name = "preprocess"
 harness = false

@@ -32,7 +32,7 @@ fn main() {
 Charts use seaborn's names and draw SVG with hover values:
 
 ```rust
-ds.count("course", "");
+ds.countplot("course", "");
 ds.bar("gender", "exam_score", "course", "mean")
     .palette("colorblind")
     .title("Mean score by gender and course");
@@ -47,7 +47,7 @@ ds.bar("course", "exam_score", "", "mean")
     .hline(62.5, "overall mean");
 ```
 
-- The charts are `bar`, `count`, `describe_bar`, `pie`, `hist`, `boxplot`, `stripplot`, `violinplot`, `kdeplot`, `qqplot`, `heatmap`, `corrplot`, `scatter`, `line`, `regplot`, `pairplot`, `missing` and `missing_matrix`.
+- The charts are `bar`, `countplot`, `describe_bar`, `pie`, `hist`, `boxplot`, `stripplot`, `violinplot`, `kdeplot`, `qqplot`, `heatmap`, `corrplot`, `scatter`, `plot`, `regplot`, `pairplot`, `missing` and `missing_matrix`.
 - Options chain like keyword arguments in Python: `title`, `subtitle`, `xlabel`, `ylabel`, `palette`, `colors`, `color`, `color_map`, `theme`, `size`, `order`, `hue_order`, `sort`, `top`, `values`, `ylim`, `xlim`, `cmap`, `sample`, `horizontal`, `percent`, `stacked`, `hline`, `vline`, `legend`, `kde`. `set_theme` and `set_palette` set defaults for a whole notebook.
 - Colors take hex codes or names: `"teal"`, `"tab:blue"`, or `"C0"` for the first color of the current palette. By default each category gets its own color from the `rusmlai` palette; `colorblind`, `tab10`, `deep` and five more palettes are options.
 - Heatmaps draw a color scale. Long category names tilt instead of being cut.
@@ -76,7 +76,7 @@ On a 630,000-row, 13-column Kaggle CSV (an i5-1135G7 laptop):
 
 ## Roadmap
 
-1. Preprocessing: `StandardScaler`, `MinMaxScaler`, `RobustScaler`, `SimpleImputer`, `OneHotEncoder` and others, a `Pipeline`, `train_test_split` and cross validation. Scalers and imputers fit from the cached stats, so a fit on a newly loaded CSV makes no pass over the data.
+1. Preprocessing: `StandardScaler`, `MinMaxScaler`, `RobustScaler`, `SimpleImputer`, `OneHotEncoder` and others, combined in a `ColumnTransformer` and joined to the model in a `Pipeline`, `train_test_split` and cross validation. Scalers and imputers fit from the cached stats, so a fit on a newly loaded CSV makes no pass over the data.
 2. About 25 models:
    - linear and logistic regression, Ridge, Lasso;
    - decision trees, random forests, bagging, AdaBoost and histogram gradient boosting;

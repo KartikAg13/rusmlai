@@ -23,14 +23,15 @@ pub fn unwrap_f64(frame: &DataFrame, name: &str) -> Result<f64, MetadataError> {
         .unwrap_or(f64::NAN))
 }
 
-/// `(size in bytes, mtime in seconds)` of a file, the key that decides if a cache is stale.
+/// `(size in bytes, mtime in nanoseconds)` of a file, the key that decides if a cache is stale.
+/// Nanoseconds, so a rewrite of the same size within one second is still seen. A time before
+/// 1970 counts as 0.
 pub fn file_fingerprint(path: impl AsRef<Path>) -> io::Result<(u64, u64)> {
     let meta: Metadata = fs::metadata(path)?;
     let mtime: u64 = meta
         .modified()?
         .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+        .map_or(0, |since| since.as_nanos() as u64);
     Ok((meta.len(), mtime))
 }
 

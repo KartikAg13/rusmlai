@@ -14,14 +14,15 @@ use rusmlai::{
     },
 };
 
-/// CSV every bench runs on. Override with `RUSMLAI_BENCH_CSV=/path/to/file.csv`.
+/// CSV every bench runs on: the Kaggle S6E1 file (630,000 rows x 13 columns, local only).
+/// Override with `RUSMLAI_BENCH_CSV=/path/to/file.csv`; the benches name its columns.
 pub fn source_csv() -> PathBuf {
     std::env::var_os("RUSMLAI_BENCH_CSV")
         .map(PathBuf::from)
         .unwrap_or_else(|| {
             PathBuf::from(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/train.csv"
+                "/tests/fixtures/s6e1/train.csv"
             ))
         })
 }

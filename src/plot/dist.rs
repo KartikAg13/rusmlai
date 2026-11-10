@@ -1,7 +1,8 @@
 //! `hist`, `boxplot` and `stripplot`: how a numeric column is spread out.
 
-use polars::prelude::{DataFrame, DataType, Expr, LazyFrame, QuantileMethod, col, len, lit, when};
+use polars::prelude::{DataFrame, DataType, Expr, LazyFrame, QuantileMethod, len, lit, when};
 
+use crate::utils::col;
 use crate::{
     dataset::Dataset,
     display::{Figure, escape},
@@ -25,7 +26,7 @@ use crate::{
     },
 };
 
-const MAX_BINS: usize = 1000;
+pub(crate) const MAX_BINS: usize = 1000;
 // At most 100 outlier rings per box, evenly spread by rank with both ends kept: past that they
 // pile up on one axis line anyway, and the SVG and the cache line stay small (like `SAMPLE`).
 const MAX_OUTLIERS: usize = 100;
@@ -835,18 +836,27 @@ pub(crate) fn render_hist(
     out
 }
 
-/// The box from q25 to q75 with a median line, whiskers to the fences, outliers as rings.
-pub(crate) fn render_box(texts: &Texts, result: &PlotResult, style: &Style) -> String {
-    let PlotResult::Boxes {
-        x_labels,
-        hue_labels,
-        boxes,
-        outliers,
-    } = result
-    else {
-        unreachable!("box plots hold Boxes results");
-    };
-    let theme: Theme = style.theme();
+/// The categories, hue groups and legend of a box plot or a violin plot.
+pub(crate) struct BoxGroups<'a> {
+    pub grouped: bool,
+    /// The shown categories, by index into the x labels.
+    pub rows: Vec<usize>,
+    /// The shown hue groups, by index into the hue labels (`[0]` without hue).
+    pub cols: Vec<usize>,
+    /// The number of boxes per category.
+    pub k: usize,
+    pub shown: Vec<&'a String>,
+    pub min_slot: f64,
+    pub items: Vec<(String, String)>,
+}
+
+/// Picks and orders the categories by median and the hue groups by `hue_order`.
+pub(crate) fn box_groups<'a>(
+    x_labels: &'a [String],
+    hue_labels: &[String],
+    boxes: &[Vec<[f64; 5]>],
+    style: &Style,
+) -> BoxGroups<'a> {
     let grouped: bool = !hue_labels.is_empty();
     let medians: Vec<f64> = boxes
         .iter()
@@ -871,6 +881,38 @@ pub(crate) fn render_box(texts: &Texts, result: &PlotResult, style: &Style) -> S
     } else {
         Vec::new()
     };
+    BoxGroups {
+        grouped,
+        rows,
+        cols,
+        k,
+        shown,
+        min_slot,
+        items,
+    }
+}
+
+/// The box from q25 to q75 with a median line, whiskers to the fences, outliers as rings.
+pub(crate) fn render_box(texts: &Texts, result: &PlotResult, style: &Style) -> String {
+    let PlotResult::Boxes {
+        x_labels,
+        hue_labels,
+        boxes,
+        outliers,
+    } = result
+    else {
+        unreachable!("box plots hold Boxes results");
+    };
+    let theme: Theme = style.theme();
+    let BoxGroups {
+        grouped,
+        rows,
+        cols,
+        k,
+        shown,
+        min_slot,
+        items,
+    } = box_groups(x_labels, hue_labels, boxes, style);
     let subtitle: &str = texts.subtitle(style);
     let mut l: Layout = layout(style, subtitle, rows.len(), min_slot, &items);
     let (lo, hi): (f64, f64) = range(

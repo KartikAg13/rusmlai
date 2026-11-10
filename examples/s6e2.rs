@@ -11,6 +11,35 @@ fn main() {
     dataset.describe();
     dataset.info();
 
+    // Preprocessing: scale the measurements, one-hot the multi-value codes. The 0/1 codes
+    // (Sex, FBS over 120, Exercise angina) are read by no add, so "passthrough" keeps them.
+    let x: Dataset = dataset.drop(&["id", "Heart Disease"]);
+    let mut prep: ColumnTransformer = ColumnTransformer::new()
+        .add(
+            "num",
+            &["Age", "BP", "Cholesterol", "Max HR", "ST depression"],
+            steps![StandardScaler::new()],
+        )
+        .add(
+            "code",
+            &[
+                "Chest pain type",
+                "EKG results",
+                "Slope of ST",
+                "Number of vessels fluro",
+                "Thallium",
+            ],
+            steps![OneHotEncoder::new()],
+        )
+        .remainder("passthrough");
+    let features: Dataset = prep.fit_transform(&x);
+    println!(
+        "{} features: {:?}",
+        features.columns().len(),
+        prep.get_feature_names_out()
+    );
+    features.head(5);
+
     // Every chart below starts from a light card with seaborn's "deep" colors.
     // Each chart saves itself to tests/fixtures/s6e2/metadata/plots/{title}.png.
     set_theme("light");
@@ -18,7 +47,7 @@ fn main() {
 
     // The target.
     dataset
-        .count("Heart Disease", "")
+        .countplot("Heart Disease", "")
         .title("Heart disease in the training set")
         .color_map(DIAGNOSIS);
     dataset
@@ -29,17 +58,17 @@ fn main() {
 
     // Codes that separate the two groups.
     dataset
-        .count("Chest pain type", "Heart Disease")
+        .countplot("Chest pain type", "Heart Disease")
         .title("Chest pain type by diagnosis")
         .subtitle("type 4 is chest pain without symptoms (asymptomatic)")
         .color_map(DIAGNOSIS);
     dataset
-        .count("Thallium", "Heart Disease")
+        .countplot("Thallium", "Heart Disease")
         .title("Thallium test by diagnosis")
         .order(&["3", "7", "6"])
         .color_map(DIAGNOSIS);
     dataset
-        .count("Number of vessels fluro", "Sex")
+        .countplot("Number of vessels fluro", "Sex")
         .title("Vessels seen on fluoroscopy, by sex")
         .theme("dark")
         .palette("bright");
@@ -122,18 +151,18 @@ fn main() {
         .palette("colorblind")
         .xlim(90.0, 200.0);
     dataset
-        .line("Age", "Max HR", "Heart Disease")
+        .plot("Age", "Max HR", "Heart Disease")
         .title("Mean maximum heart rate by age")
         .color_map(DIAGNOSIS);
     dataset
-        .line("Age", "ST depression", "Sex")
+        .plot("Age", "ST depression", "Sex")
         .title("Mean ST depression by age and sex")
         .theme("dark")
         .colors(&["#FEE440", "#F15BB5"]);
 
     // Sorting, sideways bars, shares, stacks, reference lines, legend placement, color names.
     dataset
-        .count("Chest pain type", "Heart Disease")
+        .countplot("Chest pain type", "Heart Disease")
         .title("Diagnosis share by chest pain type")
         .horizontal()
         .stacked()
@@ -141,7 +170,7 @@ fn main() {
         .color_map(&[("Presence", "crimson"), ("Absence", "teal")])
         .legend("bottom");
     dataset
-        .count("Number of vessels fluro", "")
+        .countplot("Number of vessels fluro", "")
         .title("Vessels, most common first")
         .sort("value")
         .percent()
@@ -154,7 +183,7 @@ fn main() {
         .xlim(100.0, 400.0)
         .vline(240.0, "high: 240");
     dataset
-        .line("Age", "Max HR", "")
+        .plot("Age", "Max HR", "")
         .title("Mean max heart rate with a 150 bpm line")
         .color("darkorange")
         .hline(150.0, "150 bpm");

@@ -69,7 +69,8 @@ pub mod utils;
 /// ```
 #[derive(Debug, Clone)]
 pub struct Metadata {
-    /// The CSV it came from. `None` after a transform, so nothing is written next to the CSV.
+    /// The CSV it came from: the name `metadata()` shows, and charts auto-save next to it.
+    /// `None` after a transform. The cache files are written only for a `read_csv` dataset.
     pub filepath: Option<OsString>,
     /// Row count.
     pub height: usize,
@@ -127,7 +128,7 @@ impl Metadata {
             height: self.height,
             width: selected.len(),
             dataset_cache: DatasetCache::new(columns),
-            plot_cache: PlotCache::new(Arc::clone(&self.plot_cache.entries)),
+            plot_cache: self.plot_cache.clone(),
         }
     }
 
@@ -191,25 +192,26 @@ impl Metadata {
             }
         };
 
+        // The file is set only when it is there to append to, so a read-only folder warns once.
         match read_jsonl::<(PlotSpec, PlotResult)>(&plots_path, fingerprint) {
             Some(entries) => {
-                metadata.plot_cache =
-                    PlotCache::new(Arc::new(RwLock::new(entries.into_iter().collect())))
+                metadata.plot_cache.entries = Arc::new(RwLock::new(entries.into_iter().collect()));
+                metadata.plot_cache.file = Some(plots_path);
             }
-            None => {
-                if let Err(e) = write_jsonl::<()>(&plots_path, fingerprint, &[]) {
-                    warn(format_args!(
-                        "could not write {}: {e}",
-                        plots_path.display()
-                    ));
-                }
-            }
+            None => match write_jsonl::<()>(&plots_path, fingerprint, &[]) {
+                Ok(()) => metadata.plot_cache.file = Some(plots_path),
+                Err(e) => warn(format_args!(
+                    "could not write {}: {e}",
+                    plots_path.display()
+                )),
+            },
         }
         Ok(metadata)
     }
 
     /// The cached result for `spec`, or `compute()` on a miss. A miss is stored in memory and
-    /// appended to the `.plots.jsonl` file. An error is returned and not cached.
+    /// appended to the `.plots.jsonl` file of a dataset that `read_csv` loaded. An error is
+    /// returned and not cached.
     pub fn plot<E>(
         &self,
         spec: PlotSpec,
@@ -224,17 +226,14 @@ impl Metadata {
             return Ok(hit.clone());
         }
         let result: PlotResult = compute()?;
-        if let Some(path) = &self.filepath {
-            let plots_path: PathBuf = cache_path(Path::new(path), PLOTS_CACHE);
-            // No file: the dataset wasn't loaded by `read_csv` (`Dataset::new`), so it has no cache.
-            if let Err(e) = append_jsonl(&plots_path, &(&spec, &result))
-                && e.kind() != io::ErrorKind::NotFound
-            {
-                warn(format_args!(
-                    "could not update {}: {e}",
-                    plots_path.display()
-                ));
-            }
+        // No file: the dataset wasn't loaded by `read_csv`, so it has no cache on disk.
+        if let Some(plots_path) = &self.plot_cache.file
+            && let Err(e) = append_jsonl(plots_path, &(&spec, &result))
+        {
+            warn(format_args!(
+                "could not update {}: {e}",
+                plots_path.display()
+            ));
         }
         entries
             .write()

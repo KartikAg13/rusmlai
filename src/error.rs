@@ -1,22 +1,5 @@
 use std::fmt::Display;
 
-use thiserror::Error;
-
-use crate::{dataset::error::DatasetError, metadata::error::MetadataError, plot::error::PlotError};
-
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum RusMLAIErrorInner {
-    #[error(transparent)]
-    Data(#[from] DatasetError),
-
-    #[error(transparent)]
-    Metadata(#[from] MetadataError),
-
-    #[error(transparent)]
-    Plot(#[from] PlotError),
-}
-
 /// Turns the `try_*` result into the panicking public API.
 pub trait OrFatal<T> {
     /// Returns the value, or panics with the error's message at the user's call site

@@ -53,5 +53,33 @@ fn ops(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, read, ops);
+/// `information_gain` (one pass per call, nothing cached) and the printed tables.
+fn analysis(c: &mut Criterion) {
+    let csv: PathBuf = common::scratch_csv("dataset_analysis");
+    let ds: Dataset = read_csv(&csv);
+    let features: Dataset = ds.drop(&["id"]);
+
+    let mut g = c.benchmark_group("dataset");
+    g.sample_size(10);
+    // A numeric target (binned) and a text target (counted as it is).
+    g.bench_function("information_gain/numeric_target", |b| {
+        b.iter(|| black_box(features.information_gain("exam_score")))
+    });
+    g.bench_function("information_gain/text_target", |b| {
+        b.iter(|| black_box(features.information_gain("exam_difficulty")))
+    });
+    g.finish();
+
+    let mut g = c.benchmark_group("dataset/table");
+    g.bench_function("info", |b| b.iter(|| black_box(ds.metadata.try_info())));
+    g.bench_function("describe", |b| {
+        b.iter(|| black_box(ds.metadata.try_describe()))
+    });
+    g.bench_function("metadata", |b| {
+        b.iter(|| black_box(ds.metadata.try_metadata(&[])))
+    });
+    g.finish();
+}
+
+criterion_group!(benches, read, ops, analysis);
 criterion_main!(benches);

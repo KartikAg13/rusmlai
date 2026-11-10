@@ -116,7 +116,7 @@ impl Figure {
     /// ```no_run
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").show();
+    /// ds.countplot("batch", "").show();
     /// ```
     ///
     /// In a loop, prefer [`Figure::save`]: `show` opens one viewer window per chart.
@@ -144,7 +144,7 @@ impl Figure {
     ///
     /// ```
     /// # use rusmlai::prelude::*;
-    /// let fig = read_csv("tests/fixtures/data/students.csv").count("batch", "");
+    /// let fig = read_csv("tests/fixtures/data/students.csv").countplot("batch", "");
     /// fig.evcxr_display(); // prints EVCXR_BEGIN_CONTENT text/html ... EVCXR_END_CONTENT
     /// # let _ = fig.svg();
     /// ```
@@ -426,15 +426,15 @@ mod tests {
     #[test]
     fn auto_save_name_keeps_safe_characters() {
         let fig: Figure = crate::dataset::Dataset::new(polars::df!("a/b" => ["x"]).unwrap(), "")
-            .count("a/b", "")
+            .countplot("a/b", "")
             .title("../a/b: c?");
         let _ = fig.svg(); // no auto-save
         assert_eq!(fig.auto_path(), Path::new("metadata/plots/ab c.png"));
         let dots: Figure = crate::dataset::Dataset::new(polars::df!("x" => ["y"]).unwrap(), "")
-            .count("x", "")
+            .countplot("x", "")
             .title("...");
         let _ = dots.svg();
-        assert_eq!(dots.auto_path().file_name().unwrap(), "count.png");
+        assert_eq!(dots.auto_path().file_name().unwrap(), "countplot.png");
     }
 
     #[test]

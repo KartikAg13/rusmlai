@@ -2,7 +2,12 @@
 
 mod common;
 
-use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, time::SystemTime};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
 use common::{cache_file, scratch_csv};
 use rusmlai::prelude::*;
@@ -47,6 +52,32 @@ fn a_changed_csv_makes_the_cache_stale() {
 }
 
 #[test]
+fn a_rewrite_of_the_same_size_makes_the_cache_stale() {
+    // The size is equal and the write comes within the same second: only a fine mtime tells.
+    let csv: PathBuf = scratch_csv("read_same_size");
+    assert_eq!(read_csv(&csv).try_numeric_stats("age").unwrap().max, 24.0);
+    let text: String = fs::read_to_string(&csv).unwrap();
+    let changed: String = text.replacen(",24,", ",99,", 1);
+    assert!(changed.len() == text.len() && changed != text);
+    fs::write(&csv, changed).unwrap();
+    assert_eq!(read_csv(&csv).try_numeric_stats("age").unwrap().max, 99.0);
+}
+
+#[test]
+fn a_file_dated_before_1970_reads_and_caches() {
+    let csv: PathBuf = scratch_csv("read_before_1970");
+    let old: SystemTime = SystemTime::UNIX_EPOCH - Duration::from_secs(86_400);
+    let file: fs::File = fs::File::options().write(true).open(&csv).unwrap();
+    file.set_modified(old).unwrap();
+    drop(file);
+    assert_eq!(read_csv(&csv).shape(), (12, 6));
+    let stats: PathBuf = cache_file(&csv, ".json");
+    let written: SystemTime = modified(&stats);
+    assert_eq!(read_csv(&csv).shape(), (12, 6));
+    assert_eq!(modified(&stats), written); // the second read was a cache hit
+}
+
+#[test]
 fn a_broken_cache_is_computed_again() {
     let csv: PathBuf = scratch_csv("read_broken");
     read_csv(&csv);
@@ -79,4 +110,27 @@ fn ragged_rows_are_filled_with_nulls() {
         ds.try_numeric_stats("temp").unwrap().mean,
         (4.5 + 19.0 + 15.5) / 3.0
     );
+}
+
+#[test]
+fn a_header_that_looks_like_a_polars_selector_is_a_plain_name() {
+    // Polars' `col` reads "*" as every column and "^...$" as a regex over the names.
+    let dir: PathBuf = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("read_selector_names");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let csv: PathBuf = dir.join("odd.csv");
+    fs::write(&csv, "*,^a.*$,a1\n1,10,x\n2,20,y\n3,60,x\n").unwrap();
+
+    let ds: Dataset = read_csv(&csv);
+    assert_eq!(ds.columns(), ["*", "^a.*$", "a1"]);
+    assert_eq!(ds.try_numeric_stats("*").unwrap().mean, 2.0);
+    assert_eq!(ds.try_numeric_stats("^a.*$").unwrap().max, 60.0);
+    assert_eq!(ds.information_gain("a1").len(), 2);
+    assert!(ds.hist("*", "a1", 3).svg().starts_with("<svg"));
+    assert!(ds.bar("a1", "^a.*$", "", "mean").svg().starts_with("<svg"));
+    assert!(ds.plot("*", "^a.*$", "").svg().starts_with("<svg"));
+    assert!(ds.qqplot("*").svg().starts_with("<svg"));
+    let scaled: Dataset = StandardScaler::new().fit_transform(&ds.select(&["*", "^a.*$"]));
+    assert_eq!(scaled.columns(), ["*", "^a.*$"]);
+    assert_eq!(scaled.try_numeric_stats("*").unwrap().median, 0.0);
 }

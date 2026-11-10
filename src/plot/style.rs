@@ -262,7 +262,7 @@ const PALETTE_VAR: &str = "RUSMLAI_PALETTE";
 ///
 /// set_theme("light");
 /// let ds = read_csv("tests/fixtures/data/students.csv");
-/// let svg = ds.count("batch", "").svg();
+/// let svg = ds.countplot("batch", "").svg();
 /// assert!(svg.contains("background-color:#FFFFFF"));
 /// ```
 ///
@@ -271,7 +271,7 @@ const PALETTE_VAR: &str = "RUSMLAI_PALETTE";
 /// # use rusmlai::prelude::*;
 /// set_theme("light");
 /// let ds = read_csv("tests/fixtures/data/students.csv");
-/// let svg = ds.count("batch", "").theme("dark").svg();
+/// let svg = ds.countplot("batch", "").theme("dark").svg();
 /// assert!(svg.contains("background-color:#15171C"));
 /// ```
 ///
@@ -303,7 +303,7 @@ pub fn set_theme(name: &str) {
 ///
 /// set_palette("tab10");
 /// let ds = read_csv("tests/fixtures/data/students.csv");
-/// let svg = ds.count("batch", "").svg();
+/// let svg = ds.countplot("batch", "").svg();
 /// assert!(svg.contains("#1F77B4")); // the first tab10 color
 /// ```
 ///
@@ -312,7 +312,7 @@ pub fn set_theme(name: &str) {
 /// # use rusmlai::prelude::*;
 /// set_palette("tab10");
 /// let ds = read_csv("tests/fixtures/data/students.csv");
-/// let svg = ds.count("batch", "").colors(&["gold"]).svg();
+/// let svg = ds.countplot("batch", "").colors(&["gold"]).svg();
 /// assert!(svg.contains("#FFD700") && !svg.contains("#1F77B4"));
 /// ```
 ///
@@ -398,10 +398,10 @@ impl Style {
 }
 
 /// Chart options, the Rust form of Python's keyword arguments. Each one takes the figure and
-/// returns it, so they chain: `ds.count("batch", "").title("Batches").palette("colorblind")`.
+/// returns it, so they chain: `ds.countplot("batch", "").title("Batches").palette("colorblind")`.
 ///
 /// Each chart takes the options that fit it, and its method lists them. Any other option
-/// panics at your line, for example `.cmap() does not work on a count chart`. A bad value
+/// panics at your line, for example `.cmap() does not work on a countplot chart`. A bad value
 /// panics too, with the reason and the names you can use.
 impl Figure {
     /// Checks the option against the chart, then applies it. Errors panic at the caller's line.
@@ -437,7 +437,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").title("Students per batch").svg();
+    /// let svg = ds.countplot("batch", "").title("Students per batch").svg();
     /// assert!(svg.contains("Students per batch"));
     /// ```
     ///
@@ -459,7 +459,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").title("CGPA < 6 & failed").svg();
+    /// let svg = ds.countplot("batch", "").title("CGPA < 6 & failed").svg();
     /// assert!(svg.contains("CGPA &lt; 6 &amp; failed"));
     /// ```
     #[track_caller]
@@ -474,7 +474,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").subtitle("spring term").svg();
+    /// let svg = ds.countplot("batch", "").subtitle("spring term").svg();
     /// assert!(svg.contains("spring term"));
     /// ```
     ///
@@ -482,7 +482,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").subtitle("").svg();
+    /// let svg = ds.countplot("batch", "").subtitle("").svg();
     /// assert!(!svg.contains("unique=3"));
     /// ```
     #[track_caller]
@@ -506,7 +506,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").horizontal().xlabel("group").svg();
+    /// let svg = ds.countplot("batch", "").horizontal().xlabel("group").svg();
     /// assert!(svg.contains("group"));
     /// ```
     ///
@@ -528,7 +528,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").ylabel("students").svg();
+    /// let svg = ds.countplot("batch", "").ylabel("students").svg();
     /// assert!(svg.contains("students"));
     /// ```
     ///
@@ -552,7 +552,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").theme("light").svg();
+    /// let svg = ds.countplot("batch", "").theme("light").svg();
     /// assert!(svg.contains("background-color:#FFFFFF"));
     /// ```
     ///
@@ -561,7 +561,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").theme("light").svg();
+    /// let svg = ds.countplot("batch", "").theme("light").svg();
     /// assert!(svg.contains("#BDA885")); // the light card's cream
     /// ```
     ///
@@ -569,7 +569,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").theme("solarized"); // panics: Use one of: dark, classic, light
+    /// ds.countplot("batch", "").theme("solarized"); // panics: Use one of: dark, classic, light
     /// ```
     #[track_caller]
     pub fn theme(self, name: &str) -> Self {
@@ -590,7 +590,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").palette("colorblind").svg();
+    /// let svg = ds.countplot("batch", "").palette("colorblind").svg();
     /// assert!(svg.contains("#E69F00")); // the first colorblind color
     /// ```
     ///
@@ -606,7 +606,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").palette("viridis"); // panics: Use one of: rusmlai, greens, ...
+    /// ds.countplot("batch", "").palette("viridis"); // panics: Use one of: rusmlai, greens, ...
     /// ```
     #[track_caller]
     pub fn palette(self, name: &str) -> Self {
@@ -628,7 +628,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").colors(&["#199E70", "tomato", "tab:blue"]).svg();
+    /// let svg = ds.countplot("batch", "").colors(&["#199E70", "tomato", "tab:blue"]).svg();
     /// assert!(svg.contains("#FF6347") && svg.contains("#1F77B4"));
     /// ```
     ///
@@ -636,7 +636,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").colors(&["gold", "navy"]).svg();
+    /// let svg = ds.countplot("batch", "").colors(&["gold", "navy"]).svg();
     /// assert_eq!(svg.matches("fill=\"#FFD700\"").count(), 2);
     /// ```
     ///
@@ -644,7 +644,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").colors(&[]); // panics: .colors(): the list is empty
+    /// ds.countplot("batch", "").colors(&[]); // panics: .colors(): the list is empty
     /// ```
     #[track_caller]
     pub fn colors(self, colors: &[&str]) -> Self {
@@ -723,7 +723,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").color_map(&[("B13", "gold")]).svg();
+    /// let svg = ds.countplot("batch", "").color_map(&[("B13", "gold")]).svg();
     /// assert!(svg.contains("#FFD700"));
     /// ```
     ///
@@ -732,7 +732,7 @@ impl Figure {
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
-    ///     .count("batch", "passed")
+    ///     .countplot("batch", "passed")
     ///     .color_map(&[("true", "seagreen"), ("false", "tomato")])
     ///     .svg();
     /// assert!(svg.contains("#2E8B57") && svg.contains("#FF6347"));
@@ -742,7 +742,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").color_map(&[("B99", "gold")]); // panics: Categories: B13, B14, B15
+    /// ds.countplot("batch", "").color_map(&[("B99", "gold")]); // panics: Categories: B13, B14, B15
     /// ```
     #[track_caller]
     pub fn color_map(self, map: &[(&str, &str)]) -> Self {
@@ -773,7 +773,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").size(600.0, 400.0).svg();
+    /// let svg = ds.countplot("batch", "").size(600.0, 400.0).svg();
     /// assert!(svg.starts_with(r#"<svg width="600" height="400""#));
     /// ```
     ///
@@ -781,7 +781,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("name", "").size(200.0, 150.0).svg();
+    /// let svg = ds.countplot("name", "").size(200.0, 150.0).svg();
     /// assert!(!svg.starts_with(r#"<svg width="200""#));
     /// ```
     ///
@@ -789,7 +789,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").size(100.0, 100.0); // panics: use at least 200 x 150
+    /// ds.countplot("batch", "").size(100.0, 100.0); // panics: use at least 200 x 150
     /// ```
     #[track_caller]
     pub fn size(self, width: f64, height: f64) -> Self {
@@ -819,7 +819,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").order(&["B15", "B13"]).svg();
+    /// let svg = ds.countplot("batch", "").order(&["B15", "B13"]).svg();
     /// assert!(!svg.contains("batch = B14"));
     /// assert!(svg.find("batch = B15") < svg.find("batch = B13"));
     /// ```
@@ -828,7 +828,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("age", "").order(&["24", "19"]).svg();
+    /// let svg = ds.countplot("age", "").order(&["24", "19"]).svg();
     /// assert!(svg.find("age = 24") < svg.find("age = 19"));
     /// ```
     ///
@@ -836,7 +836,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").order(&["B99"]); // panics: Categories: B13, B14, B15
+    /// ds.countplot("batch", "").order(&["B99"]); // panics: Categories: B13, B14, B15
     /// ```
     #[track_caller]
     pub fn order(self, names: &[&str]) -> Self {
@@ -860,7 +860,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "passed").hue_order(&["false", "true"]).svg();
+    /// let svg = ds.countplot("batch", "passed").hue_order(&["false", "true"]).svg();
     /// assert!(svg.find("passed = false") < svg.find("passed = true"));
     /// ```
     ///
@@ -868,7 +868,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "passed").hue_order(&["false"]).svg();
+    /// let svg = ds.countplot("batch", "passed").hue_order(&["false"]).svg();
     /// assert!(!svg.contains("passed = true"));
     /// ```
     ///
@@ -876,7 +876,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").hue_order(&["true"]); // panics: this chart has no hue groups
+    /// ds.countplot("batch", "").hue_order(&["true"]); // panics: this chart has no hue groups
     /// ```
     #[track_caller]
     pub fn hue_order(self, names: &[&str]) -> Self {
@@ -907,7 +907,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("name", "").top(5).svg();
+    /// let svg = ds.countplot("name", "").top(5).svg();
     /// assert!(svg.contains("showing 5 of 11"));
     /// ```
     ///
@@ -923,7 +923,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("name", "").top(0); // panics: n must be at least 1
+    /// ds.countplot("name", "").top(0); // panics: n must be at least 1
     /// ```
     #[track_caller]
     pub fn top(self, n: usize) -> Self {
@@ -944,8 +944,8 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let with: String = ds.count("batch", "").svg();
-    /// let without: String = ds.count("batch", "").values(false).svg();
+    /// let with: String = ds.countplot("batch", "").svg();
+    /// let without: String = ds.countplot("batch", "").values(false).svg();
     /// assert!(without.len() < with.len());
     /// ```
     ///
@@ -953,8 +953,8 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let plain: String = ds.count("batch", "passed").svg();
-    /// let numbered: String = ds.count("batch", "passed").values(true).svg();
+    /// let plain: String = ds.countplot("batch", "passed").svg();
+    /// let numbered: String = ds.countplot("batch", "passed").values(true).svg();
     /// assert!(numbered.len() > plain.len());
     /// ```
     ///
@@ -1037,7 +1037,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").xlim(0.0, 1.0); // panics: .xlim() does not work on a count chart
+    /// ds.countplot("batch", "").xlim(0.0, 1.0); // panics: .xlim() does not work on a countplot chart
     /// ```
     #[track_caller]
     pub fn xlim(self, low: f64, high: f64) -> Self {
@@ -1116,7 +1116,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("name", "").sort("name").svg();
+    /// let svg = ds.countplot("name", "").sort("name").svg();
     /// assert!(svg.find("name = Aarav Shah") < svg.find("name = Zoë Müller"));
     /// ```
     ///
@@ -1124,7 +1124,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").sort("size"); // panics: Use one of: value, name, count
+    /// ds.countplot("batch", "").sort("size"); // panics: Use one of: value, name, count
     /// ```
     #[track_caller]
     pub fn sort(self, by: &str) -> Self {
@@ -1142,8 +1142,8 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let up: String = ds.count("batch", "").svg();
-    /// let sideways: String = ds.count("batch", "").horizontal().svg();
+    /// let up: String = ds.countplot("batch", "").svg();
+    /// let sideways: String = ds.countplot("batch", "").horizontal().svg();
     /// assert_ne!(up, sideways);
     /// ```
     ///
@@ -1179,7 +1179,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "").percent().svg();
+    /// let svg = ds.countplot("batch", "").percent().svg();
     /// assert!(svg.contains("percent = 33.33%"));
     /// ```
     ///
@@ -1187,7 +1187,7 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("batch", "passed").percent().svg();
+    /// let svg = ds.countplot("batch", "passed").percent().svg();
     /// assert!(svg.contains("passed = true\npercent = 25%")); // 3 of 12 rows
     /// ```
     ///
@@ -1227,7 +1227,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").kde(); // panics: .kde() does not work on a count chart
+    /// ds.countplot("batch", "").kde(); // panics: .kde() does not work on a countplot chart
     /// ```
     #[track_caller]
     pub fn kde(self) -> Self {
@@ -1242,8 +1242,8 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let side: String = ds.count("batch", "passed").svg();
-    /// let stacked: String = ds.count("batch", "passed").stacked().svg();
+    /// let side: String = ds.countplot("batch", "passed").svg();
+    /// let stacked: String = ds.countplot("batch", "passed").stacked().svg();
     /// assert_ne!(side, stacked);
     /// ```
     ///
@@ -1343,7 +1343,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").vline(1.0, ""); // panics: .vline() does not work on a count chart
+    /// ds.countplot("batch", "").vline(1.0, ""); // panics: .vline() does not work on a countplot chart
     /// ```
     #[track_caller]
     pub fn vline(self, x: f64, label: &str) -> Self {
@@ -1367,8 +1367,8 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let right: String = ds.count("batch", "passed").svg();
-    /// let bottom: String = ds.count("batch", "passed").legend("bottom").svg();
+    /// let right: String = ds.countplot("batch", "passed").svg();
+    /// let bottom: String = ds.countplot("batch", "passed").legend("bottom").svg();
     /// assert_ne!(right, bottom);
     /// ```
     ///
@@ -1376,8 +1376,8 @@ impl Figure {
     /// ```
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let with: String = ds.count("batch", "passed").svg();
-    /// let without: String = ds.count("batch", "passed").legend("none").svg();
+    /// let with: String = ds.countplot("batch", "passed").svg();
+    /// let without: String = ds.countplot("batch", "passed").legend("none").svg();
     /// assert!(without.len() < with.len());
     /// ```
     ///
@@ -1385,7 +1385,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "passed").legend("left"); // panics: Use one of: right, bottom, none
+    /// ds.countplot("batch", "passed").legend("left"); // panics: Use one of: right, bottom, none
     /// ```
     #[track_caller]
     pub fn legend(self, at: &str) -> Self {
@@ -1426,7 +1426,7 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", "").cmap("viridis"); // panics: .cmap() does not work on a count chart
+    /// ds.countplot("batch", "").cmap("viridis"); // panics: .cmap() does not work on a countplot chart
     /// ```
     #[track_caller]
     pub fn cmap(self, name: &str) -> Self {

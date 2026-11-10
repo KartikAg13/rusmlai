@@ -10,7 +10,7 @@
 //! ds.describe();
 //! let gains = ds.drop(&["id", "name"]).information_gain("passed");
 //! println!("most informative: {}", gains[0].0);
-//! let svg: String = ds.count("batch", "passed").title("Batches").svg();
+//! let svg: String = ds.countplot("batch", "passed").title("Batches").svg();
 //! assert!(svg.starts_with("<svg"));
 //! ```
 //!
@@ -31,5 +31,11 @@ pub mod prelude {
         dataset::{Dataset, error::DatasetError, read_csv, try_read_csv},
         display::{Figure, TableView},
         plot::style::{set_palette, set_theme},
+        preprocess::{
+            ColumnTransformer, LabelEncoder, MaxAbsScaler, MinMaxScaler, OneHotEncoder,
+            OrdinalEncoder, PreprocessError, RobustScaler, SimpleImputer, StandardScaler,
+            Transform,
+        },
+        steps,
     };
 }

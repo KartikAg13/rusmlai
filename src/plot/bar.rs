@@ -1,7 +1,8 @@
 //! `bar`, `count`, `describe_bar` and `pie`: compute the numbers, then render them.
 
-use polars::prelude::{DataFrame, DataType, Expr, col, len};
+use polars::prelude::{DataFrame, DataType, Expr, len};
 
+use crate::utils::col;
 use crate::{
     dataset::Dataset,
     display::{Figure, escape},
@@ -32,7 +33,7 @@ impl Dataset {
     /// (seaborn: `barplot`)
     ///
     /// `estimator = ""` means "mean". The others are median, sum, min, max, std and count.
-    /// `hue = ""` draws one bar per category, and `y = ""` counts rows like [`Dataset::count`].
+    /// `hue = ""` draws one bar per category, and `y = ""` counts rows like [`Dataset::countplot`].
     /// Categories come in the metadata order (most rows first). A number column as `x` sorts
     /// ascending. The numbers are cached next to the CSV, so the next call reads them back.
     ///
@@ -163,7 +164,7 @@ impl Dataset {
             .collect();
             return Err(PlotError::EmptyResult(columns.join(", ")));
         }
-        let name: &'static str = if spec.y.is_none() { "count" } else { "bar" };
+        let name: &'static str = if spec.y.is_none() { "countplot" } else { "bar" };
         Ok(self.figure(name, bar_texts(&spec, x_stats, nulls), Body::Bar(result)))
     }
 
@@ -187,7 +188,7 @@ impl Dataset {
     /// use rusmlai::prelude::*;
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.count("batch", ""); // saves metadata/plots/Count batch vs count.png
+    /// ds.countplot("batch", ""); // saves metadata/plots/Count batch vs count.png
     /// ```
     ///
     /// Pass and fail stacked in each batch, as percentages, with most options:
@@ -195,7 +196,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
-    ///     .count("batch", "passed")
+    ///     .countplot("batch", "passed")
     ///     .stacked()
     ///     .percent()
     ///     .title("Who passed")
@@ -216,11 +217,11 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.count("age", "").svg();
+    /// let svg = ds.countplot("age", "").svg();
     /// assert!(svg.contains("age = 19\ncount = 3")); // the hover text of the first bar
     /// ```
     #[track_caller]
-    pub fn count(&self, x: &str, hue: &str) -> Figure {
+    pub fn countplot(&self, x: &str, hue: &str) -> Figure {
         self.try_bar(x, "", hue, "").or_fatal()
     }
 
@@ -490,7 +491,7 @@ impl Dataset {
     /// (matplotlib: `plt.pie`)
     ///
     /// A text column uses the cached counts. A number column (codes like 0 / 1) is counted like
-    /// [`Dataset::count`]. Nulls are left out. The legend shows each slice's count and share.
+    /// [`Dataset::countplot`]. Nulls are left out. The legend shows each slice's count and share.
     ///
     /// Options: `.title`, `.subtitle`, `.theme`, `.size`, `.palette`, `.colors`, `.color_map`,
     /// `.order`, `.top`, `.values` and `.sort`. `.top(n)` sets the number of slices before

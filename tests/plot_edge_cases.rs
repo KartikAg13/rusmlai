@@ -15,7 +15,7 @@ const CHARTS: &[Chart] = &[
     ("bar sum hue", |d| d.try_bar("x", "y", "h", "sum")),
     ("bar numeric x", |d| d.try_bar("n", "y", "", "median")),
     ("bar std", |d| d.try_bar("x", "y", "", "std")),
-    ("count", |d| d.try_bar("x", "", "", "")),
+    ("countplot", |d| d.try_bar("x", "", "", "")),
     ("count hue", |d| d.try_bar("x", "", "h", "")),
     ("count hue = x", |d| d.try_bar("x", "", "x", "")),
     ("count numeric", |d| d.try_bar("n", "", "", "")),
@@ -44,8 +44,8 @@ const CHARTS: &[Chart] = &[
     ("regplot", |d| d.try_regplot("y", "z", "")),
     ("regplot hue", |d| d.try_regplot("y", "z", "h")),
     ("regplot x = y", |d| d.try_regplot("y", "y", "")),
-    ("line", |d| d.try_line("n", "y", "")),
-    ("line hue", |d| d.try_line("z", "y", "h")),
+    ("plot", |d| d.try_plot("n", "y", "")),
+    ("line hue", |d| d.try_plot("z", "y", "h")),
     ("pairplot", |d| d.try_pairplot(&[], "")),
     ("pairplot hue, repeated column", |d| {
         d.try_pairplot(&["y", "z", "y"], "h")
@@ -222,7 +222,7 @@ fn options_reject_impossible_values_and_draw_odd_ones() {
             .title(&"T".repeat(400))
             .subtitle(&"s".repeat(400))
             .svg(),
-        ds.count("x", "h").percent().stacked().svg(),
+        ds.countplot("x", "h").percent().stacked().svg(),
         ds.hist("y", "", 10).xlim(100.0, 200.0).kde().svg(), // every row outside
         ds.scatter("y", "z", "").vline(1e300, "far").sample(1).svg(),
         ds.heatmap("x", "h", "y", "sum").cmap("rdbu").svg(),

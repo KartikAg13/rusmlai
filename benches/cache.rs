@@ -11,7 +11,6 @@ use rusmlai::{
         Metadata,
         constants::{DATASET_CACHE, PLOTS_CACHE},
         dataset::dto::{ColumnInfoDTO, DatasetCacheDTO},
-        plot::PlotCache,
         utils::{append_jsonl, cache_path, file_fingerprint, read_jsonl, write_jsonl},
     },
     plot::{result::PlotResult, spec::PlotSpec},
@@ -104,7 +103,7 @@ fn plot(c: &mut Criterion) {
         b.iter_batched(
             || {
                 let mut m: Metadata = meta.clone();
-                m.plot_cache = PlotCache::default();
+                m.plot_cache.entries = Default::default(); // the file stays, so the miss appends
                 write_jsonl::<()>(&plots_path, fingerprint, &[]).unwrap();
                 m
             },

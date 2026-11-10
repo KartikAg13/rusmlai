@@ -36,7 +36,7 @@
       <div class="cell-in">
         <span class="prompt">In [<span data-run>1</span>]:</span>
         <pre data-nocopy><code class="rust">let ds: Dataset = read_csv("train.csv");
-ds.count("course", "");</code></pre>
+ds.countplot("course", "");</code></pre>
         <button class="run" type="button">Run again</button>
       </div>
       <p class="cell-status" aria-live="polite"><b>120 ms</b> read_csv parsed 630,000 rows, computed stats for 13 columns and saved them to metadata/train.json. count() drew from those stats.</p>
@@ -78,7 +78,7 @@ ds.count("course", "");</code></pre>
             <tr><td><code>pd.read_csv("train.csv")</code></td><td><code>read_csv("train.csv")</code></td></tr>
             <tr><td><code>df.describe()</code></td><td><code>ds.describe()</code></td></tr>
             <tr><td><code>df.drop(columns=["id"])</code></td><td><code>ds.drop(&amp;["id"])</code></td></tr>
-            <tr><td><code>sns.countplot(df, x="course")</code></td><td><code>ds.count("course", "")</code></td></tr>
+            <tr><td><code>sns.countplot(df, x="course")</code></td><td><code>ds.countplot("course", "")</code></td></tr>
             <tr><td><code>sns.histplot(df, x="exam_score", bins=30)</code></td><td><code>ds.hist("exam_score", "", 30)</code></td></tr>
             <tr><td><code>sns.boxplot(df, x="course", y="exam_score")</code></td><td><code>ds.boxplot("course", "exam_score", "")</code></td></tr>
             <tr><td><code>sns.heatmap(df.corr())</code></td><td><code>ds.corrplot()</code></td></tr>

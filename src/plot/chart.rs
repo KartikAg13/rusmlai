@@ -164,7 +164,7 @@ impl Chart {
             // .percent and .stacked need counts.
             Body::Bar(_) => {
                 !matches!(option, ".cmap" | ".xlim" | ".sample" | ".vline" | ".kde")
-                    && (self.name == "count" || !matches!(option, ".percent" | ".stacked"))
+                    && (self.name == "countplot" || !matches!(option, ".percent" | ".stacked"))
             }
             Body::Pie(_) => matches!(
                 option,
@@ -221,7 +221,7 @@ impl Chart {
                         | ".percent"
                         | ".stacked"
                         | ".kde"
-                ) && !(option == ".sample" && self.name == "line")
+                ) && !(option == ".sample" && self.name == "plot")
             }
             Body::Kde(_) => matches!(
                 option,

@@ -3,8 +3,9 @@
 
 use std::f64::consts::TAU;
 
-use polars::prelude::{DataFrame, DataType, SortMultipleOptions, col};
+use polars::prelude::{DataFrame, DataType, SortMultipleOptions};
 
+use crate::utils::col;
 use crate::{
     dataset::Dataset,
     display::{Figure, escape},
@@ -12,15 +13,15 @@ use crate::{
     plot::{
         MAX_SAMPLE,
         chart::{Body, Texts},
-        dist::{box_hover, boxes, fine_bins, mean, spread_texts},
+        dist::{BoxGroups, MAX_BINS, box_groups, box_hover, boxes, fine_bins, spread_texts},
         error::PlotError,
         f64s,
         result::PlotResult,
         rows, sample, sample_subtitle, slots,
         style::{Style, Theme},
         svg::{
-            self, Layout, MIN_CLUSTER_BAR, TOP, Tick, XScale, YScale, extent, finish, hlines,
-            layout, legend_items, ordered, pick, range, tick_mode,
+            self, Layout, Tick, XScale, YScale, extent, finish, hlines, layout, ordered, range,
+            tick_mode,
         },
     },
 };
@@ -30,7 +31,6 @@ pub(crate) type Curve = (usize, usize, Vec<(f64, f64)>);
 
 const GRID: usize = 200; // points on a curve (seaborn's gridsize)
 const KDE_BINS: usize = 256; // bins that sampled rows are counted in before smoothing
-const MAX_BINS: usize = 1000; // the `hist` cache key that `kdeplot` reads (1,000 fine bins)
 
 /// Scott's rule, as in scipy's `gaussian_kde` (seaborn's default): the rows' std times
 /// n^(-1/5), both read from the bins. None for fewer than 2 rows or no spread; seaborn skips
@@ -526,7 +526,7 @@ impl Dataset {
         self.try_numeric_stats(column)?;
         let sorted: DataFrame = rows(self, &[column])
             .select([col(column).cast(DataType::Float64)])
-            .sort([column], SortMultipleOptions::default())
+            .sort_by_exprs([col(column)], SortMultipleOptions::default())
             .collect()?;
         let values: Vec<f64> = f64s(&sorted, column)?;
         let n: usize = values.len();
@@ -676,30 +676,15 @@ pub(crate) fn render_violin(
         unreachable!("violins hold Boxes results");
     };
     let theme: Theme = style.theme();
-    let grouped: bool = !hue_labels.is_empty();
-    let medians: Vec<f64> = boxes
-        .iter()
-        .map(|row| mean(row.iter().map(|five| five[2])))
-        .collect();
-    let rows: Vec<usize> = pick(x_labels, style, &medians, style.top.unwrap_or(TOP));
-    let cols: Vec<usize> = if grouped {
-        ordered(hue_labels, style.hue_order.as_deref())
-    } else {
-        vec![0]
-    };
-    let k: usize = cols.len().max(1);
-    let shown_labels: Vec<&String> = rows.iter().map(|&i| &x_labels[i]).collect();
-    let min_slot: f64 = if grouped {
-        k as f64 * MIN_CLUSTER_BAR / 0.62
-    } else {
-        56.0
-    }
-    .max(svg::label_width(&shown_labels));
-    let items: Vec<(String, String)> = if grouped {
-        legend_items(style, hue_labels, &cols)
-    } else {
-        Vec::new()
-    };
+    let BoxGroups {
+        grouped,
+        rows,
+        cols,
+        k,
+        shown: shown_labels,
+        min_slot,
+        items,
+    } = box_groups(x_labels, hue_labels, boxes, style);
     let subtitle: String = sample_subtitle(style, &texts.subtitle, shown, rows_with_values);
     let mut l: Layout = layout(style, &subtitle, rows.len(), min_slot, &items);
     let (lo, hi): (f64, f64) = range(

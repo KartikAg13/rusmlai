@@ -1,5 +1,5 @@
 //! Charts on a [`Dataset`], like seaborn. Each chart is a method that returns a [`Figure`], and
-//! options chain on it: `ds.count("batch", "").title("Batches").palette("colorblind")`. In a
+//! options chain on it: `ds.countplot("batch", "").title("Batches").palette("colorblind")`. In a
 //! notebook the figure shows itself. In a program it saves a PNG to `metadata/plots/` next to
 //! the CSV, unless you call `.save` or `.svg`. A column argument of `""` means "not used"
 //! (`hue = ""`). Charts leave out rows with a null, NaN or infinite value in the columns they
@@ -29,10 +29,10 @@ use std::{
 };
 
 use polars::prelude::{
-    DataFrame, DataType, Expr, IdxCa, IdxSize, IntoLazy, LazyFrame, PlSmallStr, SortOptions, col,
-    lit,
+    DataFrame, DataType, Expr, IdxCa, IdxSize, IntoLazy, LazyFrame, PlSmallStr, SortOptions, lit,
 };
 
+use crate::utils::col;
 use crate::{
     dataset::Dataset,
     display::Figure,

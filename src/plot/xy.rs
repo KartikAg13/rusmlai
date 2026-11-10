@@ -1,7 +1,8 @@
 //! `scatter`, `line` and `regplot`: one numeric column against another.
 
-use polars::prelude::{DataFrame, DataType, Expr, SortMultipleOptions, col};
+use polars::prelude::{DataFrame, DataType, Expr, SortMultipleOptions};
 
+use crate::utils::col;
 use crate::{
     dataset::Dataset,
     display::{Figure, escape},
@@ -225,7 +226,7 @@ impl Dataset {
     /// # Panics
     ///
     /// If a column doesn't exist, `x` or `y` isn't numeric, or no row has values.
-    /// [`Dataset::try_line`] returns these as errors.
+    /// [`Dataset::try_plot`] returns these as errors.
     ///
     /// # Examples
     ///
@@ -234,7 +235,7 @@ impl Dataset {
     /// use rusmlai::prelude::*;
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.line("age", "cgpa", ""); // saves metadata/plots/Line mean cgpa vs age.png
+    /// ds.plot("age", "cgpa", ""); // saves metadata/plots/Line mean cgpa vs age.png
     /// ```
     ///
     /// One line for passed and one for failed, with most options:
@@ -242,7 +243,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds
-    ///     .line("age", "cgpa", "passed")
+    ///     .plot("age", "cgpa", "passed")
     ///     .title("CGPA by age")
     ///     .subtitle("mean at each age")
     ///     .xlabel("age")
@@ -265,15 +266,15 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.line("age", "cgpa", "").svg();
+    /// let svg = ds.plot("age", "cgpa", "").svg();
     /// assert!(svg.contains("age = 19\ncgpa = 8.10"));
     /// ```
     #[track_caller]
-    pub fn line(&self, x: &str, y: &str, hue: &str) -> Figure {
-        self.try_line(x, y, hue).or_fatal()
+    pub fn plot(&self, x: &str, y: &str, hue: &str) -> Figure {
+        self.try_plot(x, y, hue).or_fatal()
     }
 
-    /// [`Dataset::line`] that returns an error instead of panicking.
+    /// [`Dataset::plot`] that returns an error instead of panicking.
     ///
     /// # Errors
     ///
@@ -286,7 +287,7 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// # use rusmlai::plot::error::PlotError;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let svg = ds.try_line("id", "cgpa", "")?.svg();
+    /// let svg = ds.try_plot("id", "cgpa", "")?.svg();
     /// assert!(svg.contains("Line: mean cgpa vs id"));
     /// # Ok::<(), PlotError>(())
     /// ```
@@ -297,13 +298,13 @@ impl Dataset {
     /// use rusmlai::{dataset::error::DatasetError, plot::error::PlotError};
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
-    /// let result = ds.try_line("age", "name", "");
+    /// let result = ds.try_plot("age", "name", "");
     /// assert!(matches!(
     ///     result,
     ///     Err(PlotError::Dataset(DatasetError::ColumnNotNumeric { .. }))
     /// ));
     /// ```
-    pub fn try_line(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
+    pub fn try_plot(&self, x: &str, y: &str, hue: &str) -> Result<Figure, PlotError> {
         self.try_numeric_stats(x)?;
         self.try_numeric_stats(y)?;
         let hue: Option<String> = optional(hue);
@@ -319,7 +320,7 @@ impl Dataset {
         let grouped: DataFrame = rows(self, &columns)
             .group_by(keys)
             .agg([col(y).cast(DataType::Float64).mean().alias(VALUE)])
-            .sort([x], SortMultipleOptions::default())
+            .sort_by_exprs([col(x)], SortMultipleOptions::default())
             .collect()?;
         let hue_labels: Vec<String> = match &hue {
             Some(hue) => labels(self, &grouped, hue)?,
@@ -352,7 +353,7 @@ impl Dataset {
             rows: 0,
             fit: None,
         };
-        Ok(self.figure("line", texts, body))
+        Ok(self.figure("plot", texts, body))
     }
 }
 
@@ -514,7 +515,7 @@ pub(crate) fn render_xy(
     let l: Layout = layout(style, subtitle, 1, 0.0, &items);
     // Lines use the data range like seaborn; points keep the old axis from 0.
     let (y_lo, y_hi): (f64, f64) = match (name, style.ylim) {
-        ("line", None) => extent(
+        ("plot", None) => extent(
             shown()
                 .map(|p| p.1)
                 .chain(style.hlines.iter().map(|line| line.0)),
@@ -527,7 +528,7 @@ pub(crate) fn render_xy(
     let mut out: String = svg::card(&theme, &texts.title(style), subtitle, l.width, l.height);
     scale.draw(&mut out, &theme, l.left, l.width - l.right);
     xscale.draw(&mut out, &theme, scale.bottom() + 22.0);
-    if name == "line" {
+    if name == "plot" {
         for (j, color) in color_of.iter().enumerate() {
             let Some(color) = color else { continue };
             let d: String = points
@@ -544,7 +545,7 @@ pub(crate) fn render_xy(
             ));
         }
     }
-    let (radius, opacity): (&str, &str) = if name == "line" {
+    let (radius, opacity): (&str, &str) = if name == "plot" {
         ("3", "1")
     } else {
         ("3.5", "0.6")

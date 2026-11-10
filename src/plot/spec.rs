@@ -1,7 +1,8 @@
-use polars::lazy::dsl::{Expr, col};
+use polars::lazy::dsl::Expr;
 use serde::{Deserialize, Serialize};
 
 use crate::plot::{error::PlotError, optional};
+use crate::utils::col;
 
 /// How a bar or heatmap cell sums up its values: the `estimator` argument as a type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

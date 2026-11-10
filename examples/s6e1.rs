@@ -8,12 +8,44 @@ fn main() {
     dataset.describe();
     dataset.info();
 
+    // Preprocessing: X is every column but the id and the target. fit reads the cached stats.
+    let x: Dataset = dataset.drop(&["id", "exam_score"]);
+    let mut prep: ColumnTransformer = ColumnTransformer::new()
+        .add(
+            "num",
+            &["age", "study_hours", "class_attendance", "sleep_hours"],
+            steps![
+                SimpleImputer::new().strategy("median"),
+                StandardScaler::new()
+            ],
+        )
+        .add(
+            "cat",
+            &[
+                "gender",
+                "course",
+                "internet_access",
+                "sleep_quality",
+                "study_method",
+                "facility_rating",
+                "exam_difficulty",
+            ],
+            steps![OneHotEncoder::new()],
+        );
+    let features: Dataset = prep.fit_transform(&x);
+    println!(
+        "{} features: {:?}",
+        features.columns().len(),
+        prep.get_feature_names_out()
+    );
+    features.head(5);
+
     // Each chart saves itself to tests/fixtures/s6e1/metadata/plots/{title}.png.
 
     // Who the students are: the default dark card, one rusmlai color per category.
-    dataset.count("course", "").title("Students per course");
+    dataset.countplot("course", "").title("Students per course");
     dataset
-        .count("study_method", "gender")
+        .countplot("study_method", "gender")
         .title("How each gender studies")
         .palette("bright");
     dataset
@@ -43,7 +75,7 @@ fn main() {
         .hue_order(&["easy", "moderate", "hard"])
         .ylim(50.0, 70.0);
     dataset
-        .count("facility_rating", "exam_difficulty")
+        .countplot("facility_rating", "exam_difficulty")
         .title("Exam difficulty by facility rating")
         .order(&["low", "medium", "high"])
         .hue_order(&["easy", "moderate", "hard"])
@@ -125,7 +157,7 @@ fn main() {
         .xlim(40.0, 100.0)
         .ylim(0.0, 100.0);
     dataset
-        .line("sleep_hours", "exam_score", "sleep_quality")
+        .plot("sleep_hours", "exam_score", "sleep_quality")
         .title("Mean score by hours of sleep")
         .theme("light")
         .palette("dark")
@@ -141,14 +173,14 @@ fn main() {
         .horizontal()
         .ylim(60.0, 64.0);
     dataset
-        .count("study_method", "")
+        .countplot("study_method", "")
         .title("Study methods A to Z")
         .sort("name")
         .horizontal()
         .percent()
         .color("teal");
     dataset
-        .count("exam_difficulty", "sleep_quality")
+        .countplot("exam_difficulty", "sleep_quality")
         .title("Share of students by difficulty and sleep")
         .order(&["easy", "moderate", "hard"])
         .hue_order(&["poor", "average", "good"])
@@ -207,7 +239,7 @@ fn main() {
         .color_map(&[("yes", "#3A86FF"), ("no", "#FF006E")])
         .save("tests/fixtures/s6e1/metadata/plots/internet_vs_study_hours.svg");
     dataset
-        .count("study_method", "")
+        .countplot("study_method", "")
         .title("How students study")
         .theme("light")
         .color("#4C72B0")
