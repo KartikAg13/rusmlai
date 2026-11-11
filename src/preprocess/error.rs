@@ -53,6 +53,13 @@ pub enum PreprocessError {
         expected: String,
     },
 
+    /// `transform` got data without a column that `fit` saw.
+    #[error("transform needs column '{column}', which fit saw but this dataset doesn't have")]
+    MissingColumn {
+        /// The missing column.
+        column: String,
+    },
+
     /// `transform` gave an encoder a value that its `fit` never saw.
     #[error(
         "output column '{column}' got a value that fit never saw. To allow a category, use .handle_unknown(\"ignore\") on a OneHotEncoder, or .handle_unknown(\"use_encoded_value\").unknown_value(..) on an OrdinalEncoder"

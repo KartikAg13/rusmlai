@@ -1,8 +1,8 @@
 //! [`StandardScaler`], [`MinMaxScaler`], [`MaxAbsScaler`] and [`RobustScaler`].
 //!
-//! Each one learns a `(shift, scale)` per column from the cached stats, so `fit` makes no pass
-//! over the data, and gives `(x - shift) / scale`. A zero scale becomes 1, as in scikit-learn.
-//! Nulls stay null.
+//! Each one learns two numbers per column from the cached stats, so `fit` makes no pass over the
+//! data. They have scikit-learn's names (`mean_`, `scale_`, ...). A zero scale becomes 1, as in
+//! scikit-learn. Nulls stay null.
 
 use indexmap::IndexMap;
 use polars::prelude::{DataType, Expr, lit};
@@ -14,42 +14,41 @@ use crate::{
     preprocess::{Exprs, PreprocessError, Transform},
 };
 
-/// Column to `(shift, scale)`.
-type Params = IndexMap<String, (f64, f64)>;
+/// `f(stats, non-null count)` for every column of `dataset`, as two maps.
+type Learned = (IndexMap<String, f64>, IndexMap<String, f64>);
 
-/// `f(stats, non-null count)` for every column of `dataset`.
 fn learn(
     dataset: &Dataset,
     f: impl Fn(&NumericStats, f64) -> (f64, f64),
-) -> Result<Params, PreprocessError> {
-    dataset
-        .columns()
-        .into_iter()
-        .map(|column| {
-            let stats: &NumericStats = dataset.try_numeric_stats(&column)?;
-            let nulls: usize = dataset.try_column_info(&column)?.null_count;
-            let n: f64 = (dataset.metadata.height - nulls) as f64;
-            let params: (f64, f64) = f(stats, n);
-            Ok((column, params))
-        })
-        .collect()
+) -> Result<Learned, PreprocessError> {
+    let mut first: IndexMap<String, f64> = IndexMap::new();
+    let mut second: IndexMap<String, f64> = IndexMap::new();
+    for column in dataset.columns() {
+        let stats: &NumericStats = dataset.try_numeric_stats(&column)?;
+        let nulls: usize = dataset.try_column_info(&column)?.null_count;
+        let n: f64 = (dataset.metadata.height - nulls) as f64;
+        let (a, b): (f64, f64) = f(stats, n);
+        first.insert(column.clone(), a);
+        second.insert(column, b);
+    }
+    Ok((first, second))
 }
 
-/// `(x - shift) / scale` for every input.
-fn shift_scale(
+/// `f(column, x)` for every input `x` (cast to `Float64`); `None` means `fit` never saw it.
+fn each(
     inputs: &Exprs,
-    params: &Params,
     transformer: &'static str,
+    f: impl Fn(&str, Expr) -> Option<Expr>,
 ) -> Result<Exprs, PreprocessError> {
     inputs
         .iter()
         .map(|(name, expr)| {
-            let (shift, scale): (f64, f64) =
-                *params.get(name).ok_or_else(|| PreprocessError::NotFitted {
+            let scaled: Expr = f(name, expr.clone().cast(DataType::Float64)).ok_or_else(|| {
+                PreprocessError::NotFitted {
                     transformer,
                     column: name.clone(),
-                })?;
-            let scaled: Expr = (expr.clone().cast(DataType::Float64) - lit(shift)) / lit(scale);
+                }
+            })?;
             Ok((name.clone(), scaled))
         })
         .collect()
@@ -73,8 +72,10 @@ fn nonzero(scale: f64) -> f64 {
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct StandardScaler {
-    /// Column to `(mean, scale)`, learned by `fit`.
-    pub params: IndexMap<String, (f64, f64)>,
+    /// Column to its mean, learned by `fit`.
+    pub mean_: IndexMap<String, f64>,
+    /// Column to its population std (1 when it is 0), learned by `fit`.
+    pub scale_: IndexMap<String, f64>,
 }
 
 impl StandardScaler {
@@ -86,7 +87,7 @@ impl StandardScaler {
 
 impl Transform for StandardScaler {
     fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
-        self.params = learn(dataset, |stats, n| {
+        (self.mean_, self.scale_) = learn(dataset, |stats, n| {
             // The cache holds the sample variance (ddof = 1); scikit-learn divides by ddof = 0.
             let scale: f64 = (stats.variance * (n - 1.0) / n).sqrt();
             (stats.mean, nonzero(scale))
@@ -95,7 +96,9 @@ impl Transform for StandardScaler {
     }
 
     fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
-        shift_scale(inputs, &self.params, "StandardScaler")
+        each(inputs, "StandardScaler", |name, x| {
+            Some((x - lit(*self.mean_.get(name)?)) / lit(*self.scale_.get(name)?))
+        })
     }
 }
 
@@ -112,15 +115,18 @@ impl Transform for StandardScaler {
 #[derive(Debug, Clone)]
 pub struct MinMaxScaler {
     range: (f64, f64),
-    /// Column to `(shift, scale)`, learned by `fit`.
-    pub params: IndexMap<String, (f64, f64)>,
+    /// Column to `feature_range.0 - data_min × scale_`, learned by `fit`.
+    pub min_: IndexMap<String, f64>,
+    /// Column to `(feature_range.1 - feature_range.0) / (data_max - data_min)`, learned by `fit`.
+    pub scale_: IndexMap<String, f64>,
 }
 
 impl Default for MinMaxScaler {
     fn default() -> Self {
         Self {
             range: (0.0, 1.0),
-            params: IndexMap::new(),
+            min_: IndexMap::new(),
+            scale_: IndexMap::new(),
         }
     }
 }
@@ -150,16 +156,17 @@ impl MinMaxScaler {
 impl Transform for MinMaxScaler {
     fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
         let (low, high): (f64, f64) = self.range;
-        self.params = learn(dataset, |stats, _| {
-            // (x - min) / range * (high - low) + low, written as (x - shift) / scale.
-            let scale: f64 = nonzero(stats.max - stats.min) / (high - low);
-            (stats.min - low * scale, scale)
+        (self.min_, self.scale_) = learn(dataset, |stats, _| {
+            let scale: f64 = (high - low) / nonzero(stats.max - stats.min);
+            (low - stats.min * scale, scale)
         })?;
         Ok(())
     }
 
     fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
-        shift_scale(inputs, &self.params, "MinMaxScaler")
+        each(inputs, "MinMaxScaler", |name, x| {
+            Some(x * lit(*self.scale_.get(name)?) + lit(*self.min_.get(name)?))
+        })
     }
 }
 
@@ -176,8 +183,10 @@ impl Transform for MinMaxScaler {
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct MaxAbsScaler {
-    /// Column to `(0, max absolute value)`, learned by `fit`.
-    pub params: IndexMap<String, (f64, f64)>,
+    /// Column to its largest absolute value, learned by `fit`.
+    pub max_abs_: IndexMap<String, f64>,
+    /// `max_abs_`, with 1 in place of 0.
+    pub scale_: IndexMap<String, f64>,
 }
 
 impl MaxAbsScaler {
@@ -189,14 +198,17 @@ impl MaxAbsScaler {
 
 impl Transform for MaxAbsScaler {
     fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
-        self.params = learn(dataset, |stats, _| {
-            (0.0, nonzero(stats.min.abs().max(stats.max.abs())))
+        (self.max_abs_, self.scale_) = learn(dataset, |stats, _| {
+            let max_abs: f64 = stats.min.abs().max(stats.max.abs());
+            (max_abs, nonzero(max_abs))
         })?;
         Ok(())
     }
 
     fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
-        shift_scale(inputs, &self.params, "MaxAbsScaler")
+        each(inputs, "MaxAbsScaler", |name, x| {
+            Some(x / lit(*self.scale_.get(name)?))
+        })
     }
 }
 
@@ -214,8 +226,10 @@ impl Transform for MaxAbsScaler {
 /// ```
 #[derive(Debug, Default, Clone)]
 pub struct RobustScaler {
-    /// Column to `(median, interquartile range)`, learned by `fit`.
-    pub params: IndexMap<String, (f64, f64)>,
+    /// Column to its median, learned by `fit`.
+    pub center_: IndexMap<String, f64>,
+    /// Column to its interquartile range (1 when it is 0), learned by `fit`.
+    pub scale_: IndexMap<String, f64>,
 }
 
 impl RobustScaler {
@@ -227,13 +241,15 @@ impl RobustScaler {
 
 impl Transform for RobustScaler {
     fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
-        self.params = learn(dataset, |stats, _| {
+        (self.center_, self.scale_) = learn(dataset, |stats, _| {
             (stats.median, nonzero(stats.quantile_75 - stats.quantile_25))
         })?;
         Ok(())
     }
 
     fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
-        shift_scale(inputs, &self.params, "RobustScaler")
+        each(inputs, "RobustScaler", |name, x| {
+            Some((x - lit(*self.center_.get(name)?)) / lit(*self.scale_.get(name)?))
+        })
     }
 }

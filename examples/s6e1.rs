@@ -10,28 +10,7 @@ fn main() {
 
     // Preprocessing: X is every column but the id and the target. fit reads the cached stats.
     let x: Dataset = dataset.drop(&["id", "exam_score"]);
-    let mut prep: ColumnTransformer = ColumnTransformer::new()
-        .add(
-            "num",
-            &["age", "study_hours", "class_attendance", "sleep_hours"],
-            steps![
-                SimpleImputer::new().strategy("median"),
-                StandardScaler::new()
-            ],
-        )
-        .add(
-            "cat",
-            &[
-                "gender",
-                "course",
-                "internet_access",
-                "sleep_quality",
-                "study_method",
-                "facility_rating",
-                "exam_difficulty",
-            ],
-            steps![OneHotEncoder::new()],
-        );
+    let mut prep: ColumnTransformer = preprocessing();
     let features: Dataset = prep.fit_transform(&x);
     println!(
         "{} features: {:?}",
@@ -39,6 +18,17 @@ fn main() {
         prep.get_feature_names_out()
     );
     features.head(5);
+
+    // A pipeline: split the rows, fit on the train rows, score on the test rows. The baseline
+    // predicts the mean score of the train rows, so its R² is about 0.
+    let (train, test) = train_test_split(&dataset.drop(&["id"]), 0.2, 42, "");
+    let mut pipe = Pipeline::new(preprocessing(), ModelStacker::new(DummyRegressor::new()));
+    pipe.fit(&train, "exam_score");
+    println!(
+        "DummyRegressor: R² {:.4} on {} test rows",
+        pipe.score(&test, "exam_score"),
+        test.height()
+    );
 
     // Each chart saves itself to tests/fixtures/s6e1/metadata/plots/{title}.png.
 
@@ -244,4 +234,30 @@ fn main() {
         .theme("light")
         .color("#4C72B0")
         .show();
+}
+
+/// Median-impute and scale the numbers, one-hot encode the text columns.
+fn preprocessing() -> ColumnTransformer {
+    ColumnTransformer::new()
+        .add(
+            "num",
+            &["age", "study_hours", "class_attendance", "sleep_hours"],
+            steps![
+                SimpleImputer::new().strategy("median"),
+                StandardScaler::new()
+            ],
+        )
+        .add(
+            "cat",
+            &[
+                "gender",
+                "course",
+                "internet_access",
+                "sleep_quality",
+                "study_method",
+                "facility_rating",
+                "exam_difficulty",
+            ],
+            steps![OneHotEncoder::new()],
+        )
 }

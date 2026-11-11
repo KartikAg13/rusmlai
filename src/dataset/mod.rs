@@ -30,6 +30,7 @@ use crate::{
 
 pub mod error;
 pub mod reader;
+pub mod split;
 
 /// Equal-width bins of a numeric column in `information_gain`.
 const BINS: i64 = 256;
@@ -509,7 +510,7 @@ impl Dataset {
     /// A column found by comparing names, not through Polars' name index. evcxr builds each
     /// notebook cell with its own copy of Polars, and an index made by the cell that read the
     /// table gives wrong answers in later cells ("not found" for a column that exists).
-    fn column(&self, name: &str) -> Result<&Column, DatasetError> {
+    pub(crate) fn column(&self, name: &str) -> Result<&Column, DatasetError> {
         self.dataframe
             .columns()
             .iter()
@@ -901,6 +902,33 @@ pub fn try_read_csv(path: impl AsRef<Path>) -> Result<Dataset, DatasetError> {
         dataframe,
         metadata,
     })
+}
+
+impl Dataset {
+    /// This dataset with the column `name` of `source` added, or replaced. The column keeps its
+    /// stats from `source`, so a model's `fit` reads the target's cached stats. The rows must
+    /// line up.
+    pub(crate) fn try_with_column(
+        &self,
+        source: &Dataset,
+        name: &str,
+    ) -> Result<Dataset, DatasetError> {
+        let column: Column = source.column(name)?.clone();
+        let info: std::sync::Arc<ColumnInfo> =
+            std::sync::Arc::clone(&source.metadata.dataset_cache.columns[name]);
+        let mut dataframe: DataFrame = self.dataframe.clone();
+        dataframe.with_column(column)?;
+        let mut metadata: Metadata = self.metadata.clone();
+        metadata
+            .dataset_cache
+            .columns
+            .insert(name.to_string(), info);
+        metadata.width = dataframe.width();
+        Ok(Dataset {
+            dataframe,
+            metadata,
+        })
+    }
 }
 
 #[cfg(test)]

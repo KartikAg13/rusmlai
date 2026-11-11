@@ -35,6 +35,9 @@ use crate::{
 ///     ["num__age", "num__cgpa", "cat__batch_B13", "cat__batch_B14", "cat__batch_B15"],
 /// );
 /// ```
+// ponytail: not Clone, because the steps are `Box<dyn Transform>`, so a `Pipeline` can't be copied.
+// Before `cross_val_score`, add a `clone_box` supertrait with a blanket impl for every
+// `Transform + Clone` (the dyn-clone trick, no crate), then derive Clone here (decided 2026-11-11).
 #[derive(Debug, Default)]
 pub struct ColumnTransformer {
     adds: Vec<Add>,
@@ -140,7 +143,29 @@ impl Transform for ColumnTransformer {
     }
 
     fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
-        self.plan(inputs)
+        if self.input_columns.is_empty() {
+            return self.plan(inputs); // not fitted: the steps say so
+        }
+        // The columns fit saw, like scikit-learn: `&[]` and the remainder never pick up a column
+        // that only the new data has, for example the target in a test set. A column fit saw
+        // may be missing only if nothing reads it.
+        let all_inputs: bool =
+            self.passthrough || self.adds.first().is_some_and(|a| a.columns.is_empty());
+        let mut known: Exprs = IndexMap::new();
+        for name in &self.input_columns {
+            match inputs.get(name) {
+                Some(expr) => {
+                    known.insert(name.clone(), expr.clone());
+                }
+                None if all_inputs || self.adds.iter().any(|a| a.columns.contains(name)) => {
+                    return Err(PreprocessError::MissingColumn {
+                        column: name.clone(),
+                    });
+                }
+                None => {}
+            }
+        }
+        self.plan(&known)
     }
 }
 
@@ -282,6 +307,26 @@ mod tests {
         let out: Dataset = prep.transform(&test);
         let first: f64 = values(&out.dataframe, "num__age")[0].unwrap();
         assert!((first - (19.0 - mean) / scale).abs() < 1e-12);
+    }
+
+    #[test]
+    fn transform_reads_only_the_columns_fit_saw() {
+        let ds: Dataset = read_csv("tests/fixtures/data/students.csv");
+        let mut prep: ColumnTransformer = ColumnTransformer::new()
+            .add("num", &["age"], steps![StandardScaler::new()])
+            .remainder("passthrough");
+        prep.fit(&ds.drop(&["passed"]));
+        // `passed` is only in the new data, so the remainder leaves it out.
+        let out: Dataset = prep.transform(&ds);
+        assert!(!out.columns().contains(&"passed".to_string()));
+        assert_eq!(out.columns(), prep.get_feature_names_out());
+
+        let err: String = prep
+            .try_transform(&ds.drop(&["name"])) // the remainder passes `name` through
+            .map(|_| ())
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("transform needs column 'name'"), "{err}");
     }
 
     #[test]

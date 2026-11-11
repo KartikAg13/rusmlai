@@ -4,7 +4,7 @@
 //! the CSV, unless you call `.save` or `.svg`. A column argument of `""` means "not used"
 //! (`hue = ""`). Charts leave out rows with a null, NaN or infinite value in the columns they
 //! use, like pandas. Every chart has a `try_` twin that returns `Result<Figure, PlotError>`;
-//! `count` uses `try_bar(x, "", hue, "")`.
+//! `countplot` uses `try_bar(x, "", hue, "")`.
 //!
 //! Each chart file holds its `Dataset` methods (`foo` and `try_foo`), its
 //! query and its renderer. The query helpers they share are here; the drawing helpers are in

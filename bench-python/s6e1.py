@@ -15,6 +15,8 @@ import pandas as pd
 import scipy.stats
 import seaborn as sns
 from sklearn.compose import ColumnTransformer
+from sklearn.dummy import DummyRegressor
+from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -39,22 +41,29 @@ with stage("tables", "describe"):
 with stage("tables", "info"):
     dataset.info()
 
+
+
+def make_prep() -> ColumnTransformer:
+    """Median-impute and scale the numbers, one-hot encode the text columns."""
+    return ColumnTransformer(
+        [
+            (
+                "num",
+                Pipeline([("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]),
+                ["age", "study_hours", "class_attendance", "sleep_hours"],
+            ),
+            (
+                "cat",
+                OneHotEncoder(sparse_output=False),
+                ["gender", "course", "internet_access", "sleep_quality", "study_method", "facility_rating", "exam_difficulty"],
+            ),
+        ]
+    )
+
+
 # Preprocessing: X is every column but the id and the target.
 x = dataset.drop(columns=["id", "exam_score"])
-prep = ColumnTransformer(
-    [
-        (
-            "num",
-            Pipeline([("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]),
-            ["age", "study_hours", "class_attendance", "sleep_hours"],
-        ),
-        (
-            "cat",
-            OneHotEncoder(sparse_output=False),
-            ["gender", "course", "internet_access", "sleep_quality", "study_method", "facility_rating", "exam_difficulty"],
-        ),
-    ]
-)
+prep = make_prep()
 with stage("preprocessing", "ColumnTransformer fit"):
     prep.fit(x)
 with stage("preprocessing", "ColumnTransformer transform"):
@@ -62,6 +71,16 @@ with stage("preprocessing", "ColumnTransformer transform"):
 names = prep.get_feature_names_out()
 print(f"{len(names)} features: {list(names)}")
 print(pd.DataFrame(features[:5], columns=names))
+
+# A pipeline: split the rows, fit on the train rows, score on the test rows.
+with stage("pipeline", "train_test_split"):
+    train, test = train_test_split(dataset.drop(columns=["id"]), test_size=0.2, random_state=42)
+pipe = Pipeline([("prep", make_prep()), ("model", DummyRegressor())])
+with stage("pipeline", "fit"):
+    pipe.fit(train.drop(columns=["exam_score"]), train["exam_score"])
+with stage("pipeline", "score"):
+    r2 = pipe.score(test.drop(columns=["exam_score"]), test["exam_score"])
+print(f"DummyRegressor: R² {r2:.4f} on {len(test)} test rows")
 
 # Who the students are.
 with chart("countplot", "Students per course", OUT) as ax:

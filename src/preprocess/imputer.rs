@@ -45,8 +45,8 @@ use crate::{
 pub struct SimpleImputer {
     strategy: String,
     fill_value: Option<Expr>,
-    /// Column to its fill value, learned by `fit`.
-    pub fills: IndexMap<String, Expr>,
+    /// Column to its fill value, learned by `fit` (scikit-learn's `statistics_`).
+    pub statistics_: IndexMap<String, Expr>,
 }
 
 impl Default for SimpleImputer {
@@ -54,7 +54,7 @@ impl Default for SimpleImputer {
         Self {
             strategy: "mean".into(),
             fill_value: None,
-            fills: IndexMap::new(),
+            statistics_: IndexMap::new(),
         }
     }
 }
@@ -82,7 +82,7 @@ impl SimpleImputer {
 
 impl Transform for SimpleImputer {
     fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
-        self.fills.clear();
+        self.statistics_.clear();
         for column in dataset.columns() {
             let dtype: &DataType = &dataset.try_column_info(&column)?.dtype;
             let fill: Expr = match self.strategy.as_str() {
@@ -106,7 +106,7 @@ impl Transform for SimpleImputer {
                 },
                 other => unreachable!("strategy() only takes known values, got {other}"),
             };
-            self.fills.insert(column, fill);
+            self.statistics_.insert(column, fill);
         }
         Ok(())
     }
@@ -114,7 +114,7 @@ impl Transform for SimpleImputer {
     fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
         inputs
             .iter()
-            .map(|(name, expr)| match self.fills.get(name) {
+            .map(|(name, expr)| match self.statistics_.get(name) {
                 None => Err(PreprocessError::NotFitted {
                     transformer: "SimpleImputer",
                     column: name.clone(),

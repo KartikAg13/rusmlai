@@ -83,14 +83,14 @@ fn lookup(text: Expr, old: &[String], new: Vec<f64>, default: Option<f64>) -> Ex
 pub struct OneHotEncoder {
     handle_unknown: String,
     /// Column to its sorted categories, learned by `fit`.
-    pub categories: IndexMap<String, Vec<String>>,
+    pub categories_: IndexMap<String, Vec<String>>,
 }
 
 impl Default for OneHotEncoder {
     fn default() -> Self {
         Self {
             handle_unknown: "error".into(),
-            categories: IndexMap::new(),
+            categories_: IndexMap::new(),
         }
     }
 }
@@ -113,10 +113,10 @@ impl OneHotEncoder {
 
 impl Transform for OneHotEncoder {
     fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
-        self.categories.clear();
+        self.categories_.clear();
         for column in dataset.columns() {
             let names: Vec<String> = learn_categories(dataset, &column)?;
-            self.categories.insert(column, names);
+            self.categories_.insert(column, names);
         }
         Ok(())
     }
@@ -127,7 +127,7 @@ impl Transform for OneHotEncoder {
         let mut out: Exprs = IndexMap::new();
         for (name, expr) in inputs {
             let names: &Vec<String> =
-                self.categories
+                self.categories_
                     .get(name)
                     .ok_or_else(|| PreprocessError::NotFitted {
                         transformer: "OneHotEncoder",
@@ -170,7 +170,7 @@ pub struct OrdinalEncoder {
     handle_unknown: String,
     unknown_value: Option<f64>,
     /// Column to its categories in code order, learned by `fit`.
-    pub categories: IndexMap<String, Vec<String>>,
+    pub categories_: IndexMap<String, Vec<String>>,
 }
 
 impl Default for OrdinalEncoder {
@@ -179,7 +179,7 @@ impl Default for OrdinalEncoder {
             order: Vec::new(),
             handle_unknown: "error".into(),
             unknown_value: None,
-            categories: IndexMap::new(),
+            categories_: IndexMap::new(),
         }
     }
 }
@@ -240,7 +240,7 @@ impl Transform for OrdinalEncoder {
                 expected: "one list per column, in column order".into(),
             });
         }
-        self.categories.clear();
+        self.categories_.clear();
         for (i, column) in columns.into_iter().enumerate() {
             let seen: Vec<String> = learn_categories(dataset, &column)?;
             let names: Vec<String> = match self.order.get(i) {
@@ -259,7 +259,7 @@ impl Transform for OrdinalEncoder {
                     order.clone()
                 }
             };
-            self.categories.insert(column, names);
+            self.categories_.insert(column, names);
         }
         Ok(())
     }
@@ -269,7 +269,7 @@ impl Transform for OrdinalEncoder {
             .iter()
             .map(|(name, expr)| {
                 let names: &Vec<String> =
-                    self.categories
+                    self.categories_
                         .get(name)
                         .ok_or_else(|| PreprocessError::NotFitted {
                             transformer: "OrdinalEncoder",
@@ -297,7 +297,7 @@ impl Transform for OrdinalEncoder {
 /// let y = Dataset::new(df!("passed" => ["yes", "no", "yes"]).unwrap(), "");
 /// let mut encoder = LabelEncoder::new();
 /// let codes = encoder.fit_transform(&y);
-/// assert_eq!(encoder.classes, ["no", "yes"]);
+/// assert_eq!(encoder.classes_, ["no", "yes"]);
 /// let c: Vec<i64> = codes.dataframe.column("passed").unwrap().i64().unwrap().into_no_null_iter().collect();
 /// assert_eq!(c, [1, 0, 1]);
 /// let back = encoder.inverse_transform(&codes);
@@ -307,7 +307,7 @@ impl Transform for OrdinalEncoder {
 #[derive(Debug, Default, Clone)]
 pub struct LabelEncoder {
     /// The sorted classes, learned by `fit`: class `i` has code `i`.
-    pub classes: Vec<String>,
+    pub classes_: Vec<String>,
 }
 
 impl LabelEncoder {
@@ -321,7 +321,7 @@ impl LabelEncoder {
         let inputs: Exprs = identity(dataset);
         self.check(&inputs)?;
         let codes: Series = Series::new("".into(), self.codes::<f64>());
-        let classes: Series = Series::new("".into(), &self.classes);
+        let classes: Series = Series::new("".into(), &self.classes_);
         let outputs: Exprs = inputs
             .into_iter()
             .map(|(name, expr)| {
@@ -345,14 +345,14 @@ impl LabelEncoder {
 
     /// `0..classes.len()` as `T`.
     fn codes<T: From<u32>>(&self) -> Vec<T> {
-        (0..self.classes.len() as u32).map(T::from).collect()
+        (0..self.classes_.len() as u32).map(T::from).collect()
     }
 
     /// One input column, and a fitted encoder.
     fn check(&self, inputs: &Exprs) -> Result<(), PreprocessError> {
         one_column(inputs.len())?;
         match inputs.keys().next() {
-            Some(name) if self.classes.is_empty() => Err(PreprocessError::NotFitted {
+            Some(name) if self.classes_.is_empty() => Err(PreprocessError::NotFitted {
                 transformer: "LabelEncoder",
                 column: name.clone(),
             }),
@@ -377,13 +377,13 @@ impl Transform for LabelEncoder {
     fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
         let columns: Vec<String> = dataset.columns();
         one_column(columns.len())?;
-        self.classes = learn_categories(dataset, &columns[0])?;
+        self.classes_ = learn_categories(dataset, &columns[0])?;
         Ok(())
     }
 
     fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
         self.check(inputs)?;
-        let classes: Series = Series::new("".into(), &self.classes);
+        let classes: Series = Series::new("".into(), &self.classes_);
         let codes: Series = Series::new("".into(), self.codes::<i64>());
         Ok(inputs
             .iter()
@@ -475,7 +475,7 @@ mod tests {
         let y: Dataset = Dataset::new(df!("y" => [Some(10), Some(2), None]).unwrap(), "");
         let mut encoder: LabelEncoder = LabelEncoder::new();
         let codes: Dataset = encoder.fit_transform(&y);
-        assert_eq!(encoder.classes, ["2", "10"]);
+        assert_eq!(encoder.classes_, ["2", "10"]);
         let c: Vec<Option<i64>> = codes
             .dataframe
             .column("y")

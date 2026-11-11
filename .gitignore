@@ -22,17 +22,8 @@ target
 
 /tests/fixtures/*
 !/tests/fixtures/data/
-.claude/
-.codex/
-.serena/
-.agents/
+/tests/fixtures/data/metadata/
 analysis/
 docs/
-graphify-out/
-python/
 notebooks/
-/plot/
-/plots/
 CLAUDE.md
-
-/tests/fixtures/data/metadata/

@@ -21,6 +21,8 @@ pub mod dataset;
 pub mod display;
 pub mod error;
 pub mod metadata;
+pub mod metrics;
+pub mod models;
 pub mod pipeline;
 pub mod plot;
 pub mod preprocess;
@@ -28,8 +30,17 @@ pub mod utils;
 
 pub mod prelude {
     pub use crate::{
-        dataset::{Dataset, error::DatasetError, read_csv, try_read_csv},
+        dataset::{
+            Dataset,
+            error::DatasetError,
+            read_csv,
+            split::{train_test_split, try_train_test_split},
+            try_read_csv,
+        },
         display::{Figure, TableView},
+        metrics::{mean_absolute_error, mean_squared_error, r2_score, root_mean_squared_error},
+        models::{DummyRegressor, ModelError, Regressor},
+        pipeline::{ModelStacker, Pipeline},
         plot::style::{set_palette, set_theme},
         preprocess::{
             ColumnTransformer, LabelEncoder, MaxAbsScaler, MinMaxScaler, OneHotEncoder,
