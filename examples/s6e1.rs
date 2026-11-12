@@ -19,15 +19,18 @@ fn main() {
     );
     features.head(5);
 
-    // A pipeline: split the rows, fit on the train rows, score on the test rows. The baseline
-    // predicts the mean score of the train rows, so its R² is about 0.
+    // Pipelines: split the rows, fit on the train rows, score on the test rows. The baseline
+    // predicts the mean score of the train rows, so its R² is about 0; a model must beat it.
     let (train, test) = train_test_split(&dataset.drop(&["id"]), 0.2, 42, "");
-    let mut pipe = Pipeline::new(preprocessing(), ModelStacker::new(DummyRegressor::new()));
-    pipe.fit(&train, "exam_score");
+    let mut baseline = Pipeline::new(preprocessing(), ModelStacker::new(DummyRegressor::new()));
+    baseline.fit(&train, "exam_score");
+    let mut linear = Pipeline::new(preprocessing(), ModelStacker::new(LinearRegression::new()));
+    linear.fit(&train, "exam_score");
     println!(
-        "DummyRegressor: R² {:.4} on {} test rows",
-        pipe.score(&test, "exam_score"),
-        test.height()
+        "R² on {} test rows: DummyRegressor {:.4}, LinearRegression {:.4}",
+        test.height(),
+        baseline.score(&test, "exam_score"),
+        linear.score(&test, "exam_score"),
     );
 
     // Each chart saves itself to tests/fixtures/s6e1/metadata/plots/{title}.png.

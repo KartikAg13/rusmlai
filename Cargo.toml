@@ -1,11 +1,27 @@
 [package]
 name = "rusmlai"
-version = "0.7.0"
+version = "0.9.0"
 edition = "2024"
 
 [dependencies.comfy-table]
 version = "8.0"
 default-features = false
+
+# Matrix products and solves for the models: its Gram matrix beat OpenBLAS on one thread
+# (docs/performance.md, Part 2). Only `std`: no rayon, rand or sparse solvers.
+[dependencies.faer]
+version = "0.24.4"
+default-features = false
+features = ["std"]
+
+# Polars' own thread pool (`runtime::THREAD_POOL`), so model code and Polars share the cores
+# instead of two pools competing for them. Both are already compiled as part of Polars.
+[dependencies.polars-core]
+version = "0.55.2"
+default-features = false
+
+[dependencies.rayon]
+version = "1.12.0"
 
 [dependencies.indexmap]
 version = "2.14.0"
@@ -100,4 +116,8 @@ harness = false
 
 [[bench]]
 name = "preprocess"
+harness = false
+
+[[bench]]
+name = "models"
 harness = false

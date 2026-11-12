@@ -16,6 +16,7 @@ import scipy.stats
 import seaborn as sns
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyRegressor
+from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
 from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
@@ -72,15 +73,20 @@ names = prep.get_feature_names_out()
 print(f"{len(names)} features: {list(names)}")
 print(pd.DataFrame(features[:5], columns=names))
 
-# A pipeline: split the rows, fit on the train rows, score on the test rows.
+# Pipelines: split the rows, fit on the train rows, score on the test rows.
 with stage("pipeline", "train_test_split"):
     train, test = train_test_split(dataset.drop(columns=["id"]), test_size=0.2, random_state=42)
-pipe = Pipeline([("prep", make_prep()), ("model", DummyRegressor())])
-with stage("pipeline", "fit"):
-    pipe.fit(train.drop(columns=["exam_score"]), train["exam_score"])
-with stage("pipeline", "score"):
-    r2 = pipe.score(test.drop(columns=["exam_score"]), test["exam_score"])
-print(f"DummyRegressor: R² {r2:.4f} on {len(test)} test rows")
+x_train, y_train = train.drop(columns=["exam_score"]), train["exam_score"]
+x_test, y_test = test.drop(columns=["exam_score"]), test["exam_score"]
+baseline = Pipeline([("prep", make_prep()), ("model", DummyRegressor())])
+linear = Pipeline([("prep", make_prep()), ("model", LinearRegression())])
+with stage("pipeline", "fit DummyRegressor"):
+    baseline.fit(x_train, y_train)
+with stage("pipeline", "fit LinearRegression"):
+    linear.fit(x_train, y_train)
+with stage("pipeline", "score both"):
+    scores = (baseline.score(x_test, y_test), linear.score(x_test, y_test))
+print(f"R² on {len(test)} test rows: DummyRegressor {scores[0]:.4f}, LinearRegression {scores[1]:.4f}")
 
 # Who the students are.
 with chart("countplot", "Students per course", OUT) as ax:

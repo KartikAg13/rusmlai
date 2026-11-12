@@ -1,11 +1,14 @@
 //! Every model: [`Regressor`], the trait they share, [`ModelError`], and one file per model
-//! family ([`dummy`] today).
+//! family ([`dummy`], [`linear`]).
 
 use std::fmt::Debug;
 
+pub(crate) mod design;
 pub mod dummy;
+pub mod linear;
 
 pub use dummy::DummyRegressor;
+pub use linear::{LinearRegression, Ridge};
 
 use polars::{error::PolarsError, prelude::Series};
 use thiserror::Error;
@@ -60,6 +63,57 @@ pub enum ModelError {
         /// Why it is needed.
         reason: &'static str,
     },
+
+    /// The model got no feature column.
+    #[error("the dataset has no feature columns besides the target '{target}'")]
+    NoFeatures {
+        /// The target column.
+        target: String,
+    },
+
+    /// A feature is text (or another type that is not a number).
+    #[error(
+        "feature '{column}' is {dtype}, not a number: encode it with OneHotEncoder or OrdinalEncoder in the ColumnTransformer"
+    )]
+    NotNumeric {
+        /// The column.
+        column: String,
+        /// Its dtype.
+        dtype: String,
+    },
+
+    /// A feature has nulls.
+    #[error(
+        "feature '{column}' has {nulls} nulls: fill them with SimpleImputer in the ColumnTransformer"
+    )]
+    FeatureNulls {
+        /// The column.
+        column: String,
+        /// How many nulls.
+        nulls: usize,
+    },
+
+    /// A column has NaN or infinite values.
+    #[error("column '{column}' has NaN or infinite values; a model needs finite numbers")]
+    NotFinite {
+        /// The column.
+        column: String,
+    },
+
+    /// A setting got a value it doesn't take.
+    #[error("{setting} = {value} is not valid; use {expected}")]
+    InvalidSetting {
+        /// The setting.
+        setting: &'static str,
+        /// The value given.
+        value: String,
+        /// What it takes.
+        expected: &'static str,
+    },
+
+    /// The linear solve failed.
+    #[error("the eigendecomposition of XᵀX did not converge")]
+    Solve,
 
     /// A metric got true values and predictions of different lengths.
     #[error("y_true has {y_true} values and y_pred has {y_pred}; they must have the same length")]

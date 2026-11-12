@@ -39,7 +39,7 @@ pub mod prelude {
         },
         display::{Figure, TableView},
         metrics::{mean_absolute_error, mean_squared_error, r2_score, root_mean_squared_error},
-        models::{DummyRegressor, ModelError, Regressor},
+        models::{DummyRegressor, LinearRegression, ModelError, Regressor, Ridge},
         pipeline::{ModelStacker, Pipeline},
         plot::style::{set_palette, set_theme},
         preprocess::{
