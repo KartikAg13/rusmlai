@@ -33,6 +33,21 @@ fn main() {
         linear.score(&test, "exam_score"),
     );
 
+    // Penalties are settings of the same model: Ridge, Lasso and ElasticNet. Every fit and
+    // score goes into the model cache (a second run loads them), and the journal draws them all.
+    for (alpha, l1_ratio) in [(0.001, 0.0), (0.01, 1.0), (0.01, 0.5)] {
+        let model = LinearRegression::new().alpha(alpha).l1_ratio(l1_ratio);
+        let mut pipe = Pipeline::new(preprocessing(), ModelStacker::new(model));
+        pipe.fit(&train, "exam_score");
+        pipe.score(&train, "exam_score");
+        println!(
+            "alpha {alpha}, l1_ratio {l1_ratio}: R² {:.4}",
+            pipe.score(&test, "exam_score")
+        );
+    }
+    // Each fit and score above also rewrote the journal, metadata/train.journal.html;
+    // `dataset.journal()` opens it in the browser.
+
     // Each chart saves itself to tests/fixtures/s6e1/metadata/plots/{title}.png.
 
     // Who the students are: the default dark card, one rusmlai color per category.

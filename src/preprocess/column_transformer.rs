@@ -16,6 +16,7 @@ use crate::{
 ///
 /// - `.add(name, columns, steps![..])` runs `steps` in order on `columns`. Outputs are named
 ///   `{name}__{column}`, like scikit-learn's `get_feature_names_out`.
+///   `verbose_feature_names_out(false)` keeps the plain names, which must then be unique.
 /// - An add can read input columns or the outputs of earlier adds. `&[]` means every input
 ///   column in the first add, and the joined outputs of every earlier add after that.
 /// - An add uses up what it reads. The result is every output that no later add reads, plus the
@@ -35,6 +36,25 @@ use crate::{
 ///     ["num__age", "num__cgpa", "cat__batch_B13", "cat__batch_B14", "cat__batch_B15"],
 /// );
 /// ```
+///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// from sklearn.compose import ColumnTransformer
+/// from sklearn.impute import SimpleImputer
+/// from sklearn.pipeline import make_pipeline
+/// from sklearn.preprocessing import OneHotEncoder, StandardScaler
+/// prep = ColumnTransformer([
+///     ("num", make_pipeline(SimpleImputer(strategy="median"), StandardScaler()), ["age", "cgpa"]),
+///     ("cat", OneHotEncoder(), ["batch"]),
+/// ])
+/// prep.fit(ds)
+/// assert prep.get_feature_names_out().tolist() == [
+///     "num__age", "num__cgpa", "cat__batch_B13", "cat__batch_B14", "cat__batch_B15",
+/// ]
+/// ```
 // ponytail: not Clone, because the steps are `Box<dyn Transform>`, so a `Pipeline` can't be copied.
 // Before `cross_val_score`, add a `clone_box` supertrait with a blanket impl for every
 // `Transform + Clone` (the dyn-clone trick, no crate), then derive Clone here (decided 2026-11-11).
@@ -42,6 +62,7 @@ use crate::{
 pub struct ColumnTransformer {
     adds: Vec<Add>,
     passthrough: bool,
+    plain_names: bool,
     input_columns: Vec<String>,
 }
 
@@ -76,6 +97,13 @@ impl ColumnTransformer {
         self
     }
 
+    /// `true` (the default) names outputs `{add}__{column}`; `false` keeps `{column}`, and a
+    /// name that comes out twice fails `fit`. Later adds read outputs by the same names.
+    pub fn verbose_feature_names_out(mut self, verbose: bool) -> Self {
+        self.plain_names = !verbose;
+        self
+    }
+
     /// The output column names, in order. Empty before `fit`.
     pub fn get_feature_names_out(&self) -> Vec<String> {
         let inputs: Exprs = self
@@ -91,24 +119,54 @@ impl ColumnTransformer {
     /// The expression of every output column, built from the `inputs` expressions.
     fn plan(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
         let mut produced: Exprs = IndexMap::new();
-        let mut consumed: HashSet<String> = HashSet::new();
+        // What later adds read: earlier outputs leave the result, inputs leave the remainder.
+        let (mut read_outputs, mut read_inputs): (HashSet<String>, HashSet<String>) =
+            (HashSet::new(), HashSet::new());
         for add in &self.adds {
             let x: Exprs = reads(add, inputs, &produced)?;
-            consumed.extend(x.keys().cloned());
-            produced.extend(run(add, x)?);
+            for name in x.keys() {
+                if produced.contains_key(name) {
+                    read_outputs.insert(name.clone());
+                } else {
+                    read_inputs.insert(name.clone());
+                }
+            }
+            for (name, expr) in run(add, x, self.plain_names)? {
+                // With plain names, a step that rewrites an earlier output keeps its name.
+                if read_outputs.remove(&name) {
+                    produced.shift_remove(&name);
+                }
+                self.unique(&produced, &name)?;
+                produced.insert(name, expr);
+            }
         }
         let mut outputs: Exprs = produced
             .into_iter()
-            .filter(|(name, _)| !consumed.contains(name))
+            .filter(|(name, _)| !read_outputs.contains(name))
             .collect();
         if self.passthrough {
             for (name, expr) in inputs {
-                if !consumed.contains(name) {
+                if !read_inputs.contains(name) {
+                    self.unique(&outputs, name)?;
                     outputs.insert(name.clone(), expr.clone());
                 }
             }
         }
         Ok(outputs)
+    }
+
+    /// With plain names, two outputs can get one name, which scikit-learn refuses too.
+    fn unique(&self, outputs: &Exprs, name: &str) -> Result<(), PreprocessError> {
+        if self.plain_names && outputs.contains_key(name) {
+            return Err(PreprocessError::InvalidOption {
+                option: "verbose_feature_names_out",
+                value: "false".into(),
+                expected: format!(
+                    "true, or adds whose outputs have unique names: '{name}' comes out twice"
+                ),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -136,9 +194,10 @@ impl Transform for ColumnTransformer {
                     data = step.try_transform(&data)?;
                 }
             }
-            produced.extend(run(add, x)?);
+            produced.extend(run(add, x, self.plain_names)?);
         }
         self.input_columns = dataset.columns();
+        self.plan(&inputs)?; // names that clash fail here, not at transform
         Ok(())
     }
 
@@ -200,11 +259,15 @@ fn reads(add: &Add, inputs: &Exprs, produced: &Exprs) -> Result<Exprs, Preproces
         .collect()
 }
 
-/// Chains the steps of `add` on `x` and prefixes the outputs with the add's name.
-fn run(add: &Add, x: Exprs) -> Result<Exprs, PreprocessError> {
+/// Chains the steps of `add` on `x` and prefixes the outputs with the add's name, unless
+/// `plain_names`.
+fn run(add: &Add, x: Exprs, plain_names: bool) -> Result<Exprs, PreprocessError> {
     let mut out: Exprs = x;
     for step in &add.steps {
         out = step.exprs(&out)?;
+    }
+    if plain_names {
+        return Ok(out);
     }
     Ok(out
         .into_iter()
@@ -219,7 +282,7 @@ mod tests {
     use super::*;
     use crate::{
         dataset::read_csv,
-        preprocess::{OneHotEncoder, SimpleImputer, StandardScaler},
+        preprocess::{MinMaxScaler, OneHotEncoder, SimpleImputer, StandardScaler},
         steps,
     };
 
@@ -327,6 +390,36 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.starts_with("transform needs column 'name'"), "{err}");
+    }
+
+    #[test]
+    fn plain_names_drop_the_prefix_and_must_be_unique() {
+        let ds: Dataset = read_csv("tests/fixtures/data/students.csv");
+        let mut prep: ColumnTransformer = ColumnTransformer::new()
+            .add("num", &["age"], steps![StandardScaler::new()])
+            .add("cat", &["batch"], steps![OneHotEncoder::new()])
+            .verbose_feature_names_out(false);
+        assert_eq!(
+            prep.fit_transform(&ds).columns(),
+            ["age", "batch_B13", "batch_B14", "batch_B15"]
+        );
+        // A rewrite of an earlier output keeps the name and replaces it.
+        let mut chained: ColumnTransformer = ColumnTransformer::new()
+            .add("a", &["age"], steps![StandardScaler::new()])
+            .add("b", &["age"], steps![MinMaxScaler::new()])
+            .verbose_feature_names_out(false);
+        assert_eq!(chained.fit_transform(&ds).columns(), ["age"]);
+        // An encoder output and a passed-through input with one name clash.
+        let two: Dataset = Dataset::new(
+            polars::df!("c" => ["x", "y"], "c_x" => [1.0, 2.0]).unwrap(),
+            "",
+        );
+        let mut twice: ColumnTransformer = ColumnTransformer::new()
+            .add("cat", &["c"], steps![OneHotEncoder::new()])
+            .remainder("passthrough")
+            .verbose_feature_names_out(false);
+        let err: String = twice.try_fit(&two).unwrap_err().to_string();
+        assert!(err.contains("'c_x' comes out twice"), "{err}");
     }
 
     #[test]

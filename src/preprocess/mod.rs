@@ -79,6 +79,16 @@ pub trait Transform: Debug {
 /// let steps = steps![SimpleImputer::new(), StandardScaler::new()];
 /// assert_eq!(steps.len(), 2);
 /// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.impute import SimpleImputer
+/// from sklearn.pipeline import make_pipeline
+/// from sklearn.preprocessing import StandardScaler
+/// steps = make_pipeline(SimpleImputer(), StandardScaler())
+/// assert len(steps.steps) == 2
+/// ```
 #[macro_export]
 macro_rules! steps {
     ($($step:expr),* $(,)?) => {
@@ -162,8 +172,10 @@ pub(crate) fn apply(parent: &Dataset, outputs: &Exprs) -> Result<Dataset, Prepro
             (name, info)
         })
         .collect();
+    // The CSV's path stays, so charts auto-save next to it and models find its model cache.
+    // The stats and chart caches have no file here, so nothing writes into them.
     let metadata: Metadata = Metadata {
-        filepath: None,
+        filepath: parent.metadata.filepath.clone(),
         height: dataframe.height(),
         width: dataframe.width(),
         dataset_cache: DatasetCache::new(columns),

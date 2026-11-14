@@ -6,3 +6,7 @@ pub const CACHE_DIRECTORY: &str = "metadata";
 pub const DATASET_CACHE: &str = ".json";
 /// Suffix of the chart cache file: `{stem}.plots.jsonl`.
 pub const PLOTS_CACHE: &str = ".plots.jsonl";
+/// Suffix of the model cache: `{stem}.models.jsonl`, one line per fit and per score.
+pub const MODELS_CACHE: &str = ".models.jsonl";
+/// Suffix of the training journal page: `{stem}.journal.html`.
+pub const JOURNAL: &str = ".journal.html";

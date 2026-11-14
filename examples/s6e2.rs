@@ -11,27 +11,9 @@ fn main() {
     dataset.describe();
     dataset.info();
 
-    // Preprocessing: scale the measurements, one-hot the multi-value codes. The 0/1 codes
-    // (Sex, FBS over 120, Exercise angina) are read by no add, so "passthrough" keeps them.
+    // Preprocessing: X is every column but the id and the target. fit reads the cached stats.
     let x: Dataset = dataset.drop(&["id", "Heart Disease"]);
-    let mut prep: ColumnTransformer = ColumnTransformer::new()
-        .add(
-            "num",
-            &["Age", "BP", "Cholesterol", "Max HR", "ST depression"],
-            steps![StandardScaler::new()],
-        )
-        .add(
-            "code",
-            &[
-                "Chest pain type",
-                "EKG results",
-                "Slope of ST",
-                "Number of vessels fluro",
-                "Thallium",
-            ],
-            steps![OneHotEncoder::new()],
-        )
-        .remainder("passthrough");
+    let mut prep: ColumnTransformer = preprocessing();
     let features: Dataset = prep.fit_transform(&x);
     println!(
         "{} features: {:?}",
@@ -39,6 +21,26 @@ fn main() {
         prep.get_feature_names_out()
     );
     features.head(5);
+
+    // Pipelines: split the rows (the same share of each diagnosis on both sides), fit on the
+    // train rows, score on the test rows. The target stays text: classes_ are "Absence" and
+    // "Presence", and predict gives them back. A smaller C is a stronger penalty. Every fit and
+    // score goes into the model cache (a second run loads them), and the journal draws them all.
+    let (train, test) = train_test_split(&dataset.drop(&["id"]), 0.2, 42, "Heart Disease");
+    for c in [1.0, 0.01] {
+        let model = LogisticRegression::new().C(c);
+        let mut pipe = Pipeline::new(preprocessing(), ModelStacker::new(model));
+        pipe.fit(&train, "Heart Disease");
+        pipe.score(&train, "Heart Disease");
+        println!(
+            "LogisticRegression(C = {c}): accuracy {:.4} on {} test rows, {} Newton steps",
+            pipe.score(&test, "Heart Disease"),
+            test.height(),
+            pipe.model.model.n_iter_
+        );
+    }
+    // Each fit and score above also rewrote the journal, metadata/train.journal.html;
+    // `dataset.journal()` opens it in the browser.
 
     // Every chart below starts from a light card with seaborn's "deep" colors.
     // Each chart saves itself to tests/fixtures/s6e2/metadata/plots/{title}.png.
@@ -218,4 +220,27 @@ fn main() {
         .qqplot("Cholesterol")
         .title("Is cholesterol normal?");
     dataset.missing();
+}
+
+/// Scale the measurements, one-hot the multi-value codes. The 0/1 codes (Sex, FBS over 120,
+/// Exercise angina) are read by no add, so "passthrough" keeps them.
+fn preprocessing() -> ColumnTransformer {
+    ColumnTransformer::new()
+        .add(
+            "num",
+            &["Age", "BP", "Cholesterol", "Max HR", "ST depression"],
+            steps![StandardScaler::new()],
+        )
+        .add(
+            "code",
+            &[
+                "Chest pain type",
+                "EKG results",
+                "Slope of ST",
+                "Number of vessels fluro",
+                "Thallium",
+            ],
+            steps![OneHotEncoder::new()],
+        )
+        .remainder("passthrough")
 }

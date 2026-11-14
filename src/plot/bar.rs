@@ -56,6 +56,17 @@ impl Dataset {
     /// ds.bar("batch", "cgpa", "", ""); // saves metadata/plots/Bar batch vs cgpa.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.barplot(data=ds, x="batch", y="cgpa", errorbar=None)  # rusmlai draws no error bars
+    /// plt.show()
+    /// ```
+    ///
     /// The median, split by `passed`, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -191,6 +202,17 @@ impl Dataset {
     /// ds.countplot("batch", ""); // saves metadata/plots/Count batch vs count.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="batch")
+    /// plt.show()
+    /// ```
+    ///
     /// Pass and fail stacked in each batch, as percentages, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -248,6 +270,17 @@ impl Dataset {
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.describe_bar("cgpa", ""); // saves metadata/plots/Describe statistic vs cgpa.png
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ds["cgpa"].describe().drop("count").plot.bar()
+    /// plt.show()
     /// ```
     ///
     /// The median of every numeric column, with most options:
@@ -401,6 +434,17 @@ impl Dataset {
     /// ds.missing(); // saves metadata/plots/Missing values.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ds.isna().mean().mul(100).plot.bar(ylabel="null %")
+    /// plt.show()
+    /// ```
+    ///
     /// With most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -510,6 +554,17 @@ impl Dataset {
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.pie("batch"); // saves metadata/plots/Distribution batch.png
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ds["batch"].value_counts().plot.pie(autopct="%.0f%%")
+    /// plt.show()
     /// ```
     ///
     /// With most options. B14 is not in `.order`, so it goes into "Other":
@@ -901,10 +956,12 @@ pub(crate) fn render(
                     };
                     out.push_str(&svg::bar(&scale, x, w, v, &fill_of(i, j), &hover(i, j, v)));
                     if show_values && v.is_finite() {
+                        // Below a negative bar, but inside the plot: under its bottom the
+                        // label would sit on the category names.
                         let y: f64 = if v >= 0.0 {
                             scale.y(v) - 8.0
                         } else {
-                            scale.y(v) + 16.0
+                            (scale.y(v) + 16.0).min(scale.bottom() - 6.0)
                         };
                         value_label(&mut out, &theme, x + w / 2.0, y, &unit(style, v));
                     }

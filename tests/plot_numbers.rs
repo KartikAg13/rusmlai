@@ -212,3 +212,26 @@ proptest! {
         }
     }
 }
+
+/// A short axis over tiny values once printed the data's end (-2.17e-6) on top of the tick
+/// next to it (-2.00e-6); an end label now needs 16 px. A negative bar's value stays inside
+/// the plot, above the category names.
+#[test]
+fn end_labels_keep_their_distance_and_negative_values_stay_in_the_plot() {
+    use polars::df;
+    use rusmlai::prelude::*;
+    let ds = Dataset::new(df!("split" => ["eval"], "r2" => [-2.17e-6]).unwrap(), "");
+    let svg: String = ds.bar("split", "r2", "", "mean").size(480.0, 320.0).svg();
+    // Axis labels are right-aligned; the bar's own value label is centered.
+    assert!(!svg.contains("text-anchor=\"end\">-2.17e-6<"), "{svg}");
+    let y_of = |label: &str| -> f64 {
+        let at: usize = svg.find(label).unwrap();
+        let tag: &str = &svg[svg[..at].rfind("<text").unwrap()..at];
+        let y: &str = tag.split("y=\"").nth(1).unwrap().split('"').next().unwrap();
+        y.parse().unwrap()
+    };
+    assert!(
+        y_of(">-2.17e-6<") < y_of("<title>eval</title>"),
+        "value label above the name"
+    );
+}

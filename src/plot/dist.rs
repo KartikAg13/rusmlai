@@ -68,6 +68,17 @@ impl Dataset {
     /// ds.hist("cgpa", "", 10); // saves metadata/plots/Histogram cgpa.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.histplot(data=ds, x="cgpa", bins=10)
+    /// plt.show()
+    /// ```
+    ///
     /// Split by `passed`, stacked, in percent, with a density line and most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -176,6 +187,17 @@ impl Dataset {
     /// ds.boxplot("batch", "cgpa", ""); // saves metadata/plots/Box batch vs cgpa.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.boxplot(data=ds, x="batch", y="cgpa")
+    /// plt.show()
+    /// ```
+    ///
     /// Split by `passed`, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -269,6 +291,17 @@ impl Dataset {
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.stripplot("batch", "cgpa", ""); // saves metadata/plots/Strip batch vs cgpa.png
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.stripplot(data=ds, x="batch", y="cgpa")
+    /// plt.show()
     /// ```
     ///
     /// Colored by `passed`, with 6 sampled dots and most options:

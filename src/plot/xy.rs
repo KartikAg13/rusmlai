@@ -1,5 +1,7 @@
 //! `scatter`, `line` and `regplot`: one numeric column against another.
 
+use std::ffi::OsStr;
+
 use polars::prelude::{DataFrame, DataType, Expr, SortMultipleOptions};
 
 use crate::utils::col;
@@ -9,7 +11,7 @@ use crate::{
     error::OrFatal,
     plot::{
         SAMPLE, VALUE,
-        chart::{Body, Texts},
+        chart::{Body, Chart, Texts},
         check_columns,
         error::PlotError,
         f64s, labels, optional, rows, sample, sample_subtitle, slots,
@@ -45,6 +47,17 @@ impl Dataset {
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.scatter("age", "cgpa", ""); // saves metadata/plots/Scatter age vs cgpa.png
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.scatterplot(data=ds, x="age", y="cgpa")
+    /// plt.show()
     /// ```
     ///
     /// Colored by `passed`, with 8 sampled dots and most options:
@@ -142,6 +155,17 @@ impl Dataset {
     /// ds.regplot("age", "cgpa", ""); // saves metadata/plots/Regplot age vs cgpa.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.regplot(data=ds, x="age", y="cgpa")
+    /// plt.show()
+    /// ```
+    ///
     /// With most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -236,6 +260,17 @@ impl Dataset {
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.plot("age", "cgpa", ""); // saves metadata/plots/Line mean cgpa vs age.png
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.lineplot(data=ds, x="age", y="cgpa", errorbar=None)  # the mean cgpa at each age
+    /// plt.show()
     /// ```
     ///
     /// One line for passed and one for failed, with most options:
@@ -335,26 +370,45 @@ impl Dataset {
                 lines[j].push(point);
             }
         }
-        let mut points: Vec<(f64, f64, usize)> = Vec::new();
-        for (j, line) in lines.iter().enumerate() {
-            points.extend(thin_line(line).into_iter().map(|(px, py)| (px, py, j)));
-        }
-        if points.is_empty() {
-            return Err(PlotError::EmptyResult(format!("{x}, {y}")));
-        }
-        let texts: Texts = Texts {
-            title: format!("Line: mean {y} vs {x}"),
-            subtitle: "each point is the mean of y at that x".to_string(),
-            ..xy_texts(x, y, hue)
-        };
-        let body: Body = Body::Xy {
-            hue_labels,
-            points,
-            rows: 0,
-            fit: None,
-        };
-        Ok(self.figure("plot", texts, body))
+        line_figure(x, y, hue, hue_labels, &lines, self.metadata.filepath.as_deref())
     }
+}
+
+/// The line chart of `lines`, each one sorted by x: one line per name in `hue_labels`, or one
+/// line and no names. It is what [`Dataset::try_plot`] draws after its query; the journal
+/// draws its loss curves with it, which need no query. `csv` is where the chart auto-saves.
+pub(crate) fn line_figure(
+    x: &str,
+    y: &str,
+    hue: Option<String>,
+    hue_labels: Vec<String>,
+    lines: &[Vec<(f64, f64)>],
+    csv: Option<&OsStr>,
+) -> Result<Figure, PlotError> {
+    let mut points: Vec<(f64, f64, usize)> = Vec::new();
+    for (j, line) in lines.iter().enumerate() {
+        points.extend(thin_line(line).into_iter().map(|(px, py)| (px, py, j)));
+    }
+    if points.is_empty() {
+        return Err(PlotError::EmptyResult(format!("{x}, {y}")));
+    }
+    let texts: Texts = Texts {
+        title: format!("Line: mean {y} vs {x}"),
+        subtitle: "each point is the mean of y at that x".to_string(),
+        ..xy_texts(x, y, hue)
+    };
+    let body: Body = Body::Xy {
+        hue_labels,
+        points,
+        rows: 0,
+        fit: None,
+    };
+    let chart: Chart = Chart {
+        name: "plot",
+        texts,
+        body,
+    };
+    Ok(Figure::new(chart, csv))
 }
 
 /// At most `MAX_LINE_POINTS`: past that, the lowest and highest y of each run of k points, in x
@@ -545,8 +599,12 @@ pub(crate) fn render_xy(
             ));
         }
     }
+    // A line chart draws the line only, like seaborn's lineplot; each point stays as an
+    // invisible hover target (a painted fill of opacity 0 still takes the pointer) that shows
+    // while the pointer is on it.
     let (radius, opacity): (&str, &str) = if name == "plot" {
-        ("3", "1")
+        out.push_str("<style>.pt:hover{fill-opacity:1}</style>");
+        ("5", "0\" class=\"pt")
     } else {
         ("3.5", "0.6")
     };

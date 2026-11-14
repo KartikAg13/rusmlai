@@ -68,6 +68,14 @@ impl Dataset {
     /// assert_eq!(ds.shape(), (3, 2));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.DataFrame({"x": [1.0, 2.0, 3.0], "label": ["a", "b", "a"]})
+    /// assert ds.shape == (3, 2)
+    /// ```
+    ///
     /// Advanced: the stats are ready at once:
     /// ```
     /// # use polars::df;
@@ -211,6 +219,14 @@ impl Dataset {
     /// # Ok::<(), DatasetError>(())
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds["age"].isna().sum() == 1
+    /// ```
+    ///
     /// Advanced: branch on the dtype:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -268,6 +284,15 @@ impl Dataset {
     /// # Ok::<(), DatasetError>(())
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// age = ds["age"]
+    /// assert (age.min(), age.median(), age.max()) == (19.0, 21.0, 24.0)
+    /// ```
+    ///
     /// Advanced: an interquartile-range outlier rule:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -318,6 +343,14 @@ impl Dataset {
     /// let passed = ds.try_categorical_stats("passed")?;
     /// assert_eq!(passed.categories, [("true".to_string(), 8), ("false".to_string(), 4)]);
     /// # Ok::<(), DatasetError>(())
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds["passed"].value_counts().to_dict() == {True: 8, False: 4}
     /// ```
     ///
     /// Advanced: three batches of four rows: a tie, broken by name, and the largest entropy:
@@ -559,6 +592,14 @@ impl Dataset {
     /// ds.info();
     /// assert!(ds.metadata.try_info().to_string().contains("12 rows x 6 columns"));
     /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ds.info()
+    /// ```
     pub fn info(&self) {
         self.metadata.try_info().show()
     }
@@ -572,6 +613,14 @@ impl Dataset {
     /// ds.describe();
     /// assert!(!ds.metadata.try_describe().to_string().contains("batch")); // text: left out
     /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert "batch" not in ds.describe().columns  # text: left out
+    /// ```
     #[track_caller]
     pub fn describe(&self) {
         self.try_fill_stats().or_fatal(); // a transformed column has no stats until asked
@@ -584,6 +633,14 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// assert_eq!(read_csv("tests/fixtures/data/students.csv").shape(), (12, 6));
     /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds.shape == (12, 6)
+    /// ```
     pub fn shape(&self) -> (usize, usize) {
         (self.metadata.height, self.metadata.width)
     }
@@ -593,6 +650,14 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// assert_eq!(read_csv("tests/fixtures/data/students.csv").height(), 12);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert len(ds) == 12
     /// ```
     pub fn height(&self) -> usize {
         self.metadata.height
@@ -604,6 +669,14 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// assert_eq!(read_csv("tests/fixtures/data/students.csv").width(), 6);
     /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds.shape[1] == 6
+    /// ```
     pub fn width(&self) -> usize {
         self.metadata.width
     }
@@ -613,6 +686,14 @@ impl Dataset {
     /// ```
     /// # use rusmlai::prelude::*;
     /// read_csv("tests/fixtures/data/students.csv").head(5);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// print(ds.head(5))
     /// ```
     pub fn head(&self, n: usize) {
         frame_view(&self.dataframe.head(Some(n))).show()
@@ -624,6 +705,14 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// read_csv("tests/fixtures/data/students.csv").tail(3);
     /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// print(ds.tail(3))
+    /// ```
     pub fn tail(&self, n: usize) {
         frame_view(&self.dataframe.tail(Some(n))).show()
     }
@@ -634,6 +723,14 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// assert_eq!(ds.columns(), ["id", "name", "age", "cgpa", "batch", "passed"]);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds.columns.tolist() == ["id", "name", "age", "cgpa", "batch", "passed"]
     /// ```
     pub fn columns(&self) -> Vec<String> {
         self.metadata
@@ -650,6 +747,15 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// assert_eq!(ds.dtypes(), ["i64", "str", "i64", "f64", "str", "bool"]);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// # pandas makes `age` float64 because it has a null; rusmlai keeps i64 and the null.
+    /// assert ds.dtypes.astype(str).tolist() == ["int64", "str", "float64", "float64", "str", "bool"]
     /// ```
     pub fn dtypes(&self) -> Vec<String> {
         self.metadata
@@ -675,6 +781,14 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// assert_eq!(ds.select(&["cgpa", "age"]).columns(), ["cgpa", "age"]);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds[["cgpa", "age"]].columns.tolist() == ["cgpa", "age"]
     /// ```
     ///
     /// Advanced: the stats are the same objects, not copies:
@@ -712,6 +826,14 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// assert_eq!(ds.drop(&["id", "name"]).width(), 4);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds.drop(columns=["id", "name"]).shape[1] == 4
     /// ```
     ///
     /// Advanced: features and target, sklearn style:
@@ -759,6 +881,18 @@ impl Dataset {
     /// for (column, gain) in ds.drop(&["id", "name"]).information_gain("passed") {
     ///     println!("{column}: {gain:.3}");
     /// }
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// from sklearn.metrics import mutual_info_score
+    /// # Text columns: the exact count, the number rusmlai gives. Numbers: rusmlai first cuts them
+    /// # into up to 256 bins; scikit-learn's mutual_info_classif estimates them with neighbors.
+    /// for column in ["batch"]:
+    ///     print(column, round(mutual_info_score(ds[column], ds["passed"]), 3))
     /// ```
     ///
     /// Advanced: an id column tops the list with the target's whole entropy, which is why
@@ -837,6 +971,14 @@ fn frame_view(frame: &DataFrame) -> TableView {
 /// assert_eq!(ds.shape(), (12, 6));
 /// ```
 ///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// assert ds.shape == (12, 6)
+/// ```
+///
 /// Advanced: the second read comes from the cache, with the same stats:
 /// ```
 /// # use rusmlai::prelude::*;
@@ -905,6 +1047,33 @@ pub fn try_read_csv(path: impl AsRef<Path>) -> Result<Dataset, DatasetError> {
 }
 
 impl Dataset {
+    /// `dataframe`, whose rows line up with this dataset's, as a dataset whose stats are
+    /// computed on first use, with this dataset's path: a model's output, like
+    /// `predict_proba`.
+    pub(crate) fn derived(&self, dataframe: DataFrame) -> Dataset {
+        let columns: indexmap::IndexMap<String, std::sync::Arc<ColumnInfo>> = dataframe
+            .columns()
+            .iter()
+            .map(|c| {
+                (
+                    c.name().to_string(),
+                    std::sync::Arc::new(ColumnInfo::new(c)),
+                )
+            })
+            .collect();
+        let metadata: Metadata = Metadata {
+            filepath: self.metadata.filepath.clone(),
+            height: dataframe.height(),
+            width: dataframe.width(),
+            dataset_cache: crate::metadata::dataset::DatasetCache::new(columns),
+            plot_cache: crate::metadata::plot::PlotCache::default(),
+        };
+        Dataset {
+            dataframe,
+            metadata,
+        }
+    }
+
     /// This dataset with the column `name` of `source` added, or replaced. The column keeps its
     /// stats from `source`, so a model's `fit` reads the target's cached stats. The rows must
     /// line up.

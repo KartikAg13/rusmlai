@@ -25,6 +25,14 @@ use crate::dataset::error::DatasetError;
 /// # Ok::<(), rusmlai::prelude::DatasetError>(())
 /// ```
 ///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// frame = pd.read_csv("tests/fixtures/data/students.csv")
+/// assert frame.shape == (12, 6)
+/// ```
+///
 /// Advanced: read only some columns, then compute the stats:
 /// ```
 /// use polars::prelude::CsvReadOptions;
@@ -35,6 +43,14 @@ use crate::dataset::error::DatasetError;
 /// let ds = Dataset::new(frame, "tests/fixtures/data/students.csv");
 /// assert_eq!(ds.columns(), ["cgpa", "passed"]);
 /// # Ok::<(), DatasetError>(())
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// frame = pd.read_csv("tests/fixtures/data/students.csv", usecols=["cgpa", "passed"])
+/// assert frame.columns.tolist() == ["cgpa", "passed"]
 /// ```
 ///
 /// Edge case: a semicolon file read with the default comma gives one column:
@@ -57,11 +73,14 @@ pub struct Reader {
 }
 
 impl Reader {
-    /// A reader with Polars' default options: comma separated, a header row, dtypes inferred.
+    /// A reader with Polars' default options (comma separated, a header row, dtypes inferred),
+    /// except that each column comes back in one chunk. Polars leaves the chunks of its read
+    /// threads (129 for a 630,000-row file), and a model would copy every column into one piece
+    /// on every fit and predict.
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
-            read_options: CsvReadOptions::default(),
+            read_options: CsvReadOptions::default().with_rechunk(true),
             parse_options: CsvParseOptions::default(),
         }
     }

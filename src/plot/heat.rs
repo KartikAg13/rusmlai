@@ -49,6 +49,17 @@ impl Dataset {
     /// ds.heatmap("batch", "passed", "", ""); // saves metadata/plots/Heatmap batch vs passed.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.heatmap(pd.crosstab(ds["passed"], ds["batch"]), annot=True)  # rows per cell
+    /// plt.show()
+    /// ```
+    ///
     /// The mean CGPA of each cell, with every option:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -177,6 +188,17 @@ impl Dataset {
     /// ds.missing_matrix(); // saves metadata/plots/Missing values by row.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.heatmap(ds.isna(), cbar=False)  # or missingno.matrix(ds)
+    /// plt.show()
+    /// ```
+    ///
     /// With every option:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -281,6 +303,17 @@ impl Dataset {
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.corrplot(); // saves metadata/plots/Corrplot Correlation Matrix.png
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.heatmap(ds.corr(numeric_only=True), annot=True, vmin=-1, vmax=1, cmap="RdBu_r")
+    /// plt.show()
     /// ```
     ///
     /// Age and CGPA only, with every option:

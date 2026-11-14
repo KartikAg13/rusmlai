@@ -32,7 +32,7 @@ pub enum SplitError {
 
     /// `test_size` is not a fraction between 0 and 1.
     #[error(
-        "test_size = {test_size} is not valid; use a fraction between 0 and 1, for example 0.2"
+        "test_size = {test_size} is not valid; use a fraction between 0 and 1, for example 0.2, or a whole number of rows"
     )]
     TestSize {
         /// The value given.
@@ -81,8 +81,9 @@ pub enum SplitError {
 
 /// Splits `dataset` into `(train, test)` rows, like scikit-learn's `train_test_split`.
 ///
-/// - `test_size` is the share of rows in `test`, between 0 and 1. `test` gets
-///   `ceil(test_size × rows)` rows, as in scikit-learn.
+/// - `test_size` is the share of rows in `test`, between 0 and 1: `test` gets
+///   `ceil(test_size × rows)` rows, as in scikit-learn. A whole number of 1 or more is a row
+///   count, like scikit-learn's integer `test_size`.
 /// - `random_state` seeds the shuffle: the same seed gives the same split on every run.
 /// - `stratify` names a column whose classes keep their share in both sides, or is `""` for
 ///   none. A null is a class of its own.
@@ -96,6 +97,19 @@ pub enum SplitError {
 /// let (train, test) = train_test_split(&ds, 0.25, 42, "");
 /// assert_eq!(train.height() + test.height(), ds.height());
 /// assert_eq!(test.height(), (ds.height() as f64 * 0.25).ceil() as usize);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// import math
+/// from sklearn.model_selection import train_test_split
+/// # The same sizes; the rows differ, because each library has its own random generator.
+/// train, test = train_test_split(ds, test_size=0.25, random_state=42)
+/// assert len(train) + len(test) == len(ds)
+/// assert len(test) == math.ceil(len(ds) * 0.25)
 /// ```
 #[track_caller]
 pub fn train_test_split(
@@ -111,7 +125,7 @@ pub fn train_test_split(
 ///
 /// # Errors
 ///
-/// - [`SplitError::TestSize`] when `test_size` is not between 0 and 1.
+/// - [`SplitError::TestSize`] when `test_size` is neither between 0 and 1 nor a whole number.
 /// - [`SplitError::EmptySplit`] when one side would have no rows.
 /// - [`SplitError::Dataset`] when the `stratify` column doesn't exist.
 /// - [`SplitError::ClassTooSmall`] and [`SplitError::TooManyClasses`] when
@@ -129,11 +143,14 @@ pub fn try_train_test_split(
     random_state: u64,
     stratify: &str,
 ) -> Result<(Dataset, Dataset), SplitError> {
-    if !(test_size > 0.0 && test_size < 1.0) {
-        return Err(SplitError::TestSize { test_size });
-    }
     let rows: usize = dataset.height();
-    let test: usize = (test_size * rows as f64).ceil() as usize;
+    let test: usize = if test_size > 0.0 && test_size < 1.0 {
+        (test_size * rows as f64).ceil() as usize
+    } else if test_size >= 1.0 && test_size.fract() == 0.0 && test_size.is_finite() {
+        test_size as usize
+    } else {
+        return Err(SplitError::TestSize { test_size });
+    };
     let train: usize = rows.saturating_sub(test);
     if train == 0 || test == 0 {
         return Err(SplitError::EmptySplit { rows, train, test });
@@ -339,12 +356,19 @@ mod tests {
     #[test]
     fn errors_name_the_problem() {
         let ds: Dataset = twelve();
-        for bad in [0.0, 1.0, -0.1, f64::NAN] {
+        for bad in [0.0, -0.1, 1.5, f64::NAN, f64::INFINITY] {
             assert!(matches!(
                 try_train_test_split(&ds, bad, 0, ""),
                 Err(SplitError::TestSize { .. })
             ));
         }
+        // A whole number is a row count, like scikit-learn's integer `test_size`.
+        let (train, test) = try_train_test_split(&ds, 3.0, 0, "").unwrap();
+        assert_eq!((train.height(), test.height()), (9, 3));
+        assert!(matches!(
+            try_train_test_split(&ds, 12.0, 0, ""),
+            Err(SplitError::EmptySplit { .. })
+        ));
         let one: Dataset = Dataset::new(df!("id" => [1]).unwrap(), "");
         assert!(matches!(
             try_train_test_split(&one, 0.5, 0, ""),

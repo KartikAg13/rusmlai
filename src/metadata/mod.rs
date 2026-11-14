@@ -33,6 +33,8 @@ use crate::{
 pub mod constants;
 pub mod dataset;
 pub mod error;
+pub mod journal;
+pub mod models;
 pub mod plot;
 pub mod utils;
 
@@ -70,7 +72,8 @@ pub mod utils;
 #[derive(Debug, Clone)]
 pub struct Metadata {
     /// The CSV it came from: the name `metadata()` shows, and charts auto-save next to it.
-    /// `None` after a transform. The cache files are written only for a `read_csv` dataset.
+    /// Splits and transforms keep it. The stats and chart files are written only for a
+    /// `read_csv` dataset; the model cache of every dataset that has a path goes next to it.
     pub filepath: Option<OsString>,
     /// Row count.
     pub height: usize,

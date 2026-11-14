@@ -21,6 +21,16 @@ use crate::utils::col;
 /// assert_eq!((cgpa.min, cgpa.median, cgpa.max), (5.1, 7.4, 9.0));
 /// assert!((cgpa.variance - cgpa.std * cgpa.std).abs() < 1e-12);
 /// ```
+///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// cgpa = ds["cgpa"]
+/// assert (cgpa.min(), cgpa.median(), cgpa.max()) == (5.1, 7.4, 9.0)
+/// assert abs(cgpa.var() - cgpa.std() ** 2) < 1e-12  # both with ddof = 1, like rusmlai
+/// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NumericStats {
     #[serde(deserialize_with = "nan_if_null")]
@@ -67,6 +77,18 @@ pub struct NumericStats {
 /// assert_eq!(batch.unique_count, 3);
 /// assert_eq!(batch.mode, "B13"); // B13, B14 and B15 have 4 rows each
 /// assert!((batch.entropy - 3f64.ln()).abs() < 1e-12);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// import math
+/// from scipy.stats import entropy
+/// batch = ds["batch"].value_counts()
+/// assert (len(batch), batch.idxmax()) == (3, "B13")
+/// assert abs(entropy(batch) - math.log(3)) < 1e-12  # nats, like rusmlai
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CategoricalStats {
@@ -230,6 +252,15 @@ impl CategoricalStats {
     /// use rusmlai::metadata::dataset::stats::CategoricalStats;
     /// assert_eq!(CategoricalStats::entropy([5.0].into_iter()), 0.0);
     /// assert!((CategoricalStats::entropy([1.0, 1.0, 0.0].into_iter()) - 2f64.ln()).abs() < 1e-12);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import math
+    /// from scipy.stats import entropy
+    /// assert entropy([5.0]) == 0.0
+    /// assert abs(entropy([1.0, 1.0, 0.0]) - math.log(2)) < 1e-12
     /// ```
     pub fn entropy(counts: impl Iterator<Item = f64> + Clone) -> f64 {
         let n: f64 = counts.clone().sum();

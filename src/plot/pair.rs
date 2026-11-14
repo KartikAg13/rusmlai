@@ -49,6 +49,17 @@ impl Dataset {
     /// ds.pairplot(&[], ""); // saves metadata/plots/Pairs 3 numeric columns.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.pairplot(ds.select_dtypes("number"))
+    /// plt.show()
+    /// ```
+    ///
     /// Age and CGPA colored by `passed`, with every option:
     /// ```
     /// # use rusmlai::prelude::*;

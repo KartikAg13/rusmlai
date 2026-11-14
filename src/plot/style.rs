@@ -275,6 +275,19 @@ const PALETTE_VAR: &str = "RUSMLAI_PALETTE";
 /// assert!(svg.contains("background-color:#15171C"));
 /// ```
 ///
+/// Python:
+///
+/// ```python
+/// import matplotlib.pyplot as plt
+/// import pandas as pd
+/// import seaborn as sns
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// sns.set_theme(style="whitegrid")  # every chart after this
+/// with sns.axes_style("darkgrid"):  # one chart
+///     sns.countplot(data=ds, x="batch")
+/// plt.show()
+/// ```
+///
 /// Edge case: an unknown name:
 /// ```should_panic
 /// rusmlai::prelude::set_theme("solarized"); // panics: Use one of: dark, classic, light
@@ -314,6 +327,18 @@ pub fn set_theme(name: &str) {
 /// let ds = read_csv("tests/fixtures/data/students.csv");
 /// let svg = ds.countplot("batch", "").colors(&["gold"]).svg();
 /// assert!(svg.contains("#FFD700") && !svg.contains("#1F77B4"));
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import matplotlib.pyplot as plt
+/// import pandas as pd
+/// import seaborn as sns
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// sns.set_palette("tab10")  # every chart after this
+/// sns.countplot(data=ds, x="batch", color="gold")  # one chart
+/// plt.show()
 /// ```
 ///
 /// Edge case: an unknown name:
@@ -441,6 +466,18 @@ impl Figure {
     /// assert!(svg.contains("Students per batch"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ax = sns.countplot(data=ds, x="batch")
+    /// ax.set_title("Students per batch")
+    /// plt.show()
+    /// ```
+    ///
     /// With the other text options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -478,6 +515,20 @@ impl Figure {
     /// assert!(svg.contains("spring term"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// # matplotlib has no subtitle: a figure title above the axes title is the usual stand-in.
+    /// ax = sns.countplot(data=ds, x="batch")
+    /// ax.figure.suptitle("Count batch")
+    /// ax.set_title("spring term", fontsize=10)
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: `""` removes the default line (here the counts' unique and mode facts):
     /// ```
     /// # use rusmlai::prelude::*;
@@ -510,6 +561,18 @@ impl Figure {
     /// assert!(svg.contains("group"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ax = sns.countplot(data=ds, y="batch")
+    /// ax.set_xlabel("group")
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: a pie has no axes:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -530,6 +593,18 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.countplot("batch", "").ylabel("students").svg();
     /// assert!(svg.contains("students"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ax = sns.countplot(data=ds, x="batch")
+    /// ax.set_ylabel("students")
+    /// plt.show()
     /// ```
     ///
     /// Edge case: the missing matrix has no y axis name to replace:
@@ -554,6 +629,18 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.countplot("batch", "").theme("light").svg();
     /// assert!(svg.contains("background-color:#FFFFFF"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// with sns.axes_style("white"):
+    ///     sns.countplot(data=ds, x="batch")
+    /// plt.show()
     /// ```
     ///
     /// The light card also switches the default palette to darker steps, so pale colors stay
@@ -602,6 +689,17 @@ impl Figure {
     /// assert!(svg.contains("#D62728")); // tab10's red
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.histplot(data=ds, x="cgpa", bins=10, color="C3")  # C3 of the tab10 cycle
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: an unknown name:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -638,6 +736,18 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.countplot("batch", "").colors(&["gold", "navy"]).svg();
     /// assert_eq!(svg.matches("fill=\"#FFD700\"").count(), 2);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// # Two colors for three bars: seaborn repeats the list, as rusmlai does.
+    /// sns.countplot(data=ds, x="batch", hue="batch", palette=["gold", "navy", "gold"], legend=False)
+    /// plt.show()
     /// ```
     ///
     /// Edge case: an empty list:
@@ -697,6 +807,19 @@ impl Figure {
     /// }
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// # matplotlib takes the same kinds of names: hex, CSS names, tab:* and C0..C9.
+    /// for color in ["#566E3D", "tomato", "tab:orange", "C3"]:
+    ///     sns.histplot(data=ds, x="cgpa", bins=10, color=color)
+    ///     plt.show()
+    /// ```
+    ///
     /// Edge case: a typo:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -736,6 +859,17 @@ impl Figure {
     ///     .color_map(&[("true", "seagreen"), ("false", "tomato")])
     ///     .svg();
     /// assert!(svg.contains("#2E8B57") && svg.contains("#FF6347"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="batch", hue="passed", palette={True: "seagreen", False: "tomato"})
+    /// plt.show()
     /// ```
     ///
     /// Edge case: a name that isn't a category:
@@ -785,6 +919,18 @@ impl Figure {
     /// assert!(!svg.starts_with(r#"<svg width="200""#));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// plt.figure(figsize=(2.0, 1.5), dpi=100)  # 200 x 150 pixels
+    /// sns.countplot(data=ds, x="name")
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: too small:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -832,6 +978,17 @@ impl Figure {
     /// assert!(svg.find("age = 24") < svg.find("age = 19"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="age", order=[24.0, 19.0])  # pandas reads age as float: it has a null
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: a name that isn't a category:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -870,6 +1027,17 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.countplot("batch", "passed").hue_order(&["false"]).svg();
     /// assert!(!svg.contains("passed = true"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="batch", hue="passed", hue_order=[False])
+    /// plt.show()
     /// ```
     ///
     /// Edge case: a chart without a hue:
@@ -919,6 +1087,20 @@ impl Figure {
     /// assert!(svg.contains("Other  8  (67%)"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// counts = ds["batch"].value_counts()
+    /// shown = counts.head(1)
+    /// shown["Other"] = counts.iloc[1:].sum()
+    /// shown.plot.pie(autopct="%.0f%%")
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: zero:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -958,6 +1140,19 @@ impl Figure {
     /// assert!(numbered.len() > plain.len());
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ax = sns.countplot(data=ds, x="batch", hue="passed")
+    /// for bars in ax.containers:
+    ///     ax.bar_label(bars)
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: a scatter has no numbers to show:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -991,6 +1186,19 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.bar("batch", "cgpa", "", "").horizontal().ylim(0.0, 10.0).svg();
     /// assert!(svg.contains(">10<"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// # rusmlai's ylim is the value axis, which is x once the bars lie down.
+    /// ax = sns.barplot(data=ds, y="batch", x="cgpa", errorbar=None)
+    /// ax.set_xlim(0.0, 10.0)
+    /// plt.show()
     /// ```
     ///
     /// Edge case: a range upside down:
@@ -1033,6 +1241,17 @@ impl Figure {
     /// assert!(svg.contains("6 rows outside the range"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.histplot(data=ds, x="cgpa", bins=4, binrange=(6.0, 8.0))
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: bars have categories, not a number x axis:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -1071,6 +1290,17 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.scatter("age", "cgpa", "").sample(50_000).svg();
     /// assert_eq!(svg.matches("<circle").count(), 10);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.scatterplot(data=ds.sample(min(50_000, len(ds)), random_state=42), x="age", y="cgpa")
+    /// plt.show()
     /// ```
     ///
     /// Edge case: zero:
@@ -1120,6 +1350,17 @@ impl Figure {
     /// assert!(svg.find("name = Aarav Shah") < svg.find("name = Zoë Müller"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="name", order=sorted(ds["name"].dropna().unique()))
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: an unknown name:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -1160,6 +1401,19 @@ impl Figure {
     /// assert!(svg.contains("pass mark"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// means = ds.groupby("name")["cgpa"].mean().sort_values(ascending=False)
+    /// ax = sns.barplot(data=ds, y="name", x="cgpa", order=means.index, errorbar=None)
+    /// ax.axvline(6.0, label="pass mark")
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: a histogram's bins always stand up:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -1189,6 +1443,17 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.countplot("batch", "passed").percent().svg();
     /// assert!(svg.contains("passed = true\npercent = 25%")); // 3 of 12 rows
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="batch", hue="passed", stat="percent")
+    /// plt.show()
     /// ```
     ///
     /// Edge case: a mean is not a count, so it has no share:
@@ -1223,6 +1488,17 @@ impl Figure {
     /// assert!(svg.contains("#2E8B57") && svg.contains("#FF6347"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.histplot(data=ds, x="cgpa", hue="passed", bins=6, kde=True, palette=["seagreen", "tomato"])
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: bars of categories have no density:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -1253,6 +1529,17 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.hist("cgpa", "passed", 6).stacked().percent().svg();
     /// assert!(svg.contains("percent"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.histplot(data=ds, x="cgpa", hue="passed", bins=6, multiple="stack", stat="percent")
+    /// plt.show()
     /// ```
     ///
     /// Edge case: means don't add up, so they don't stack:
@@ -1294,6 +1581,19 @@ impl Figure {
     ///     .hline(8.5, "distinction")
     ///     .svg();
     /// assert!(svg.contains("pass mark") && svg.contains("distinction"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ax = sns.boxplot(data=ds, x="batch", y="cgpa")
+    /// ax.axhline(6.0, label="pass mark")
+    /// ax.axhline(8.5, label="distinction")
+    /// plt.show()
     /// ```
     ///
     /// Edge case: NaN is not a place on the axis:
@@ -1339,6 +1639,19 @@ impl Figure {
     /// assert!(svg.contains("pass mark") && svg.contains("distinction"));
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ax = sns.histplot(data=ds, x="cgpa", bins=10)
+    /// ax.axvline(6.0, label="pass mark")
+    /// ax.axvline(8.5, label="distinction")
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: bars have categories, not a number x axis:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -1381,6 +1694,17 @@ impl Figure {
     /// assert!(without.len() < with.len());
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="batch", hue="passed", legend=False)
+    /// plt.show()
+    /// ```
+    ///
     /// Edge case: an unknown place:
     /// ```should_panic
     /// # use rusmlai::prelude::*;
@@ -1420,6 +1744,17 @@ impl Figure {
     /// # let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.corrplot().cmap("coolwarm").svg();
     /// assert!(svg.contains("#B40426")); // coolwarm's red, at a correlation of 1
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.heatmap(ds.corr(numeric_only=True), annot=True, cmap="coolwarm")
+    /// plt.show()
     /// ```
     ///
     /// Edge case: bars have no color range:

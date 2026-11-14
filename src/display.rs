@@ -78,6 +78,20 @@ impl Figure {
     /// # assert!(dir.join("cgpa.png").is_file());
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// import os, tempfile
+    /// dir = tempfile.mkdtemp()
+    /// ax = sns.histplot(data=ds, x="cgpa", bins=10)
+    /// ax.figure.savefig(os.path.join(dir, "cgpa.png"))
+    /// assert os.path.isfile(os.path.join(dir, "cgpa.png"))
+    /// ```
+    ///
     /// Advanced: one SVG per column, in a loop:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -119,6 +133,17 @@ impl Figure {
     /// ds.countplot("batch", "").show();
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="batch")
+    /// plt.show()
+    /// ```
+    ///
     /// In a loop, prefer [`Figure::save`]: `show` opens one viewer window per chart.
     #[track_caller]
     pub fn show(&self) {
@@ -128,12 +153,7 @@ impl Figure {
         let path: PathBuf = self.auto_path();
         self.write(&path).or_fatal();
         self.saved.set(true);
-        let opener: &str = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        let _ = Command::new(opener).arg(&path).spawn();
+        open_in_viewer(&path);
     }
 
     /// evcxr calls this on a cell's last expression. Inline HTML (not image/svg+xml)
@@ -278,8 +298,18 @@ impl Drop for Figure {
     }
 }
 
-fn in_notebook() -> bool {
+pub(crate) fn in_notebook() -> bool {
     std::env::var_os("EVCXR_IS_RUNTIME").is_some()
+}
+
+/// Opens `path` in the system's default app (`xdg-open`, or `open` on macOS), without waiting.
+pub(crate) fn open_in_viewer(path: &Path) {
+    let opener: &str = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let _ = Command::new(opener).arg(path).spawn();
 }
 
 impl fmt::Display for Figure {

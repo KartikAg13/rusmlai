@@ -204,6 +204,17 @@ impl Dataset {
     /// ds.kdeplot("cgpa", ""); // saves metadata/plots/Density cgpa.png
     /// ```
     ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.kdeplot(data=ds, x="cgpa")
+    /// plt.show()
+    /// ```
+    ///
     /// One curve for passed and one for failed, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -313,6 +324,17 @@ impl Dataset {
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.violinplot("batch", "cgpa", ""); // saves metadata/plots/Violin batch vs cgpa.png
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.violinplot(data=ds, x="batch", y="cgpa")
+    /// plt.show()
     /// ```
     ///
     /// Split by `passed`, with most options:
@@ -456,6 +478,18 @@ impl Dataset {
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.qqplot("cgpa"); // saves metadata/plots/Q-Q plot cgpa.png
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// from scipy import stats
+    /// stats.probplot(ds["cgpa"].dropna(), plot=plt)
+    /// plt.show()
     /// ```
     ///
     /// With 5 points and most options:

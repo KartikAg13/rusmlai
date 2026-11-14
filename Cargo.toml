@@ -23,6 +23,10 @@ default-features = false
 [dependencies.rayon]
 version = "1.12.0"
 
+# erfc for the normal quantile of `RobustScaler::unit_variance`; already built for faer.
+[dependencies.libm]
+version = "0.2.16"
+
 [dependencies.indexmap]
 version = "2.14.0"
 default-features = false

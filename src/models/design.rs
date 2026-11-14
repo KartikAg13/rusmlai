@@ -1,6 +1,6 @@
 //! [`DesignMatrix`]: the features and the target of a `fit`, checked once, as `f64` columns.
 
-use faer::{Accum, Mat, Par, linalg::matmul::matmul};
+use faer::{Accum, Mat, MatRef, Par, linalg::matmul::matmul};
 use polars::prelude::{DataType, Series};
 use polars_core::runtime::THREAD_POOL;
 use rayon::prelude::*;
@@ -20,8 +20,9 @@ const BLOCK: usize = 4 * CHUNK;
 
 /// The features (every column but the target) and the target of a dataset, as `f64` columns
 /// with no null, NaN or infinity. A column that is already `Float64` in one chunk is Polars'
-/// own memory, not a copy. Kernels read the columns in chunks of [`CHUNK`] rows, so a fit never
-/// holds a second copy of the whole table. Every pass runs on the Polars thread pool.
+/// own memory, not a copy. Kernels read the columns in chunks of [`CHUNK`] rows
+/// ([`DesignMatrix::fold`]), so a fit never holds a second copy of the whole table. Every pass
+/// runs on the Polars thread pool.
 pub(crate) struct DesignMatrix {
     /// The feature names, in column order (scikit-learn's `feature_names_in_`).
     pub names: Vec<String>,
@@ -36,6 +37,18 @@ impl DesignMatrix {
     /// Checks every column once: numbers only, no nulls, no NaN or infinity.
     pub fn try_new(dataset: &Dataset, target: &str) -> Result<Self, ModelError> {
         numeric_target(dataset, target)?;
+        let (y, y_sum): (Series, f64) = prepared(dataset, target)?;
+        Self::try_with_target(dataset, target, y, y_sum)
+    }
+
+    /// The features of `dataset` (every column but `target`), checked, with `y` as the target:
+    /// a classifier passes its class codes.
+    pub fn try_with_target(
+        dataset: &Dataset,
+        target: &str,
+        y: Series,
+        y_sum: f64,
+    ) -> Result<Self, ModelError> {
         let names: Vec<String> = dataset
             .columns()
             .into_iter()
@@ -48,7 +61,6 @@ impl DesignMatrix {
         }
         let (columns, sums): (Vec<Series>, Vec<f64>) =
             prepared_all(dataset, &names)?.into_iter().unzip();
-        let (y, y_sum): (Series, f64) = prepared(dataset, target)?;
         Ok(Self {
             names,
             columns,
@@ -71,57 +83,32 @@ impl DesignMatrix {
         )
     }
 
-    /// XᵀX and Xᵀy, with `x_means` taken from the features and `y_mean` from the target first.
-    /// Each task sums one block of rows on the Polars pool: chunk by chunk, it copies the rows,
-    /// centered, into its own small column-major buffer, and faer adds their product (on one
-    /// thread, which was faster than faer's own threads on this tall, narrow shape).
-    pub fn gram(&self, x_means: &[f64], y_mean: f64) -> (Mat<f64>, Mat<f64>) {
-        let (n, p): (usize, usize) = (self.rows(), self.names.len());
-        let size: usize = CHUNK.min(n.max(1));
-        let starts: Vec<usize> = (0..n).step_by(BLOCK).collect();
-        let parts: Vec<(Mat<f64>, Mat<f64>)> = THREAD_POOL.install(|| {
-            starts
-                .par_iter()
-                .map_init(
-                    || (Mat::zeros(size, p), Mat::zeros(size, 1)),
-                    |(x, y), &start| {
-                        self.block(x, y, start, (start + BLOCK).min(n), x_means, y_mean)
-                    },
-                )
-                .collect()
-        });
-        let (mut g, mut v): (Mat<f64>, Mat<f64>) = (Mat::zeros(p, p), Mat::zeros(p, 1));
-        for (block_g, block_v) in parts {
-            g += block_g;
-            v += block_v;
-        }
-        (g, v)
+    /// ‖y − y_mean‖², which coordinate descent needs for its stopping rule.
+    pub fn y_norm2(&self, y_mean: f64) -> f64 {
+        column(&self.y)
+            .iter()
+            .map(|y| (y - y_mean) * (y - y_mean))
+            .sum()
     }
 
-    /// XᵀX and Xᵀy of rows `from..to`, through the buffers `x` and `y` (`CHUNK` rows each).
-    fn block(
-        &self,
-        x: &mut Mat<f64>,
-        y: &mut Mat<f64>,
-        from: usize,
-        to: usize,
-        x_means: &[f64],
-        y_mean: f64,
-    ) -> (Mat<f64>, Mat<f64>) {
+    /// The target, as `fit` checked it.
+    pub fn y(&self) -> &[f64] {
+        column(&self.y)
+    }
+
+    /// XᵀX and Xᵀy, with `x_means` taken from the features and `y_mean` from the target first.
+    /// faer adds the product of each chunk on one thread, which was faster than faer's own
+    /// threads on this tall, narrow shape.
+    pub fn gram(&self, x_means: &[f64], y_mean: f64) -> (Mat<f64>, Mat<f64>) {
         let p: usize = self.names.len();
-        let (mut g, mut v): (Mat<f64>, Mat<f64>) = (Mat::zeros(p, p), Mat::zeros(p, 1));
-        let target: &[f64] = column(&self.y);
-        for start in (from..to).step_by(CHUNK) {
-            let len: usize = (to - start).min(CHUNK);
-            for (j, series) in self.columns.iter().enumerate() {
-                for (i, value) in column(series)[start..start + len].iter().enumerate() {
-                    x[(i, j)] = value - x_means[j];
-                }
-            }
+        let size: usize = CHUNK.min(self.rows().max(1));
+        let target: &[f64] = self.y();
+        let zero = || (Mat::zeros(p, p), Mat::zeros(p, 1), Mat::zeros(size, 1));
+        let parts = self.fold(x_means, false, zero, |(g, v, y), start, part| {
+            let len: usize = part.nrows();
             for (i, value) in target[start..start + len].iter().enumerate() {
                 y[(i, 0)] = value - y_mean;
             }
-            let part = x.as_ref().subrows(0, len);
             matmul(
                 g.as_mut(),
                 Accum::Add,
@@ -132,13 +119,115 @@ impl DesignMatrix {
             );
             let rhs = y.as_ref().subrows(0, len);
             matmul(v.as_mut(), Accum::Add, part.transpose(), rhs, 1.0, Par::Seq);
+        });
+        let (mut g, mut v): (Mat<f64>, Mat<f64>) = (Mat::zeros(p, p), Mat::zeros(p, 1));
+        for (block_g, block_v, _) in parts {
+            g += block_g;
+            v += block_v;
         }
         (g, v)
     }
+
+    /// Runs `f(acc, start, x)` on every chunk of rows, where `x` is the chunk as a
+    /// column-major `len × p` matrix of each feature minus its `offset`, plus a last column of
+    /// ones when `ones`. Each task on the Polars pool takes one block of rows into its own
+    /// `zero()`. The results come back in block order, so sums added in that order are the
+    /// same on any number of threads and on every machine.
+    pub fn fold<T: Send>(
+        &self,
+        offset: &[f64],
+        ones: bool,
+        zero: impl Fn() -> T + Sync,
+        f: impl Fn(&mut T, usize, MatRef<'_, f64>) + Sync,
+    ) -> Vec<T> {
+        let (n, p): (usize, usize) = (self.rows(), self.names.len());
+        let size: usize = CHUNK.min(n.max(1));
+        let starts: Vec<usize> = (0..n).step_by(BLOCK).collect();
+        THREAD_POOL.install(|| {
+            starts
+                .par_iter()
+                .map_init(
+                    || Mat::from_fn(size, p + usize::from(ones), |_, j| f64::from(j == p)),
+                    |x, &from| {
+                        let to: usize = (from + BLOCK).min(n);
+                        let mut acc: T = zero();
+                        for start in (from..to).step_by(CHUNK) {
+                            let len: usize = (to - start).min(CHUNK);
+                            for (j, series) in self.columns.iter().enumerate() {
+                                let values: &[f64] = &column(series)[start..start + len];
+                                let to: &mut [f64] = &mut x.col_as_slice_mut(j)[..len];
+                                for (to, value) in to.iter_mut().zip(values) {
+                                    *to = value - offset[j];
+                                }
+                            }
+                            f(&mut acc, start, x.as_ref().subrows(0, len));
+                        }
+                        acc
+                    },
+                )
+                .collect()
+        })
+    }
+}
+
+/// Column `j` of a chunk that [`DesignMatrix::fold`] gives, as a slice.
+pub(crate) fn col(x: MatRef<'_, f64>, j: usize) -> &[f64] {
+    x.col(j)
+        .try_as_col_major()
+        .expect("fold gives column-major chunks")
+        .as_slice()
+}
+
+/// `intercept[k] + Σ coef[k][j] × feature j` for each row and each output k, in one pass per
+/// output: each chunk of rows adds `coef × column` into a small buffer that stays in the CPU
+/// cache, so each column is read once and no temporary column is made. The chunks run on the
+/// Polars pool. Nulls, NaN and text are errors, as in scikit-learn.
+pub(crate) fn scores(
+    dataset: &Dataset,
+    names: &[String],
+    coef: &[&[f64]],
+    intercept: &[f64],
+) -> Result<Vec<Vec<f64>>, ModelError> {
+    let columns: Vec<Series> = THREAD_POOL.install(|| {
+        names
+            .par_iter()
+            .map(|name| numeric(dataset, name))
+            .collect::<Result<_, _>>()
+    })?;
+    let out: Vec<Vec<f64>> = coef
+        .iter()
+        .zip(intercept)
+        .map(|(coef, &intercept)| {
+            let mut out: Vec<f64> = vec![intercept; dataset.height()];
+            // Each chunk is its own task and writes its own rows, so the order of the threads
+            // does not change any sum.
+            THREAD_POOL.install(|| {
+                out.par_chunks_mut(CHUNK).enumerate().for_each(|(k, sums)| {
+                    let start: usize = k * CHUNK;
+                    let end: usize = start + sums.len();
+                    for (series, w) in columns.iter().zip(*coef) {
+                        for (sum, x) in sums.iter_mut().zip(&column(series)[start..end]) {
+                            *sum += w * x;
+                        }
+                    }
+                })
+            });
+            out
+        })
+        .collect();
+    // A NaN or an infinity in a feature makes its row's score NaN or infinite, whatever the
+    // coefficient (0 × inf is NaN). So the sum of the scores checks every feature without a
+    // second read of every column; only a sum that is not finite looks for the column.
+    if out.first().is_some_and(|scores| !sum(scores).is_finite()) {
+        for (name, series) in names.iter().zip(&columns) {
+            finite(name, series)?;
+        }
+    }
+    Ok(out)
 }
 
 /// [`prepared`] for every name, one column per task on the Polars pool.
-pub(crate) fn prepared_all(
+fn prepared_all(
     dataset: &Dataset,
     names: &[String],
 ) -> Result<Vec<(Series, f64)>, ModelError> {
@@ -172,8 +261,9 @@ fn sum(values: &[f64]) -> f64 {
     lanes.iter().sum::<f64>() + rest.iter().sum::<f64>()
 }
 
-/// `name` as `Float64` in one chunk, after the checks that every model needs, and its sum.
-pub(crate) fn prepared(dataset: &Dataset, name: &str) -> Result<(Series, f64), ModelError> {
+/// `name` as `Float64` in one chunk: a number column with no nulls. A column that is already
+/// that is Polars' own memory, not a copy.
+fn numeric(dataset: &Dataset, name: &str) -> Result<Series, ModelError> {
     let source = dataset.column(name)?;
     let dtype: &DataType = source.dtype();
     if !(dtype.is_primitive_numeric() || dtype.is_bool()) {
@@ -189,17 +279,30 @@ pub(crate) fn prepared(dataset: &Dataset, name: &str) -> Result<(Series, f64), M
             nulls,
         });
     }
-    let series: Series = source
+    Ok(source
         .as_materialized_series()
         .cast(&DataType::Float64)?
-        .rechunk();
+        .rechunk())
+}
+
+/// An error when a value of `series` (the column `name`) is NaN or infinite.
+fn finite(name: &str, series: &Series) -> Result<(), ModelError> {
+    if column(series).iter().all(|value| value.is_finite()) {
+        return Ok(());
+    }
+    Err(ModelError::NotFinite {
+        column: name.into(),
+    })
+}
+
+/// `name` as `Float64` in one chunk, after the checks that every model needs, and its sum.
+pub(crate) fn prepared(dataset: &Dataset, name: &str) -> Result<(Series, f64), ModelError> {
+    let series: Series = numeric(dataset, name)?;
     // A sum is finite only when every value is, so one pass is the check and gives the mean.
     // A sum that is not finite can also be an overflow of finite values: only then look again.
     let total: f64 = sum(column(&series));
-    if !total.is_finite() && !column(&series).iter().all(|value| value.is_finite()) {
-        return Err(ModelError::NotFinite {
-            column: name.into(),
-        });
+    if !total.is_finite() {
+        finite(name, &series)?;
     }
     Ok((series, total))
 }

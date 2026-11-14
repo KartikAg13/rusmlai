@@ -78,7 +78,7 @@ On a 630,000-row, 13-column Kaggle CSV (an i5-1135G7 laptop):
 
 1. Preprocessing: `StandardScaler`, `MinMaxScaler`, `RobustScaler`, `SimpleImputer`, `OneHotEncoder` and others, combined in a `ColumnTransformer` and joined to the model in a `Pipeline`, `train_test_split` and cross validation. Scalers and imputers fit from the cached stats, so a fit on a newly loaded CSV makes no pass over the data.
 2. About 25 models:
-   - linear and logistic regression, Ridge, Lasso;
+   - linear regression (with Ridge, Lasso and ElasticNet penalties as settings) and logistic regression;
    - decision trees, random forests, bagging, AdaBoost and histogram gradient boosting;
    - kNN, Naive Bayes, linear SVM, an MLP;
    - k-means, DBSCAN and agglomerative clustering;

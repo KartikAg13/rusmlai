@@ -455,8 +455,12 @@ impl YScale {
     /// Grid lines and tick labels; the line at the base is the axis.
     pub(crate) fn draw(&self, svg: &mut String, theme: &Theme, left: f64, right: f64) {
         let span: f64 = self.hi - self.lo;
+        // The ends get their own label only with 16 px (a 12 px label and a gap) to the next
+        // tick; a share of the span alone let -2.17e-6 sit on top of -2.00e-6 in a short chart.
+        let usable: f64 = (self.height - HEADROOM).max(1.0);
+        let room: f64 = span * (16.0 / usable).max(0.02);
         let mut ticks: Vec<f64> = Vec::new();
-        if (self.lo / self.step).ceil() * self.step - self.lo > span * 0.02 {
+        if (self.lo / self.step).ceil() * self.step - self.lo > room {
             ticks.push(self.lo);
         }
         ticks.extend(
@@ -464,7 +468,7 @@ impl YScale {
                 .into_iter()
                 .take_while(|t| *t < self.lo + span * 0.92),
         );
-        if ticks.last().is_none_or(|last| self.hi - last > span * 0.02) {
+        if ticks.last().is_none_or(|last| self.hi - last > room) {
             ticks.push(self.hi);
         }
         for t in ticks {
