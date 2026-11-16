@@ -15,17 +15,21 @@ pub use logistic::LogisticRegression;
 use indexmap::IndexMap;
 use polars::{
     error::PolarsError,
-    prelude::{DataType, NamedFrom, Series},
+    prelude::{DataFrame, DataType, IntoLazy, NamedFrom, Series, lit},
 };
 use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
     dataset::{Dataset, error::DatasetError},
-    error::OrFatal,
-    metadata::{dataset::stats::NumericStats, models},
+    error::{OrFatal, warn},
+    metadata::{
+        dataset::stats::NumericStats,
+        models::{self, CachedRun},
+    },
     metrics::{try_accuracy_score, try_log_loss, try_regression_scores},
     preprocess::{LabelEncoder, Transform, error::PreprocessError},
+    utils::col,
 };
 
 /// What can fail while fitting, predicting or scoring a model.
@@ -53,7 +57,8 @@ pub enum ModelError {
 
     /// The target has nulls, so a model can't learn from those rows.
     #[error(
-        "target '{column}' has {nulls} nulls; drop those rows or fill them before fit, like scikit-learn"
+        "target '{column}' has {nulls} {}; drop those rows or fill them before fit, like scikit-learn",
+        nulls_word(*.nulls)
     )]
     TargetNulls {
         /// The target column.
@@ -91,7 +96,8 @@ pub enum ModelError {
 
     /// A feature has nulls.
     #[error(
-        "feature '{column}' has {nulls} nulls: fill them with SimpleImputer in the ColumnTransformer"
+        "feature '{column}' has {nulls} {}: fill them with SimpleImputer in the ColumnTransformer",
+        nulls_word(*.nulls)
     )]
     FeatureNulls {
         /// The column.
@@ -119,6 +125,11 @@ pub enum ModelError {
     },
 
     /// A classifier's target has one class only, so there is nothing to tell apart.
+    #[error(
+        "target '{column}' has continuous values (like {value}), not classes: use a regressor such as LinearRegression, or cut it into classes first, like scikit-learn"
+    )]
+    ContinuousTarget { column: String, value: f64 },
+
     #[error("target '{column}' has one class only ({class}); a classifier needs two or more")]
     OneClass {
         /// The target column.
@@ -150,7 +161,7 @@ pub enum ModelError {
     },
 
     /// A metric got nulls, which have no error to measure.
-    #[error("{input} has {nulls} nulls; a metric needs a value in every row")]
+    #[error("{input} has {nulls} {}; a metric needs a value in every row", nulls_word(*.nulls))]
     MetricNulls {
         /// `y_true` or `y_pred`.
         input: &'static str,
@@ -164,7 +175,9 @@ pub enum ModelError {
 
     /// The dataset was made in memory, so it has no CSV next to which a model cache or a
     /// journal could live.
-    #[error("this dataset has no CSV, so it has no model cache: load it with read_csv")]
+    #[error(
+        "there is no model cache: this dataset has no CSV (load it with read_csv), or the cache is off (set_cache)"
+    )]
     NoCache,
 
     /// A file of the model cache or the journal couldn't be written.
@@ -226,11 +239,12 @@ pub trait Model: Debug {
     /// Puts back settings that [`Model::params`] gave.
     fn try_set_params(&mut self, params: Value) -> Result<(), ModelError>;
 
-    /// The cache id of the last fit; `None` before `fit` or without a cache.
-    fn run(&self) -> Option<&str>;
+    /// The cache record of the last fit (its id and the cache that holds it); `None` before
+    /// `fit` or without a cache.
+    fn run(&self) -> Option<&CachedRun>;
 
-    /// Sets the cache id of the last fit.
-    fn set_run(&mut self, run: Option<String>);
+    /// Sets the cache record of the last fit.
+    fn set_run(&mut self, run: Option<CachedRun>);
 
     /// The model's name, scikit-learn's class name.
     fn name(&self) -> &'static str {
@@ -240,11 +254,6 @@ pub trait Model: Debug {
 
     /// The training loss per round, for models that train in rounds.
     fn loss_curve(&self) -> Option<Vec<f64>> {
-        None
-    }
-
-    /// The validation loss per round, for models that hold rows out while they train.
-    fn validation_loss_curve(&self) -> Option<Vec<f64>> {
         None
     }
 
@@ -271,11 +280,8 @@ pub trait Model: Debug {
     /// let predicted = model.predict(&test);
     /// ```
     ///
-    /// Python has no model journal; the closest is reloading a pickled model:
-    ///
-    /// ```python
-    /// # model = joblib.load("models/r03.joblib")
-    /// ```
+    /// Python has no model journal. The closest is to save each model yourself with `joblib.dump`
+    /// and read it back with `joblib.load`.
     #[track_caller]
     fn load_run(&mut self, dataset: &Dataset, run: &str) {
         self.try_load_run(dataset, run).or_fatal()
@@ -347,17 +353,23 @@ pub trait Classifier: Model {
     fn try_predict_proba(&self, dataset: &Dataset) -> Result<Dataset, ModelError>;
 
     /// The share of rows whose `target` the model predicts. The cache records it with the log
-    /// loss, for the journal.
+    /// loss, for the journal. A label the model never saw in `fit` has no probability, so then
+    /// the log loss is left out with a warning, and the accuracy still counts, like
+    /// scikit-learn's `score`.
     fn try_score(&self, dataset: &Dataset, target: &str) -> Result<f64, ModelError> {
         let y: &Series = dataset.column(target)?.as_materialized_series();
         let accuracy: f64 = try_accuracy_score(y, &self.try_predict(dataset)?)?;
-        let metrics: IndexMap<String, f64> = IndexMap::from([
-            ("accuracy".to_string(), accuracy),
-            (
-                "log_loss".to_string(),
-                try_log_loss(y, &self.try_predict_proba(dataset)?)?,
-            ),
-        ]);
+        let mut metrics: IndexMap<String, f64> =
+            IndexMap::from([("accuracy".to_string(), accuracy)]);
+        match self
+            .try_predict_proba(dataset)
+            .and_then(|proba| try_log_loss(y, &proba))
+        {
+            Ok(loss) => {
+                metrics.insert("log_loss".to_string(), loss);
+            }
+            Err(e) => warn(format_args!("the log loss was not recorded: {e}")),
+        }
         models::score(self, dataset, metrics);
         Ok(accuracy)
     }
@@ -381,7 +393,9 @@ pub trait Classifier: Model {
     }
 }
 
-/// The cached stats of a numeric target with no nulls, the check every regressor's `fit` makes.
+/// The cached stats of a numeric target with no nulls, NaN or infinity, the check every
+/// regressor's `fit` makes (scikit-learn: "Input y contains NaN"). A sum is finite only when
+/// every value is, so the cached mean is the check.
 pub(crate) fn numeric_target<'a>(
     dataset: &'a Dataset,
     target: &str,
@@ -393,7 +407,37 @@ pub(crate) fn numeric_target<'a>(
             nulls,
         });
     }
-    Ok(dataset.try_numeric_stats(target)?)
+    let stats: &NumericStats = dataset.try_numeric_stats(target)?;
+    if !stats.mean.is_finite() {
+        return Err(ModelError::NotFinite {
+            column: target.into(),
+        });
+    }
+    Ok(stats)
+}
+
+/// Panics at the caller's line with [`ModelError::InvalidSetting`] unless `ok`.
+#[track_caller]
+pub(crate) fn check(ok: bool, setting: &'static str, value: impl ToString, expected: &'static str) {
+    if !ok {
+        Err::<(), ModelError>(ModelError::InvalidSetting {
+            setting,
+            value: value.to_string(),
+            expected,
+        })
+        .or_fatal();
+    }
+}
+
+/// "null" or "nulls", for the error messages.
+fn nulls_word(n: usize) -> &'static str {
+    if n == 1 { "null" } else { "nulls" }
+}
+
+/// The error of learned values from the cache that don't fit together, like 3 coefficients for
+/// 2 features: such a record is skipped and the model trains instead.
+pub(crate) fn bad_learned(why: String) -> ModelError {
+    ModelError::Learned(<serde_json::Error as serde::de::Error>::custom(why))
 }
 
 /// The classes of a classifier's target with no nulls, sorted like [`LabelEncoder`], and the
@@ -408,6 +452,26 @@ pub(crate) fn label_target(
             column: target.into(),
             nulls,
         });
+    }
+    // A float target with a fraction is a regression target, as in scikit-learn's
+    // `type_of_target`; whole numbers like 0.0 / 1.0 are classes.
+    if dataset.column(target)?.dtype().is_float() {
+        let t = col(target);
+        let fraction: DataFrame = dataset
+            .dataframe
+            .clone()
+            .lazy()
+            .select([t
+                .clone()
+                .filter((t.clone() % lit(1.0)).neq(lit(0.0)).and(t.is_not_nan()))
+                .first()])
+            .collect()?;
+        if let Some(value) = fraction.columns()[0].f64()?.get(0) {
+            return Err(ModelError::ContinuousTarget {
+                column: target.into(),
+                value,
+            });
+        }
     }
     let y: Dataset = dataset.try_select(&[target])?;
     let mut encoder: LabelEncoder = LabelEncoder::new();

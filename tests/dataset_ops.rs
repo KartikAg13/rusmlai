@@ -31,23 +31,18 @@ fn select_and_drop_keep_the_order_and_share_the_stats() {
 fn after_transform_computes_only_the_changed_columns() {
     let ds: Dataset = read_csv(common::scratch_csv("ops_transform"));
     let doubled: DataFrame = ds
-        .dataframe
+        .dataframe()
         .clone()
         .lazy()
         .with_column(col("cgpa") * lit(2.0))
         .collect()
         .unwrap();
-    let new: Dataset = Dataset {
-        metadata: ds.metadata.dataset_cache.after_transform(
-            &Dataset {
-                dataframe: doubled.clone(),
-                metadata: ds.metadata.clone(),
-            },
-            vec!["cgpa".into()],
-            false,
-        ),
-        dataframe: doubled,
-    };
+    let probe: Dataset = Dataset::from_parts(doubled.clone(), ds.metadata.clone());
+    let metadata: Metadata =
+        ds.metadata
+            .dataset_cache
+            .after_transform(&probe, vec!["cgpa".into()], false);
+    let new: Dataset = Dataset::from_parts(doubled, metadata);
     assert!(same_stats(&ds, &new, "age"));
     assert!(!same_stats(&ds, &new, "cgpa"));
     let (old, now): (f64, f64) = (
@@ -60,19 +55,13 @@ fn after_transform_computes_only_the_changed_columns() {
 #[test]
 fn after_transform_computes_every_column_when_rows_change() {
     let ds: Dataset = read_csv(common::scratch_csv("ops_rows"));
-    let head: DataFrame = ds.dataframe.head(Some(4));
-    let probe: Dataset = Dataset {
-        dataframe: head.clone(),
-        metadata: ds.metadata.clone(),
-    };
+    let head: DataFrame = ds.dataframe().head(Some(4));
+    let probe: Dataset = Dataset::from_parts(head.clone(), ds.metadata.clone());
     let m: Metadata = ds
         .metadata
         .dataset_cache
         .after_transform(&probe, vec![], true);
-    let new: Dataset = Dataset {
-        dataframe: head,
-        metadata: m,
-    };
+    let new: Dataset = Dataset::from_parts(head, m);
     assert_eq!(new.shape(), (4, 6));
     for column in ds.columns() {
         assert!(

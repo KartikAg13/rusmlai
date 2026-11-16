@@ -5,7 +5,7 @@ mod common;
 use std::{hint::black_box, path::PathBuf, time::Duration};
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use rusmlai::dataset::{Dataset, read_csv, reader::Reader};
+use rusmlai::dataset::{Dataset, read_csv};
 
 fn read(c: &mut Criterion) {
     let csv: PathBuf = common::scratch_csv("dataset");
@@ -16,9 +16,7 @@ fn read(c: &mut Criterion) {
     g.throughput(Throughput::Bytes(bytes));
 
     // Polars CSV parse only, no metadata.
-    g.bench_function("csv_parse", |b| {
-        b.iter(|| black_box(Reader::new(&csv).finish().unwrap()))
-    });
+    g.bench_function("csv_parse", |b| b.iter(|| black_box(common::load(&csv))));
     // Parse + cache miss: compute every column's stats + write both cache files.
     g.bench_function("read_csv/cold", |b| {
         b.iter_batched(

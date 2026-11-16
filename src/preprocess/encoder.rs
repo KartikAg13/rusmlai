@@ -214,7 +214,6 @@ fn lookup(text: Expr, old: &[String], new: Vec<f64>, default: Option<f64>) -> Ex
 /// categories for `drop`, and `handle_unknown="warn"` (a lazy query can't warn).
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("c" => ["b", "a", "b"], "code" => [10, 2, 2]).unwrap(), "");
 /// let out = OneHotEncoder::new().fit_transform(&ds);
@@ -427,13 +426,12 @@ impl Transform for OneHotEncoder {
 /// scikit-learn settings with no setter: `dtype` (codes are always `Float64`).
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("sleep" => ["good", "poor", "average"]).unwrap(), "");
 /// let out = OrdinalEncoder::new()
 ///     .categories(&[&["poor", "average", "good"]])
 ///     .fit_transform(&ds);
-/// let codes: Vec<f64> = out.dataframe.column("sleep").unwrap().f64().unwrap().into_no_null_iter().collect();
+/// let codes: Vec<f64> = out.to_list("sleep");
 /// assert_eq!(codes, [2.0, 0.0, 1.0]);
 /// ```
 ///
@@ -592,16 +590,14 @@ impl Transform for OrdinalEncoder {
 /// class names.
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let y = Dataset::new(df!("passed" => ["yes", "no", "yes"]).unwrap(), "");
 /// let mut encoder = LabelEncoder::new();
 /// let codes = encoder.fit_transform(&y);
 /// assert_eq!(encoder.classes_, ["no", "yes"]);
-/// let c: Vec<i64> = codes.dataframe.column("passed").unwrap().i64().unwrap().into_no_null_iter().collect();
-/// assert_eq!(c, [1, 0, 1]);
+/// assert_eq!(codes.to_list("passed"), [1.0, 0.0, 1.0]);
 /// let back = encoder.inverse_transform(&codes);
-/// let names: Vec<&str> = back.dataframe.column("passed").unwrap().str().unwrap().iter().flatten().collect();
+/// let names: Vec<&str> = back.dataframe().column("passed").unwrap().str().unwrap().iter().flatten().collect();
 /// assert_eq!(names, ["yes", "no", "yes"]);
 /// ```
 ///
@@ -745,7 +741,10 @@ mod tests {
             .map(|_| ())
             .unwrap_err()
             .to_string();
-        assert!(err.starts_with("output column 'c_a' got a value"), "{err}");
+        assert!(
+            err.starts_with("column 'c' has the category 'z', which fit"),
+            "{err}"
+        );
         let mut onehot: OneHotEncoder = OneHotEncoder::new().handle_unknown("ignore");
         let out: Dataset = {
             onehot.fit(&train);

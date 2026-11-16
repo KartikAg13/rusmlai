@@ -70,10 +70,10 @@ fn linear_models_match_scikit_learn_on_s6e1() {
         eprintln!("skipped: {} is missing", source.display());
         return;
     }
-    let all: Dataset = Dataset::new(read_csv(&source).drop(&["id"]).dataframe, "");
+    let all: Dataset = Dataset::new(read_csv(&source).drop(&["id"]).into_dataframe(), "");
     // A fixed split, so both libraries see the same rows: first 504,000 train, last 126,000 test.
-    let train: Dataset = Dataset::new(all.dataframe.slice(0, 504_000), "");
-    let test: Dataset = Dataset::new(all.dataframe.slice(504_000, 126_000), "");
+    let train: Dataset = Dataset::new(all.dataframe().slice(0, 504_000), "");
+    let test: Dataset = Dataset::new(all.dataframe().slice(504_000, 126_000), "");
     let numeric: [&str; 4] = ["age", "study_hours", "class_attendance", "sleep_hours"];
     let text: [&str; 7] = [
         "gender",
@@ -90,7 +90,7 @@ fn linear_models_match_scikit_learn_on_s6e1() {
             .add("cat", &text, rusmlai::steps![OneHotEncoder::new()])
     };
     let y = test
-        .dataframe
+        .dataframe()
         .column("exam_score")
         .unwrap()
         .as_materialized_series()
@@ -102,12 +102,9 @@ fn linear_models_match_scikit_learn_on_s6e1() {
         } else {
             0.0
         };
-        let mut pipe = Pipeline::new(
-            prep(),
-            ModelStacker::new(LinearRegression::new().alpha(alpha)),
-        );
+        let mut pipe = Pipeline::new(prep(), LinearRegression::new().alpha(alpha));
         pipe.fit(&train, "exam_score");
-        let (predicted, intercept) = (pipe.predict(&test), pipe.model.model.intercept_);
+        let (predicted, intercept) = (pipe.predict(&test), pipe.model.intercept_);
         let got: [f64; 5] = [
             r2_score(&y, &predicted),
             mean_squared_error(&y, &predicted),
@@ -141,9 +138,9 @@ fn logistic_regression_matches_scikit_learn_on_s6e2() {
         eprintln!("skipped: {} is missing", source.display());
         return;
     }
-    let all: Dataset = Dataset::new(read_csv(&source).drop(&["id"]).dataframe, "");
-    let train: Dataset = Dataset::new(all.dataframe.slice(0, 504_000), "");
-    let test: Dataset = Dataset::new(all.dataframe.slice(504_000, 126_000), "");
+    let all: Dataset = Dataset::new(read_csv(&source).drop(&["id"]).into_dataframe(), "");
+    let train: Dataset = Dataset::new(all.dataframe().slice(0, 504_000), "");
+    let test: Dataset = Dataset::new(all.dataframe().slice(504_000, 126_000), "");
     let prep: ColumnTransformer = ColumnTransformer::new()
         .add(
             "num",
@@ -162,17 +159,17 @@ fn logistic_regression_matches_scikit_learn_on_s6e2() {
             rusmlai::steps![OneHotEncoder::new()],
         )
         .remainder("passthrough");
-    let mut pipe = Pipeline::new(prep, ModelStacker::new(LogisticRegression::new()));
+    let mut pipe = Pipeline::new(prep, LogisticRegression::new());
     pipe.fit(&train, "Heart Disease");
     let y = test
-        .dataframe
+        .dataframe()
         .column("Heart Disease")
         .unwrap()
         .as_materialized_series()
         .clone();
     let accuracy: f64 = accuracy_score(&y, &pipe.predict(&test));
     let loss: f64 = log_loss(&y, &pipe.predict_proba(&test));
-    let model: &LogisticRegression = &pipe.model.model;
+    let model: &LogisticRegression = &pipe.model;
     eprintln!(
         "rusmlai: accuracy {accuracy:.12} log_loss {loss:.12} intercept {:.12} n_iter {}",
         model.intercept_[0], model.n_iter_

@@ -37,8 +37,8 @@ fn linear(c: &mut Criterion) {
     // no CSV, so no cache: the training alone, like scikit-learn's fit.
     let features: Dataset = preprocessing().remainder("passthrough").fit_transform(&ds);
     assert_eq!((features.height(), features.width()), (630_000, 31));
-    let memory: Dataset = Dataset::new(features.dataframe.clone(), "");
-    let ds_memory: Dataset = Dataset::new(ds.dataframe.clone(), "");
+    let memory: Dataset = Dataset::new(features.dataframe().clone(), "");
+    let ds_memory: Dataset = Dataset::new(ds.dataframe().clone(), "");
     let cache: PathBuf = ModelCache::of(&features).unwrap().path;
     let no_cache = || {
         let _ = fs::remove_file(&cache);
@@ -104,8 +104,7 @@ fn linear(c: &mut Criterion) {
     // From the loaded CSV: the preprocessing fits from the cached stats, then the model.
     g.bench_function("pipeline_fit/LinearRegression", |b| {
         b.iter(|| {
-            let mut pipe =
-                Pipeline::new(preprocessing(), ModelStacker::new(LinearRegression::new()));
+            let mut pipe = Pipeline::new(preprocessing(), LinearRegression::new());
             pipe.fit(&ds_memory, TARGET);
             black_box(pipe)
         })
@@ -125,8 +124,7 @@ fn linear(c: &mut Criterion) {
         b.iter_batched(
             no_cache,
             |()| {
-                let mut pipe =
-                    Pipeline::new(preprocessing(), ModelStacker::new(LinearRegression::new()));
+                let mut pipe = Pipeline::new(preprocessing(), LinearRegression::new());
                 pipe.fit(&ds, TARGET);
                 black_box(pipe)
             },

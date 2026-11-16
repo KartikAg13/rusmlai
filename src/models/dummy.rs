@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use crate::{
     dataset::Dataset,
     error::OrFatal,
+    metadata::models::CachedRun,
     models::{Model, ModelError, Regressor, numeric_target},
     preprocess::one_of,
     utils::col,
@@ -23,7 +24,6 @@ use crate::{
 /// should score above it.
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("x" => [1, 2, 3, 4], "y" => [1.0, 2.0, 3.0, 10.0]).unwrap(), "");
 /// let mut model = DummyRegressor::new();
@@ -63,7 +63,7 @@ pub struct DummyRegressor {
     /// The value predicted for every row, learned by `fit`.
     pub constant_: Option<f64>,
     target: String,
-    run: Option<String>,
+    run: Option<CachedRun>,
     /// ½ · mean squared error on the training rows, for the journal.
     loss: Option<f64>,
 }
@@ -179,15 +179,15 @@ impl Model for DummyRegressor {
         Ok(())
     }
 
-    fn run(&self) -> Option<&str> {
-        self.run.as_deref()
+    fn run(&self) -> Option<&CachedRun> {
+        self.run.as_ref()
     }
 
     fn loss_curve(&self) -> Option<Vec<f64>> {
         self.loss.map(|l| vec![l])
     }
 
-    fn set_run(&mut self, run: Option<String>) {
+    fn set_run(&mut self, run: Option<CachedRun>) {
         self.run = run;
     }
 }
@@ -216,7 +216,7 @@ mod tests {
         );
         let fit =
             |mut m: DummyRegressor, target: &str| m.try_train(&ds, target).unwrap_err().to_string();
-        assert!(fit(DummyRegressor::new(), "y").starts_with("target 'y' has 1 nulls"));
+        assert!(fit(DummyRegressor::new(), "y").starts_with("target 'y' has 1 null;"));
         assert!(fit(DummyRegressor::new(), "s").starts_with("column 's' is not numeric"));
         assert_eq!(
             fit(DummyRegressor::new().strategy("constant"), "z"),
@@ -226,5 +226,15 @@ mod tests {
             DummyRegressor::new().try_predict(&ds),
             Err(ModelError::NotFitted { .. })
         ));
+        // scikit-learn: "Input y contains NaN".
+        let nan: Dataset = Dataset::new(df!("y" => [1.0, f64::NAN]).unwrap(), "");
+        let err: String = DummyRegressor::new()
+            .try_train(&nan, "y")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.starts_with("column 'y' has NaN or infinite values"),
+            "{err}"
+        );
     }
 }

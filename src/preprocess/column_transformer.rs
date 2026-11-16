@@ -41,11 +41,11 @@ use crate::{
 ///
 /// ```python
 /// import pandas as pd
-/// ds = pd.read_csv("tests/fixtures/data/students.csv")
 /// from sklearn.compose import ColumnTransformer
 /// from sklearn.impute import SimpleImputer
 /// from sklearn.pipeline import make_pipeline
 /// from sklearn.preprocessing import OneHotEncoder, StandardScaler
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
 /// prep = ColumnTransformer([
 ///     ("num", make_pipeline(SimpleImputer(strategy="median"), StandardScaler()), ["age", "cgpa"]),
 ///     ("cat", OneHotEncoder(), ["batch"]),

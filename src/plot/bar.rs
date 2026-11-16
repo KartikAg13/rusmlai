@@ -56,17 +56,6 @@ impl Dataset {
     /// ds.bar("batch", "cgpa", "", ""); // saves metadata/plots/Bar batch vs cgpa.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.barplot(data=ds, x="batch", y="cgpa", errorbar=None)  # rusmlai draws no error bars
-    /// plt.show()
-    /// ```
-    ///
     /// The median, split by `passed`, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -97,6 +86,17 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.bar("name", "cgpa", "", "std"); // panics: no name group has 2 or more values of cgpa
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.barplot(data=ds, x="batch", y="cgpa", errorbar=None)  # rusmlai draws no error bars
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn bar(&self, x: &str, y: &str, hue: &str, estimator: &str) -> Figure {
@@ -202,17 +202,6 @@ impl Dataset {
     /// ds.countplot("batch", ""); // saves metadata/plots/Count batch vs count.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.countplot(data=ds, x="batch")
-    /// plt.show()
-    /// ```
-    ///
     /// Pass and fail stacked in each batch, as percentages, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -241,6 +230,17 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.countplot("age", "").svg();
     /// assert!(svg.contains("age = 19\ncount = 3")); // the hover text of the first bar
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.countplot(data=ds, x="batch")
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn countplot(&self, x: &str, hue: &str) -> Figure {
@@ -272,17 +272,6 @@ impl Dataset {
     /// ds.describe_bar("cgpa", ""); // saves metadata/plots/Describe statistic vs cgpa.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// ds["cgpa"].describe().drop("count").plot.bar()
-    /// plt.show()
-    /// ```
-    ///
     /// The median of every numeric column, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -312,6 +301,16 @@ impl Dataset {
     /// let svg = ds.describe_bar("", "count").svg();
     /// assert!(svg.contains("column = age\ncount = 11")); // one age is null
     /// assert!(!svg.contains("column = batch"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ds["cgpa"].describe().drop("count").plot.bar()
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn describe_bar(&self, column: &str, estimator: &str) -> Figure {
@@ -434,17 +433,6 @@ impl Dataset {
     /// ds.missing(); // saves metadata/plots/Missing values.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// ds.isna().mean().mul(100).plot.bar(ylabel="null %")
-    /// plt.show()
-    /// ```
-    ///
     /// With most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -474,6 +462,17 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.select(&["id", "batch"]).missing().svg();
     /// assert!(svg.contains("no missing values"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ax = ds.isna().mean().mul(100).plot.barh()
+    /// ax.set_xlabel("null %")
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn missing(&self) -> Figure {
@@ -556,17 +555,6 @@ impl Dataset {
     /// ds.pie("batch"); // saves metadata/plots/Distribution batch.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// ds["batch"].value_counts().plot.pie(autopct="%.0f%%")
-    /// plt.show()
-    /// ```
-    ///
     /// With most options. B14 is not in `.order`, so it goes into "Other":
     /// ```
     /// # use rusmlai::prelude::*;
@@ -593,6 +581,16 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.pie("name").svg();
     /// assert!(svg.contains("Other  3  (27%)"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ds["batch"].value_counts().plot.pie(autopct="%.0f%%")
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn pie(&self, x: &str) -> Figure {

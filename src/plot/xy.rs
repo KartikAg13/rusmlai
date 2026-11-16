@@ -49,17 +49,6 @@ impl Dataset {
     /// ds.scatter("age", "cgpa", ""); // saves metadata/plots/Scatter age vs cgpa.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.scatterplot(data=ds, x="age", y="cgpa")
-    /// plt.show()
-    /// ```
-    ///
     /// Colored by `passed`, with 8 sampled dots and most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -92,6 +81,17 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.scatter("age", "cgpa", "").svg();
     /// assert_eq!(svg.matches("<circle").count(), 10);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.scatterplot(data=ds, x="age", y="cgpa")
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn scatter(&self, x: &str, y: &str, hue: &str) -> Figure {
@@ -155,17 +155,6 @@ impl Dataset {
     /// ds.regplot("age", "cgpa", ""); // saves metadata/plots/Regplot age vs cgpa.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.regplot(data=ds, x="age", y="cgpa")
-    /// plt.show()
-    /// ```
-    ///
     /// With most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -197,6 +186,17 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.regplot("age", "age", "").svg();
     /// assert!(svg.contains("Regplot: age vs age"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.regplot(data=ds, x="age", y="cgpa")
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn regplot(&self, x: &str, y: &str, hue: &str) -> Figure {
@@ -262,17 +262,6 @@ impl Dataset {
     /// ds.plot("age", "cgpa", ""); // saves metadata/plots/Line mean cgpa vs age.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.lineplot(data=ds, x="age", y="cgpa", errorbar=None)  # the mean cgpa at each age
-    /// plt.show()
-    /// ```
-    ///
     /// One line for passed and one for failed, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -303,6 +292,17 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.plot("age", "cgpa", "").svg();
     /// assert!(svg.contains("age = 19\ncgpa = 8.10"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.lineplot(data=ds, x="age", y="cgpa", errorbar=None)  # the mean cgpa at each age
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn plot(&self, x: &str, y: &str, hue: &str) -> Figure {
@@ -370,7 +370,14 @@ impl Dataset {
                 lines[j].push(point);
             }
         }
-        line_figure(x, y, hue, hue_labels, &lines, self.metadata.filepath.as_deref())
+        line_figure(
+            x,
+            y,
+            hue,
+            hue_labels,
+            &lines,
+            self.metadata.filepath.as_deref(),
+        )
     }
 }
 

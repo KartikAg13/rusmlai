@@ -19,8 +19,9 @@ use serde_json::Value;
 use crate::{
     dataset::{Dataset, split::Rng},
     error::{OrFatal, warn},
+    metadata::models::CachedRun,
     models::{
-        Model, ModelError, Regressor,
+        Model, ModelError, Regressor, bad_learned, check,
         design::{DesignMatrix, scores},
     },
     preprocess::one_of,
@@ -247,6 +248,9 @@ impl Default for Params {
     }
 }
 
+/// Predicts a number as a weighted sum of the features plus a constant, with the weights that
+/// fit the training rows best.
+///
 /// Least squares with an optional ElasticNet penalty: scikit-learn's `LinearRegression`,
 /// `Ridge`, `Lasso` and `ElasticNet` in one model. It minimizes
 ///
@@ -279,7 +283,6 @@ impl Default for Params {
 /// used), `solver` (the exact solve gives what every scikit-learn solver converges to).
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(
 ///     df!("x" => [1.0, 2.0, 3.0, 4.0], "y" => [3.0, 5.0, 7.0, 9.0]).unwrap(),
@@ -295,24 +298,9 @@ impl Default for Params {
 /// assert!((ridge.coef_[0] - 1.0).abs() < 1e-12); // pulled toward 0 from 2
 /// ```
 ///
-/// Python:
-///
-/// ```python
-/// import pandas as pd
-/// from sklearn.linear_model import LinearRegression, Ridge
-/// ds = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0], "y": [3.0, 5.0, 7.0, 9.0]})
-/// model = LinearRegression().fit(ds[["x"]], ds["y"])
-/// assert abs(model.coef_[0] - 2.0) < 1e-12 and abs(model.intercept_ - 1.0) < 1e-12
-/// assert abs(model.score(ds[["x"]], ds["y"]) - 1.0) < 1e-12
-///
-/// ridge = Ridge(alpha=5.0).fit(ds[["x"]], ds["y"])
-/// assert abs(ridge.coef_[0] - 1.0) < 1e-12
-/// ```
-///
 /// Lasso and ElasticNet:
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(
 ///     df!("x" => [1.0, 2.0, 3.0, 4.0], "noise" => [0.3, -0.1, 0.2, -0.4],
@@ -329,9 +317,16 @@ impl Default for Params {
 ///
 /// ```python
 /// import pandas as pd
-/// from sklearn.linear_model import Lasso
-/// ds = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0], "noise": [0.3, -0.1, 0.2, -0.4],
-///                    "y": [3.0, 5.0, 7.0, 9.0]})
+/// from sklearn.linear_model import Lasso, LinearRegression, Ridge
+/// ds = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0], "y": [3.0, 5.0, 7.0, 9.0]})
+/// model = LinearRegression().fit(ds[["x"]], ds["y"])
+/// assert abs(model.coef_[0] - 2.0) < 1e-12 and abs(model.intercept_ - 1.0) < 1e-12
+/// assert abs(model.score(ds[["x"]], ds["y"]) - 1.0) < 1e-12
+///
+/// ridge = Ridge(alpha=5.0).fit(ds[["x"]], ds["y"])  # rusmlai's .alpha(5.0 / 4.0) on 4 rows
+/// assert abs(ridge.coef_[0] - 1.0) < 1e-12
+///
+/// ds["noise"] = [0.3, -0.1, 0.2, -0.4]
 /// lasso = Lasso(alpha=0.5).fit(ds[["x", "noise"]], ds["y"])
 /// assert lasso.coef_[1] == 0.0
 /// assert lasso.n_iter_ > 0
@@ -361,7 +356,7 @@ pub struct LinearRegression {
     /// objective of the answer) when the exact solve ran. The journal draws it.
     pub loss_curve_: Option<Vec<f64>>,
     target: Option<String>,
-    run: Option<String>,
+    run: Option<CachedRun>,
 }
 
 /// The learned values, as the model cache stores them.
@@ -397,19 +392,6 @@ impl Default for LinearRegression {
     }
 }
 
-/// Panics at the caller's line with [`ModelError::InvalidSetting`] unless `ok`.
-#[track_caller]
-fn check(ok: bool, setting: &'static str, value: impl ToString, expected: &'static str) {
-    if !ok {
-        Err::<(), ModelError>(ModelError::InvalidSetting {
-            setting,
-            value: value.to_string(),
-            expected,
-        })
-        .or_fatal();
-    }
-}
-
 impl LinearRegression {
     /// Plain least squares with an intercept.
     pub fn new() -> Self {
@@ -423,6 +405,10 @@ impl LinearRegression {
     }
 
     /// The strength of the penalty, 0 (the default, no penalty) or more, on ElasticNet's scale.
+    ///
+    /// Not Ridge's `alpha`: `Ridge(alpha=a)` is `.alpha(a / rows)`, because Ridge scales its
+    /// penalty by the number of rows. On 1,000 rows, `.alpha(1.0)` is `Ridge(alpha=1000)`.
+    /// `Lasso(alpha=a)` and `ElasticNet(alpha=a)` are `.alpha(a)`.
     #[track_caller]
     pub fn alpha(mut self, alpha: f64) -> Self {
         check(
@@ -600,6 +586,13 @@ impl Model for LinearRegression {
 
     fn try_load(&mut self, learned: Value, target: &str) -> Result<(), ModelError> {
         let l: Learned = serde_json::from_value(learned)?;
+        if l.coef_.len() != l.feature_names_in_.len() {
+            return Err(bad_learned(format!(
+                "{} coefficients for {} features",
+                l.coef_.len(),
+                l.feature_names_in_.len()
+            )));
+        }
         self.n_features_in_ = l.feature_names_in_.len();
         (self.coef_, self.intercept_, self.feature_names_in_) =
             (l.coef_, l.intercept_, l.feature_names_in_);
@@ -610,15 +603,15 @@ impl Model for LinearRegression {
         Ok(())
     }
 
-    fn run(&self) -> Option<&str> {
-        self.run.as_deref()
+    fn run(&self) -> Option<&CachedRun> {
+        self.run.as_ref()
     }
 
     fn loss_curve(&self) -> Option<Vec<f64>> {
         self.loss_curve_.clone()
     }
 
-    fn set_run(&mut self, run: Option<String>) {
+    fn set_run(&mut self, run: Option<CachedRun>) {
         self.run = run;
     }
 }
@@ -844,7 +837,7 @@ mod tests {
             df!("x" => [Some(1.0), None], "y" => [1.0, 2.0]).unwrap(),
             "",
         );
-        assert!(fit(nulls).starts_with("feature 'x' has 1 nulls"));
+        assert!(fit(nulls).starts_with("feature 'x' has 1 null:"));
         let nan: Dataset =
             Dataset::new(df!("x" => [1.0, f64::NAN], "y" => [1.0, 2.0]).unwrap(), "");
         assert!(fit(nan).starts_with("column 'x' has NaN"));
@@ -868,8 +861,10 @@ mod tests {
                 "",
             )
         };
-        let lasso: LinearRegression =
-            fitted(LinearRegression::new().alpha(0.5).l1_ratio(1.0), &frame(-0.4));
+        let lasso: LinearRegression = fitted(
+            LinearRegression::new().alpha(0.5).l1_ratio(1.0),
+            &frame(-0.4),
+        );
         assert_eq!(lasso.coef_[1], 0.0);
         for bad in [f64::INFINITY, f64::NAN] {
             let error: String = lasso.try_predict(&frame(bad)).unwrap_err().to_string();
@@ -881,5 +876,19 @@ mod tests {
     #[should_panic(expected = "l1_ratio = 2 is not valid")]
     fn a_bad_setting_panics_at_the_setter() {
         let _ = LinearRegression::new().l1_ratio(2.0);
+    }
+
+    #[test]
+    fn a_cached_record_of_the_wrong_shape_is_refused_and_changes_nothing() {
+        let mut model: LinearRegression = LinearRegression::new();
+        let learned: Value = serde_json::json!({
+            "coef_": [1.0, 2.0, 3.0],
+            "intercept_": 0.0,
+            "feature_names_in_": ["a", "b"],
+            "n_iter_": null, "dual_gap_": null, "rank_": null, "singular_": null,
+        });
+        let err: String = model.try_load(learned, "y").unwrap_err().to_string();
+        assert!(err.contains("3 coefficients for 2 features"), "{err}");
+        assert!(model.coef_.is_empty());
     }
 }

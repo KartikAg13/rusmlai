@@ -102,10 +102,10 @@ pub enum SplitError {
 /// Python:
 ///
 /// ```python
-/// import pandas as pd
-/// ds = pd.read_csv("tests/fixtures/data/students.csv")
 /// import math
+/// import pandas as pd
 /// from sklearn.model_selection import train_test_split
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
 /// # The same sizes; the rows differ, because each library has its own random generator.
 /// train, test = train_test_split(ds, test_size=0.25, random_state=42)
 /// assert len(train) + len(test) == len(ds)

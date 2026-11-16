@@ -19,7 +19,7 @@ fn only_result(ds: &Dataset) -> (PlotSpec, PlotResult) {
 fn students() -> Dataset {
     let frame: DataFrame = try_read_csv("tests/fixtures/data/students.csv")
         .unwrap()
-        .dataframe;
+        .into_dataframe();
     Dataset::new(frame, "") // in memory: an empty plot cache and no files
 }
 
@@ -48,7 +48,7 @@ fn bar_values_are_the_group_aggregates() {
             _ => x().count(),
         };
         let expected: DataFrame = ds
-            .dataframe
+            .dataframe()
             .clone()
             .lazy()
             .group_by([col("batch")])
@@ -160,7 +160,7 @@ fn heatmap_counts_add_up_to_the_rows_and_corrplot_matches_polars() {
     assert_eq!(x_labels, ["id", "age", "cgpa"]);
     // pandas: df[["age", "cgpa"]].corr() drops the rows where either is null.
     let both: DataFrame = ds
-        .dataframe
+        .dataframe()
         .clone()
         .lazy()
         .select([col("age").cast(DataType::Float64), col("cgpa")])

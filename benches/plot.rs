@@ -60,12 +60,12 @@ fn charts(c: &mut Criterion) {
     let df: DataFrame = common::load(&common::source_csv());
     // In memory: no cache files, so nothing here touches the fixture's `metadata/` folder.
     let meta: Metadata = Metadata::new(&df, "");
-    let fresh = || Dataset {
-        dataframe: df.clone(),
-        metadata: Metadata {
+    let fresh = || {
+        let metadata: Metadata = Metadata {
             plot_cache: PlotCache::default(),
             ..meta.clone()
-        },
+        };
+        Dataset::from_parts(df.clone(), metadata)
     };
     let drawn: Dataset = fresh();
 

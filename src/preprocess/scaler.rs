@@ -64,11 +64,10 @@ fn nonzero(scale: f64) -> f64 {
 /// `with_mean(false)` skips the centering and `with_std(false)` the scaling.
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("x" => [1.0, 2.0, 3.0]).unwrap(), "");
 /// let out = StandardScaler::new().fit_transform(&ds);
-/// let x: Vec<f64> = out.dataframe.column("x").unwrap().f64().unwrap().into_no_null_iter().collect();
+/// let x: Vec<f64> = out.to_list("x");
 /// let scale = (2.0f64 / 3.0).sqrt();
 /// assert_eq!(x, [-1.0 / scale, 0.0, 1.0 / scale]);
 /// ```
@@ -149,11 +148,10 @@ impl Transform for StandardScaler {
 /// `clip(true)` keeps values of new data that fall outside the range at its ends.
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("x" => [2.0, 4.0, 6.0]).unwrap(), "");
 /// let out = MinMaxScaler::new().feature_range(-1.0, 1.0).fit_transform(&ds);
-/// let x: Vec<f64> = out.dataframe.column("x").unwrap().f64().unwrap().into_no_null_iter().collect();
+/// let x: Vec<f64> = out.to_list("x");
 /// assert_eq!(x, [-1.0, 0.0, 1.0]);
 /// ```
 ///
@@ -248,11 +246,10 @@ impl Transform for MinMaxScaler {
 /// shift the data, so zeros stay zero.
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("x" => [-4.0, 0.0, 2.0]).unwrap(), "");
 /// let out = MaxAbsScaler::new().fit_transform(&ds);
-/// let x: Vec<f64> = out.dataframe.column("x").unwrap().f64().unwrap().into_no_null_iter().collect();
+/// let x: Vec<f64> = out.to_list("x");
 /// assert_eq!(x, [-1.0, 0.0, 0.5]);
 /// ```
 ///
@@ -307,11 +304,10 @@ impl Transform for MaxAbsScaler {
 ///   distribution, so normally distributed data ends with a variance of 1.
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("x" => [1.0, 2.0, 3.0, 4.0, 100.0]).unwrap(), "");
 /// let out = RobustScaler::new().fit_transform(&ds);
-/// let x: Vec<f64> = out.dataframe.column("x").unwrap().f64().unwrap().into_no_null_iter().collect();
+/// let x: Vec<f64> = out.to_list("x");
 /// assert_eq!(x, [-1.0, -0.5, 0.0, 0.5, 48.5]);
 /// ```
 ///

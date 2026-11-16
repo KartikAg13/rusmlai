@@ -16,7 +16,7 @@ use indexmap::IndexMap;
 use polars::prelude::{Column, DataType};
 use polars_core::runtime::THREAD_POOL;
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -25,7 +25,7 @@ use crate::{
     metadata::{
         constants::MODELS_CACHE,
         journal,
-        utils::{cache_path, print_saved},
+        utils::{cache_path, no_symlink, print_saved},
     },
     models::{Model, ModelError},
 };
@@ -50,9 +50,8 @@ pub struct FitRecord {
     /// What it learned (`coef_`, `intercept_`, ...).
     pub learned: Value,
     /// The training loss per round, for models that train in rounds.
+    #[serde(deserialize_with = "nan_curve")]
     pub loss_curve: Option<Vec<f64>>,
-    /// The validation loss per round, for models that hold rows out.
-    pub validation_loss_curve: Option<Vec<f64>>,
     /// How long the training took.
     pub fit_seconds: f64,
     /// When, in seconds since 1970.
@@ -65,6 +64,7 @@ pub struct ScoreRecord {
     /// The [`FitRecord::id`] of the model.
     pub id: String,
     /// Every metric, by scikit-learn name: `r2`, `mse`, `rmse`, `mae`.
+    #[serde(deserialize_with = "nan_metrics")]
     pub metrics: IndexMap<String, f64>,
     /// Rows scored.
     pub rows: usize,
@@ -72,6 +72,22 @@ pub struct ScoreRecord {
     pub data: String,
     /// When, in seconds since 1970.
     pub time: u64,
+}
+
+/// A curve read back with `null` as NaN: serde_json writes NaN and ±inf as `null`, and a line
+/// that doesn't parse would drop the whole run.
+fn nan_curve<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<f64>>, D::Error> {
+    let curve: Option<Vec<Option<f64>>> = Option::deserialize(d)?;
+    Ok(curve.map(|c| c.into_iter().map(|v| v.unwrap_or(f64::NAN)).collect()))
+}
+
+/// Metrics read back with `null` as NaN, like [`nan_curve`].
+fn nan_metrics<'de, D: Deserializer<'de>>(d: D) -> Result<IndexMap<String, f64>, D::Error> {
+    let metrics: IndexMap<String, Option<f64>> = IndexMap::deserialize(d)?;
+    Ok(metrics
+        .into_iter()
+        .map(|(k, v)| (k, v.unwrap_or(f64::NAN)))
+        .collect())
 }
 
 /// One line of the cache file.
@@ -92,9 +108,9 @@ pub enum Entry {
 /// let ds = read_csv("tests/fixtures/data/students.csv");
 /// let cache = ModelCache::of(&ds).unwrap();
 /// assert_eq!(cache.path, Path::new("tests/fixtures/data/metadata/students.models.jsonl"));
-/// assert!(ModelCache::of(&Dataset::new(ds.dataframe.clone(), "")).is_none());
+/// assert!(ModelCache::of(&Dataset::new(ds.dataframe().clone(), "")).is_none());
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ModelCache {
     /// `{csv dir}/metadata/{stem}.models.jsonl`.
     pub path: PathBuf,
@@ -102,9 +118,22 @@ pub struct ModelCache {
     pub csv: PathBuf,
 }
 
+/// Where a fitted model's record is: its id and the cache that holds it, so a score on rows
+/// from another CSV (a separate validation file) still goes next to the fit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CachedRun {
+    /// The [`FitRecord::id`].
+    pub id: String,
+    /// The cache of the CSV the model trained on.
+    pub cache: ModelCache,
+}
+
 impl ModelCache {
     /// The cache of the CSV that `dataset` came from; `None` for a dataset made in memory.
     pub fn of(dataset: &Dataset) -> Option<Self> {
+        if !crate::metadata::cache_on() {
+            return None;
+        }
         let csv: &Path = Path::new(dataset.metadata.filepath.as_deref()?);
         (!csv.as_os_str().is_empty()).then(|| Self {
             path: cache_path(csv, MODELS_CACHE),
@@ -144,10 +173,7 @@ impl ModelCache {
             .map_err(io::Error::from)
             .and_then(|line| {
                 fs::create_dir_all(self.path.parent().unwrap_or(Path::new(".")))?;
-                let mut file = OpenOptions::new()
-                    .create(true)
-                    .read(true)
-                    .append(true)
+                let mut file = no_symlink(OpenOptions::new().create(true).read(true).append(true))
                     .open(&self.path)?;
                 // A line cut by a crash has no newline: start a fresh one, so this record is
                 // not glued to the broken one and lost with it.
@@ -261,12 +287,24 @@ pub(crate) fn data_hash(dataset: &Dataset) -> Result<String, ModelError> {
     Ok(format!("{hash:016x}"))
 }
 
-/// The key of a fit: the rusmlai version, the model, its settings, target, features and data.
-/// The version is in it so that a release with a fixed solver never loads an older answer.
-fn run_id(model: &str, params: &Value, target: &str, features: &[String], data: &str) -> String {
+/// The key of a fit: the rusmlai version, the model, its settings, the target and its dtype,
+/// the features, the data, and where a warm start begins. The version is in it so that a
+/// release with a fixed solver never loads an older answer. The data hash reads a bool, an
+/// integer and a float column alike, which is right for features but not for a classifier's
+/// labels, hence the target's dtype.
+fn run_id(
+    model: &str,
+    params: &Value,
+    target: (&str, &DataType),
+    features: &[String],
+    data: &str,
+    start: &str,
+) -> String {
     let key: String = format!(
-        "{}\0{model}\0{params}\0{target}\0{}\0{data}",
+        "{}\0{model}\0{params}\0{}\0{}\0{}\0{data}\0{start}",
         env!("CARGO_PKG_VERSION"),
+        target.0,
+        target.1,
         features.join("\0")
     );
     let hash: u64 = key.bytes().fold(0, |h, b| mix(h, u64::from(b)));
@@ -291,12 +329,20 @@ pub(crate) fn fit<R: Model + ?Sized>(
         .collect();
     let data: String = data_hash(dataset)?;
     let (name, params) = (model.name(), model.params());
-    let id: String = run_id(name, &params, target, &features, &data);
+    let dtype: DataType = dataset.column(target)?.dtype().clone();
+    // A warm start begins at what the model holds now, so the same settings can give another
+    // answer: what it holds is part of the key, and a second warm fit trains on.
+    let start: String = if params.get("warm_start") == Some(&Value::Bool(true)) {
+        model.learned().to_string()
+    } else {
+        String::new()
+    };
+    let id: String = run_id(name, &params, (target, &dtype), &features, &data, &start);
     if let Some(record) = cache.find(&id)
         && model.try_load(record.learned, target).is_ok()
     {
         println!("[rusmlai] {name} loaded from {}", cache.path.display());
-        model.set_run(Some(id));
+        model.set_run(Some(CachedRun { id, cache }));
         return Ok(());
     }
     let start: Instant = Instant::now();
@@ -312,11 +358,10 @@ pub(crate) fn fit<R: Model + ?Sized>(
         data,
         learned: model.learned(),
         loss_curve: model.loss_curve(),
-        validation_loss_curve: model.validation_loss_curve(),
         fit_seconds,
         time: now(),
     }));
-    model.set_run(Some(id));
+    model.set_run(Some(CachedRun { id, cache }));
     Ok(())
 }
 
@@ -383,22 +428,27 @@ pub(crate) fn load_run<R: Model + ?Sized>(
     }
     model.try_set_params(record.params)?;
     model.try_load(record.learned, &record.target)?;
-    model.set_run(Some(record.id));
+    let cache: ModelCache = ModelCache::of(dataset).ok_or(ModelError::NoCache)?;
+    model.set_run(Some(CachedRun {
+        id: record.id,
+        cache,
+    }));
     Ok(())
 }
 
-/// Records a score of a cached fit; does nothing for a model or dataset without a cache.
+/// Records a score of a cached fit in the cache that holds the fit, whatever CSV (or none) the
+/// scored rows came from; does nothing for a model fitted without a cache.
 pub(crate) fn score<R: Model + ?Sized>(
     model: &R,
     dataset: &Dataset,
     metrics: IndexMap<String, f64>,
 ) {
-    let (Some(cache), Some(id)) = (ModelCache::of(dataset), model.run()) else {
+    let Some(run) = model.run() else {
         return;
     };
     match data_hash(dataset) {
-        Ok(data) => cache.append(&Entry::Score(ScoreRecord {
-            id: id.into(),
+        Ok(data) => run.cache.append(&Entry::Score(ScoreRecord {
+            id: run.id.clone(),
             metrics,
             rows: dataset.height(),
             data,
@@ -412,14 +462,14 @@ pub(crate) fn score<R: Model + ?Sized>(
 mod tests {
     use std::cell::Cell;
 
-    use polars::df;
+    use polars::{df, prelude::IntoLazy};
     use serde_json::json;
 
     use super::*;
     use crate::{
         dataset::read_csv,
         models::{Classifier, LinearRegression, LogisticRegression, Regressor},
-        pipeline::{ModelStacker, Pipeline},
+        pipeline::Pipeline,
         preprocess::{ColumnTransformer, StandardScaler},
         steps,
     };
@@ -443,7 +493,7 @@ mod tests {
         trained: Cell<u32>,
         setting: u32,
         learned: f64,
-        run: Option<String>,
+        run: Option<CachedRun>,
     }
 
     impl Regressor for Counting {
@@ -472,10 +522,10 @@ mod tests {
             self.setting = params["setting"].as_u64().unwrap_or_default() as u32;
             Ok(())
         }
-        fn run(&self) -> Option<&str> {
-            self.run.as_deref()
+        fn run(&self) -> Option<&CachedRun> {
+            self.run.as_ref()
         }
-        fn set_run(&mut self, run: Option<String>) {
+        fn set_run(&mut self, run: Option<CachedRun>) {
             self.run = run;
         }
     }
@@ -643,15 +693,131 @@ mod tests {
         let fit = || {
             let prep: ColumnTransformer =
                 ColumnTransformer::new().add("num", &[], steps![StandardScaler::new()]);
-            let mut pipe = Pipeline::new(prep, ModelStacker::new(LinearRegression::new()));
+            let mut pipe = Pipeline::new(prep, LinearRegression::new());
             pipe.fit(&ds, "cgpa");
             pipe
         };
         let (first, second) = (fit(), fit());
         let fits: usize = fits(ModelCache::of(&ds).unwrap().entries()).len();
         assert_eq!(fits, 1, "the second pipeline loads the first one's model");
-        assert_eq!(second.model.model.coef_, first.model.model.coef_);
+        assert_eq!(second.model.coef_, first.model.coef_);
         assert_eq!(second.run(), first.run());
         assert!(second.run().is_some());
+    }
+
+    #[test]
+    fn a_pipeline_loads_a_run_only_on_the_rows_it_trained_on() {
+        let ds: Dataset = read_csv(csv("pipeline_rows"));
+        let (train, _) = crate::dataset::split::train_test_split(&ds, 0.5, 42, "");
+        let pipeline = || {
+            let prep: ColumnTransformer =
+                ColumnTransformer::new().add("num", &[], steps![StandardScaler::new()]);
+            Pipeline::new(prep, LinearRegression::new())
+        };
+        let mut trained = pipeline();
+        trained.fit(&train, "cgpa");
+        // All rows would refit the scaler on other means than the weights expect.
+        let err: String = pipeline().try_load_run(&ds, "r01").unwrap_err().to_string();
+        assert!(
+            err.contains("trained on other rows (3 rows; this dataset has 6)"),
+            "{err}"
+        );
+        let mut back = pipeline();
+        back.load_run(&train, "r01");
+        assert_eq!(back.predict(&ds), trained.predict(&ds));
+    }
+
+    #[test]
+    fn a_warm_start_trains_on_and_the_target_type_is_part_of_the_key() {
+        let ds: Dataset = read_csv(csv("warm"));
+        // Two rounds at a time: the second warm fit starts where the first stopped.
+        let lasso = || {
+            LinearRegression::new()
+                .alpha(0.01)
+                .l1_ratio(1.0)
+                .tol(0.0)
+                .max_iter(2)
+                .warm_start(true)
+        };
+        let cache: ModelCache = ModelCache::of(&ds).unwrap();
+        let mut warm: LinearRegression = lasso();
+        warm.fit(&ds, "cgpa");
+        let first: Vec<f64> = warm.coef_.clone();
+        warm.fit(&ds, "cgpa");
+        assert_eq!(
+            fits(cache.entries()).len(),
+            2,
+            "the second warm fit trained on"
+        );
+        let mut cold: LinearRegression = lasso();
+        cold.fit(&ds, "cgpa");
+        assert_eq!(
+            cold.coef_, first,
+            "a fresh model starts where the first fit did: a hit"
+        );
+        assert_eq!(fits(cache.entries()).len(), 2);
+
+        // `age` as integers and as floats hashes the same; its dtype still tells them apart.
+        let floats: Dataset = Dataset {
+            dataframe: ds
+                .dataframe
+                .clone()
+                .lazy()
+                .with_column(crate::utils::col("age").cast(DataType::Float64))
+                .collect()
+                .unwrap(),
+            metadata: ds.metadata.clone(),
+        };
+        assert_eq!(data_hash(&floats).unwrap(), data_hash(&ds).unwrap());
+        let mut model: Counting = Counting::default();
+        model.fit(&ds, "age");
+        model.fit(&floats, "age");
+        assert_eq!(model.trained.get(), 2);
+    }
+
+    #[test]
+    fn a_score_on_another_csv_goes_to_the_fit_s_cache() {
+        let train_csv: PathBuf = csv("two_files");
+        let valid_csv: PathBuf = train_csv.with_file_name("valid.csv");
+        fs::copy(&train_csv, &valid_csv).unwrap();
+        let (train, valid) = (read_csv(&train_csv), read_csv(&valid_csv));
+        let mut model: LinearRegression = LinearRegression::new();
+        model.fit(&train, "cgpa");
+        model.score(&valid, "cgpa");
+        let entries: Vec<Entry> = ModelCache::of(&train).unwrap().entries();
+        assert!(
+            matches!(entries.last(), Some(Entry::Score(_))),
+            "{entries:?}"
+        );
+        assert!(!ModelCache::of(&valid).unwrap().path.exists());
+    }
+
+    #[test]
+    fn non_finite_numbers_read_back_as_nan() {
+        // serde_json writes NaN and ±inf as null; such a line must still be a record.
+        let score: &str = r#"{"kind":"score","id":"x","metrics":{"r2":null,"mse":1.0},"rows":1,"data":"d","time":0}"#;
+        let Ok(Entry::Score(s)) = serde_json::from_str::<Entry>(score) else {
+            panic!("the line didn't parse")
+        };
+        assert!(s.metrics["r2"].is_nan() && s.metrics["mse"] == 1.0);
+        let fit: Entry = Entry::Fit(FitRecord {
+            id: "x".into(),
+            model: "DummyRegressor".into(),
+            params: json!({}),
+            target: "y".into(),
+            features: Vec::new(),
+            rows: 1,
+            data: "d".into(),
+            learned: json!({}),
+            loss_curve: Some(vec![f64::NAN, 1.0]),
+            fit_seconds: 0.0,
+            time: 0,
+        });
+        let line: String = serde_json::to_string(&fit).unwrap();
+        let Ok(Entry::Fit(back)) = serde_json::from_str::<Entry>(&line) else {
+            panic!("{line}")
+        };
+        let curve: Vec<f64> = back.loss_curve.unwrap();
+        assert!(curve[0].is_nan() && curve[1] == 1.0);
     }
 }

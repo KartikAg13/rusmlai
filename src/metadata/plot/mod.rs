@@ -19,13 +19,3 @@ pub struct PlotCache {
     /// in memory must never write its charts into a CSV's cache.
     pub file: Option<PathBuf>,
 }
-
-impl PlotCache {
-    /// Wraps an existing map, with no file.
-    pub fn new(entries: Arc<RwLock<IndexMap<PlotSpec, PlotResult>>>) -> Self {
-        Self {
-            entries,
-            file: None,
-        }
-    }
-}

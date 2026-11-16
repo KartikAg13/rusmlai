@@ -5,7 +5,7 @@
 use std::{fmt::Debug, sync::Arc};
 
 use indexmap::IndexMap;
-use polars::prelude::{DataFrame, Expr, IntoLazy};
+use polars::prelude::{DataFrame, DataType, Expr, IntoLazy};
 
 use crate::utils::col;
 use crate::{
@@ -138,24 +138,40 @@ pub(crate) fn apply(parent: &Dataset, outputs: &Exprs) -> Result<Dataset, Prepro
         .collect();
     let dataframe: DataFrame = match parent.dataframe.clone().lazy().select(selected).collect() {
         Ok(dataframe) => dataframe,
-        // `replace_strict` (the encoders) names neither the column nor the option, so find the
-        // output that fails. This runs only on the error path.
+        // `replace_strict` (the encoders) names neither the column, the value nor the option,
+        // so find the output that fails, its input column, and the first value that fails it.
+        // This runs only on the error path.
         Err(error) if error.to_string().contains("replace_strict") => {
-            let column: String = outputs
-                .iter()
-                .find(|(name, expr)| {
-                    let one: Expr = (*expr).clone().alias(name.as_str());
-                    parent
-                        .dataframe
-                        .clone()
-                        .lazy()
-                        .select([one])
-                        .collect()
-                        .is_err()
+            let fails = |frame: &DataFrame, expr: &Expr| {
+                frame
+                    .clone()
+                    .lazy()
+                    .select([expr.clone()])
+                    .collect()
+                    .is_err()
+            };
+            let Some(expr) = outputs.values().find(|expr| fails(&parent.dataframe, expr)) else {
+                return Err(error.into());
+            };
+            let column: String = expr
+                .into_iter()
+                .find_map(|e| match e {
+                    Expr::Column(name) => Some(name.to_string()),
+                    _ => None,
                 })
-                .map(|(name, _)| name.clone())
                 .unwrap_or_default();
-            return Err(PreprocessError::UnknownAtTransform { column });
+            let distinct: DataFrame = parent
+                .dataframe
+                .clone()
+                .lazy()
+                .select([col(column.as_str()).unique_stable()])
+                .collect()?;
+            let category: Option<String> = (0..distinct.height().min(10_000)).find_map(|i| {
+                let one: DataFrame = distinct.slice(i as i64, 1);
+                let text = one.columns()[0].cast(&DataType::String).ok()?;
+                fails(&one, expr).then(|| text.str().ok()?.get(0).map(str::to_string))?
+            });
+            return Err(PreprocessError::UnknownAtTransform { column, category });
         }
         Err(error) => return Err(error.into()),
     };

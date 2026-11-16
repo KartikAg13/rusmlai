@@ -25,7 +25,10 @@ use crate::{
         },
         error::MetadataError,
         plot::PlotCache,
-        utils::{append_jsonl, cache_path, file_fingerprint, print_saved, read_jsonl, write_jsonl},
+        utils::{
+            append_jsonl, cache_path, file_fingerprint, print_saved, read_jsonl, write_cache,
+            write_jsonl,
+        },
     },
     plot::{result::PlotResult, spec::PlotSpec},
 };
@@ -38,6 +41,46 @@ pub mod models;
 pub mod plot;
 pub mod utils;
 
+/// The setting of [`set_cache`]: `"off"` turns the cache off. A shell can set it too.
+const CACHE_VAR: &str = "RUSMLAI_CACHE";
+
+/// Turns the files next to the CSV off (`false`) or back on (`true`, the default).
+///
+/// The cache files in `{csv dir}/metadata/` are trusted like code: a stats file sets what a
+/// scaler or imputer learns, and a model file gives `fit` its weights without training. Only the
+/// CSV's size and modification time are checked, so turn the cache off for a data folder that
+/// came from someone else (a zip, a shared drive, a repository) with its `metadata/` folder.
+///
+/// With the cache off, rusmlai reads and writes nothing in `metadata/`: `read_csv` computes the
+/// stats every time, charts are not cached, `fit` always trains, and there is no journal. In a
+/// program an unsaved chart is no longer auto-saved: `.save(path)` writes it, and `.show()`
+/// opens it from the system's temporary folder. `RUSMLAI_CACHE=off` in the shell does the same.
+///
+/// ```standalone_crate
+/// use rusmlai::prelude::*;
+/// # let dir = std::env::temp_dir().join("rusmlai-set-cache-doc");
+/// # let _ = std::fs::remove_dir_all(&dir);
+/// # std::fs::create_dir_all(&dir).unwrap();
+/// # std::fs::copy("tests/fixtures/data/students.csv", dir.join("students.csv")).unwrap();
+/// set_cache(false);
+/// let ds = read_csv(dir.join("students.csv"));
+/// ds.countplot("batch", ""); // drawn, but not saved
+/// let numbers = SimpleImputer::new().fit_transform(&ds.select(&["age", "cgpa"]));
+/// LinearRegression::new().fit(&numbers, "cgpa"); // trains, records nothing
+/// assert!(!dir.join("metadata").exists());
+/// ```
+///
+/// Python reads nothing next to the data, so it has no such switch.
+pub fn set_cache(on: bool) {
+    crate::utils::set_setting(CACHE_VAR, if on { "on" } else { "off" });
+}
+
+/// `false` after `set_cache(false)`, or with `RUSMLAI_CACHE` set to `off`, `0` or `false`.
+pub(crate) fn cache_on() -> bool {
+    crate::utils::setting(CACHE_VAR)
+        .is_none_or(|v| !["off", "0", "false"].contains(&v.to_ascii_lowercase().as_str()))
+}
+
 /// Every cache of one [`Dataset`](crate::dataset::Dataset): the column stats and the chart numbers.
 ///
 /// `read_csv` builds it with [`Metadata::load`]; you reach it as `ds.metadata`.
@@ -46,7 +89,7 @@ pub mod utils;
 /// use rusmlai::prelude::*;
 /// let ds = read_csv("tests/fixtures/data/students.csv");
 /// assert_eq!(ds.metadata.width, 6);
-/// assert_eq!(ds.metadata.height, ds.dataframe.height());
+/// assert_eq!(ds.metadata.height, ds.dataframe().height());
 /// ```
 ///
 /// `select` keeps the stats it needs and shares them, without a copy:
@@ -64,7 +107,6 @@ pub mod utils;
 /// A dataset made in memory has no file, so it never reads or writes a cache:
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("x" => [1, 2, 3]).unwrap(), "");
 /// assert_eq!(ds.metadata.dataset_cache.columns.len(), 1);
@@ -145,6 +187,9 @@ impl Metadata {
 
     /// [`Metadata::load`] that returns the error.
     pub fn try_load(dataframe: &DataFrame, path: &Path) -> Result<Self, MetadataError> {
+        if !cache_on() {
+            return Self::try_new(dataframe, path);
+        }
         let fingerprint: (u64, u64) = file_fingerprint(path).unwrap_or_default();
         let columns_path: PathBuf = cache_path(path, DATASET_CACHE);
         let plots_path: PathBuf = cache_path(path, PLOTS_CACHE);
@@ -180,10 +225,7 @@ impl Metadata {
                 };
                 let written: io::Result<()> = serde_json::to_vec_pretty(&dto)
                     .map_err(io::Error::from)
-                    .and_then(|json| {
-                        fs::create_dir_all(columns_path.parent().unwrap())?;
-                        fs::write(&columns_path, json)
-                    });
+                    .and_then(|json| write_cache(&columns_path, &json));
                 match written {
                     Ok(()) => print_saved(&columns_path),
                     Err(e) => warn(format_args!(

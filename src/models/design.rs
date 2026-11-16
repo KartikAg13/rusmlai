@@ -227,10 +227,7 @@ pub(crate) fn scores(
 }
 
 /// [`prepared`] for every name, one column per task on the Polars pool.
-fn prepared_all(
-    dataset: &Dataset,
-    names: &[String],
-) -> Result<Vec<(Series, f64)>, ModelError> {
+fn prepared_all(dataset: &Dataset, names: &[String]) -> Result<Vec<(Series, f64)>, ModelError> {
     THREAD_POOL.install(|| {
         names
             .par_iter()

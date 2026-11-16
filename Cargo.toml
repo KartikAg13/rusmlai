@@ -2,6 +2,14 @@
 name = "rusmlai"
 version = "0.9.0"
 edition = "2024"
+# The highest of the locked dependencies (sysinfo, through Polars).
+rust-version = "1.95"
+description = "Tabular machine learning with pandas, scikit-learn and seaborn names, on Polars"
+license = "Apache-2.0"
+repository = "https://github.com/KartikAg13/rusmlai"
+readme = "README.md"
+keywords = ["machine-learning", "dataframe", "polars", "scikit-learn", "plotting"]
+categories = ["science", "visualization"]
 
 [dependencies.comfy-table]
 version = "8.0"
@@ -35,7 +43,7 @@ features = ['serde']
 [dependencies.polars]
 version = "0.55.2"
 default-features = false
-features = ["csv", "fmt_no_tty", "lazy", "replace", "serde"]
+features = ["csv", "fmt_no_tty", "lazy", "parquet", "replace", "serde"]
 
 # SVG to pixels, for the PNG a chart saves (`display::png`).
 [dependencies.resvg]
@@ -64,6 +72,33 @@ default-features = false
 
 [dependencies.unicode-width]
 version = "0.2.2"
+
+# `read_excel`: .xlsx, .xls, .xlsb and .ods, in pure Rust. `dates` reads date cells as dates;
+# its chrono is already built for Polars.
+[dependencies.calamine]
+version = "0.38.0"
+features = ["dates"]
+
+# `read_sql` on a SQLite file, with SQLite compiled in: no system library needed.
+[dependencies.rusqlite]
+version = "0.43.0"
+default-features = false
+features = ["bundled"]
+
+# `read_sql` on a "postgresql://" URL, without TLS.
+[dependencies.postgres]
+version = "0.19.14"
+
+# `read_sql` on a "mysql://" URL, without TLS; zlib in pure Rust.
+[dependencies.mysql]
+version = "28.0.4"
+default-features = false
+features = ["minimal-rust"]
+
+# O_NOFOLLOW for the cache writes (`metadata::utils::no_symlink`); already built for Polars.
+[target.'cfg(unix)'.dependencies.libc]
+version = "0.2.191"
+default-features = false
 
 [dev-dependencies.criterion]
 version = "0.8.2"

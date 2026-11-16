@@ -1,117 +1,16 @@
-//! [`Pipeline`] and [`ModelStacker`]: preprocessing and a model, fitted and applied together.
+//! [`Pipeline`]: preprocessing and a model, fitted and applied together.
 
 use polars::prelude::Series;
 use serde_json::Value;
 
 use crate::{
     dataset::Dataset,
+    metadata::models::{self, CachedRun},
     models::{Classifier, Model, ModelError, Regressor},
     preprocess::{ColumnTransformer, Transform},
 };
 
-/// The model part of a [`Pipeline`]. In v1 it holds one model and passes every call to it.
-/// Later it stacks several models, like scikit-learn's `StackingRegressor`, with the same API.
-///
-/// ```
-/// use rusmlai::prelude::*;
-/// let model = ModelStacker::new(DummyRegressor::new());
-/// ```
-#[derive(Debug, Clone)]
-pub struct ModelStacker<M> {
-    /// The model.
-    pub model: M,
-}
-
-impl<M> ModelStacker<M> {
-    /// Wraps one model.
-    pub fn new(model: M) -> Self {
-        Self { model }
-    }
-}
-
-/// Every [`Model`] method that a wrapper passes to its model `$m` unchanged.
-macro_rules! pass_to_model {
-    ($m:ident) => {
-        fn params(&self) -> Value {
-            self.$m.params()
-        }
-
-        fn learned(&self) -> Value {
-            self.$m.learned()
-        }
-
-        fn try_load(&mut self, learned: Value, target: &str) -> Result<(), ModelError> {
-            self.$m.try_load(learned, target)
-        }
-
-        fn try_set_params(&mut self, params: Value) -> Result<(), ModelError> {
-            self.$m.try_set_params(params)
-        }
-
-        fn run(&self) -> Option<&str> {
-            self.$m.run()
-        }
-
-        fn set_run(&mut self, run: Option<String>) {
-            self.$m.set_run(run)
-        }
-
-        fn name(&self) -> &'static str {
-            self.$m.name()
-        }
-
-        fn loss_curve(&self) -> Option<Vec<f64>> {
-            self.$m.loss_curve()
-        }
-
-        fn validation_loss_curve(&self) -> Option<Vec<f64>> {
-            self.$m.validation_loss_curve()
-        }
-    };
-}
-
-impl<M: Model> Model for ModelStacker<M> {
-    fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
-        self.model.try_train(dataset, target)
-    }
-
-    /// The model's own fit, so the cache keys on the model, not on this wrapper.
-    fn try_fit(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
-        self.model.try_fit(dataset, target)
-    }
-
-    fn try_load_run(&mut self, dataset: &Dataset, run: &str) -> Result<(), ModelError> {
-        self.model.try_load_run(dataset, run)
-    }
-
-    pass_to_model!(model);
-}
-
-impl<M: Regressor> Regressor for ModelStacker<M> {
-    fn try_predict(&self, dataset: &Dataset) -> Result<Series, ModelError> {
-        self.model.try_predict(dataset)
-    }
-
-    fn try_score(&self, dataset: &Dataset, target: &str) -> Result<f64, ModelError> {
-        self.model.try_score(dataset, target)
-    }
-}
-
-impl<M: Classifier> Classifier for ModelStacker<M> {
-    fn try_predict(&self, dataset: &Dataset) -> Result<Series, ModelError> {
-        self.model.try_predict(dataset)
-    }
-
-    fn try_predict_proba(&self, dataset: &Dataset) -> Result<Dataset, ModelError> {
-        self.model.try_predict_proba(dataset)
-    }
-
-    fn try_score(&self, dataset: &Dataset, target: &str) -> Result<f64, ModelError> {
-        self.model.try_score(dataset, target)
-    }
-}
-
-/// A [`ColumnTransformer`] and a [`ModelStacker`], like scikit-learn's `Pipeline`.
+/// A [`ColumnTransformer`] and a model, like scikit-learn's `Pipeline`.
 ///
 /// - `fit(&train, target)` fits the preprocessing on every column but the target, then fits
 ///   the model on the features and the target.
@@ -119,11 +18,10 @@ impl<M: Classifier> Classifier for ModelStacker<M> {
 ///   in `test` is ignored, and so is any other column that `fit` didn't see.
 /// - `score(&test, target)` is R² for a regressor.
 ///
-/// A `Pipeline` is the same kind of model as its `ModelStacker`, so it is a [`Regressor`] or a
+/// A `Pipeline` is the same kind of model as its model, so it is a [`Regressor`] or a
 /// [`Classifier`] when the model is one.
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::{prelude::*, steps};
 /// let ds = Dataset::new(
 ///     df!(
@@ -138,7 +36,7 @@ impl<M: Classifier> Classifier for ModelStacker<M> {
 /// let prep = ColumnTransformer::new()
 ///     .add("num", &["hours"], steps![StandardScaler::new()])
 ///     .add("cat", &["course"], steps![OneHotEncoder::new()]);
-/// let mut pipe = Pipeline::new(prep, ModelStacker::new(DummyRegressor::new()));
+/// let mut pipe = Pipeline::new(prep, DummyRegressor::new());
 /// pipe.fit(&train, "score");
 /// assert_eq!(pipe.predict(&test).len(), 2);
 /// let r2: f64 = pipe.score(&test, "score"); // one number for every row scores at most 0
@@ -171,12 +69,12 @@ pub struct Pipeline<M> {
     /// The preprocessing, `named_steps["prep"]` in scikit-learn.
     pub prep: ColumnTransformer,
     /// The model, `named_steps["model"]` in scikit-learn.
-    pub model: ModelStacker<M>,
+    pub model: M,
 }
 
 impl<M> Pipeline<M> {
     /// Preprocessing, then the model.
-    pub fn new(prep: ColumnTransformer, model: ModelStacker<M>) -> Self {
+    pub fn new(prep: ColumnTransformer, model: M) -> Self {
         Self { prep, model }
     }
 }
@@ -212,14 +110,57 @@ impl<M: Model> Model for Pipeline<M> {
     }
 
     /// Fits the preprocessing on `dataset` (from the cached stats, so it costs little), then
-    /// loads the run's model, which trained on the preprocessed columns.
+    /// loads the run's model, which trained on the preprocessed columns. `dataset` must be the
+    /// rows the run trained on: on other rows the refit scaler or imputer would learn other
+    /// values than the weights expect, so that is a [`ModelError::RunMismatch`].
     fn try_load_run(&mut self, dataset: &Dataset, run: &str) -> Result<(), ModelError> {
-        let record = crate::metadata::models::find_run(dataset, run)?;
+        let record = models::find_run(dataset, run)?;
         let input: Dataset = self.fit_prep(dataset, &record.target)?;
+        if models::data_hash(&input)? != record.data {
+            return Err(ModelError::RunMismatch {
+                run: run.into(),
+                reason: format!(
+                    "its preprocessing trained on other rows ({} rows; this dataset has {}): \
+                     pass the dataset that run trained on, such as the train split",
+                    record.rows,
+                    dataset.height()
+                ),
+            });
+        }
         self.model.try_load_run(&input, run)
     }
 
-    pass_to_model!(model);
+    fn params(&self) -> Value {
+        self.model.params()
+    }
+
+    fn learned(&self) -> Value {
+        self.model.learned()
+    }
+
+    fn try_load(&mut self, learned: Value, target: &str) -> Result<(), ModelError> {
+        self.model.try_load(learned, target)
+    }
+
+    fn try_set_params(&mut self, params: Value) -> Result<(), ModelError> {
+        self.model.try_set_params(params)
+    }
+
+    fn run(&self) -> Option<&CachedRun> {
+        self.model.run()
+    }
+
+    fn set_run(&mut self, run: Option<CachedRun>) {
+        self.model.set_run(run)
+    }
+
+    fn name(&self) -> &'static str {
+        self.model.name()
+    }
+
+    fn loss_curve(&self) -> Option<Vec<f64>> {
+        self.model.loss_curve()
+    }
 }
 
 impl<M: Regressor> Regressor for Pipeline<M> {
@@ -268,7 +209,7 @@ mod tests {
         let test: Dataset = Dataset::new(df!("x" => [4.0, 5.0], "y" => [3.0, 7.0]).unwrap(), "");
         let prep: ColumnTransformer =
             ColumnTransformer::new().add("num", &[], steps![StandardScaler::new()]);
-        let mut pipe = Pipeline::new(prep, ModelStacker::new(DummyRegressor::new()));
+        let mut pipe = Pipeline::new(prep, DummyRegressor::new());
         pipe.fit(&train, "y");
         // `&[]` read `x` only, at fit and at predict, though `test` has `y` too.
         assert_eq!(pipe.prep.get_feature_names_out(), ["num__x"]);
@@ -291,7 +232,7 @@ mod tests {
         let ds: Dataset = Dataset::new(df!("x" => [1.0, 2.0], "y" => [1.0, 2.0]).unwrap(), "");
         let prep: ColumnTransformer =
             ColumnTransformer::new().add("num", &[], steps![StandardScaler::new()]);
-        let mut pipe = Pipeline::new(prep, ModelStacker::new(DummyRegressor::new()));
+        let mut pipe = Pipeline::new(prep, DummyRegressor::new());
         assert!(pipe.try_predict(&ds).is_err());
         assert!(matches!(
             pipe.try_fit(&ds, "nope"),

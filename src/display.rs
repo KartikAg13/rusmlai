@@ -18,7 +18,11 @@ use resvg::{
 
 use crate::{
     error::{OrFatal, warn},
-    metadata::{constants::CACHE_DIRECTORY, utils::print_saved},
+    metadata::{
+        cache_on,
+        constants::CACHE_DIRECTORY,
+        utils::{print_saved, write_cache},
+    },
     plot::{chart::Chart, style::Style},
 };
 
@@ -29,7 +33,7 @@ const MAX_PNG_PIXELS: f32 = 40e6;
 
 /// A chart. When it goes out of scope it shows itself in a notebook if nothing displayed it.
 /// In a program it saves itself to `metadata/plots/{title}.png` (next to the CSV) unless
-/// `.save` or `.svg` was called. A PNG opens as an image in any editor; an SVG opens as text.
+/// `.save` or `.svg` was called, or the cache is off ([`set_cache`](crate::prelude::set_cache)). A PNG opens as an image in any editor; an SVG opens as text.
 pub struct Figure {
     pub(crate) chart: Chart,
     pub(crate) style: Style,
@@ -53,9 +57,11 @@ impl Figure {
     }
 
     /// The chart as SVG, with its options on top of `set_theme` / `set_palette`.
-    /// Taking the text counts as handling the chart, so it is not auto-saved.
+    /// Taking the text counts as handling the chart, so it is not auto-saved, and in a notebook
+    /// it does not show itself either (the journal draws its charts this way on every fit).
     pub fn svg(&self) -> String {
         self.saved.set(true);
+        self.displayed.set(true);
         self.render()
     }
 
@@ -78,20 +84,6 @@ impl Figure {
     /// # assert!(dir.join("cgpa.png").is_file());
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// import os, tempfile
-    /// dir = tempfile.mkdtemp()
-    /// ax = sns.histplot(data=ds, x="cgpa", bins=10)
-    /// ax.figure.savefig(os.path.join(dir, "cgpa.png"))
-    /// assert os.path.isfile(os.path.join(dir, "cgpa.png"))
-    /// ```
-    ///
     /// Advanced: one SVG per column, in a loop:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -107,6 +99,27 @@ impl Figure {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// read_csv("tests/fixtures/data/students.csv").hist("cgpa", "", 10).save("cgpa.jpg"); // panics: name the file .png or .svg
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import os
+    /// import tempfile
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// dir = tempfile.mkdtemp()
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// ax = sns.histplot(data=ds, x="cgpa", bins=10)
+    /// ax.figure.savefig(os.path.join(dir, "cgpa.png"))
+    /// assert os.path.isfile(os.path.join(dir, "cgpa.png"))
+    ///
+    /// for column in ["age", "cgpa"]:
+    ///     fig, ax = plt.subplots()  # a new figure each time, or the charts draw on top of each other
+    ///     sns.histplot(data=ds, x=column, bins=10, ax=ax).set_title(column)
+    ///     fig.savefig(os.path.join(dir, f"{column}.svg"))
+    ///     plt.close(fig)  # matplotlib keeps every figure in memory until it is closed
     /// ```
     #[track_caller]
     pub fn save(&self, path: impl AsRef<Path>) {
@@ -133,6 +146,8 @@ impl Figure {
     /// ds.countplot("batch", "").show();
     /// ```
     ///
+    /// In a loop, prefer [`Figure::save`]: `show` opens one viewer window per chart.
+    ///
     /// Python:
     ///
     /// ```python
@@ -143,8 +158,6 @@ impl Figure {
     /// sns.countplot(data=ds, x="batch")
     /// plt.show()
     /// ```
-    ///
-    /// In a loop, prefer [`Figure::save`]: `show` opens one viewer window per chart.
     #[track_caller]
     pub fn show(&self) {
         if in_notebook() {
@@ -180,7 +193,7 @@ impl Figure {
         self.chart.render(&self.style.resolved())
     }
 
-    /// `metadata/plots/{title}.png` next to the CSV.
+    /// `metadata/plots/{title}.png` next to the CSV; in the temporary folder with the cache off.
     fn auto_path(&self) -> PathBuf {
         let name: String = self
             .chart
@@ -194,7 +207,12 @@ impl Figure {
             "" => self.chart.name,
             name => name,
         };
-        self.folder.join(format!("{name}.png"))
+        let folder: PathBuf = if cache_on() {
+            self.folder.clone()
+        } else {
+            std::env::temp_dir().join("rusmlai")
+        };
+        folder.join(format!("{name}.png"))
     }
 
     fn write(&self, path: &Path) -> Result<(), String> {
@@ -204,10 +222,15 @@ impl Figure {
             Some(ext) if ext.eq_ignore_ascii_case("png") => png(&self.render()).map_err(fail)?,
             _ => return Err(fail("name the file .png or .svg".to_string())),
         };
-        if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
-            fs::create_dir_all(dir).map_err(|e: io::Error| fail(e.to_string()))?;
-        }
-        fs::write(path, bytes).map_err(|e: io::Error| fail(e.to_string()))?;
+        let written: io::Result<()> = if path == self.auto_path() {
+            write_cache(path, &bytes)
+        } else {
+            path.parent()
+                .filter(|dir| !dir.as_os_str().is_empty())
+                .map_or(Ok(()), fs::create_dir_all)
+                .and_then(|()| fs::write(path, &bytes))
+        };
+        written.map_err(|e: io::Error| fail(e.to_string()))?;
         print_saved(path);
         Ok(())
     }
@@ -291,6 +314,7 @@ impl Drop for Figure {
         }
         if !in_notebook()
             && !self.saved.get()
+            && cache_on()
             && let Err(e) = self.write(&self.auto_path())
         {
             warn(e);
@@ -310,12 +334,6 @@ pub(crate) fn open_in_viewer(path: &Path) {
         "xdg-open"
     };
     let _ = Command::new(opener).arg(path).spawn();
-}
-
-impl fmt::Display for Figure {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "<Figure: {}>", self.chart.name)
-    }
 }
 
 /// A table: comfy-table text in a terminal, an HTML table in a notebook.

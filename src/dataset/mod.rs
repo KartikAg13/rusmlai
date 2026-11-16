@@ -7,6 +7,10 @@ use std::path::Path;
 use polars::{
     datatypes::DataType,
     frame::{DataFrame, column::Column},
+    io::{
+        SerReader,
+        csv::read::{CsvParseOptions, CsvReadOptions},
+    },
     lazy::{
         dsl::{DslPlan, Engine, Expr, len, lit, when},
         frame::{IntoLazy, LazyFrame},
@@ -15,7 +19,7 @@ use polars::{
 
 use crate::utils::col;
 use crate::{
-    dataset::{error::DatasetError, reader::Reader},
+    dataset::error::DatasetError,
     display::TableView,
     error::OrFatal,
     metadata::{
@@ -29,7 +33,7 @@ use crate::{
 };
 
 pub mod error;
-pub mod reader;
+pub mod read;
 pub mod split;
 
 /// Equal-width bins of a numeric column in `information_gain`.
@@ -37,20 +41,51 @@ const BINS: i64 = 256;
 
 /// A table plus its cached column stats. (pandas: `DataFrame`)
 ///
-/// `dataframe` is the Polars table. `metadata` holds the stats of every column and the plot
-/// cache. [`read_csv`] loads both, and reads the stats from `metadata/` next to the CSV when
-/// they are there. `select` and `drop` share the stats with the new `Dataset`, so they copy
-/// no numbers.
+/// [`Dataset::dataframe`] is the Polars table, read-only, so the cached stats always describe
+/// it. To change the rows, change a copy with Polars and make a new `Dataset` of it with
+/// [`Dataset::new`]. `metadata` holds the stats of every column and the plot cache.
+/// [`read_csv`] loads both, and reads the stats from `metadata/` next to the CSV when they are
+/// there. `select` and `drop` share the stats with the new `Dataset`, so they copy no numbers.
+/// `println!("{ds}")` prints the table like `print(df)` in pandas.
+///
+/// ```
+/// # use rusmlai::prelude::*;
+/// let ds = read_csv("tests/fixtures/data/students.csv");
+/// println!("{ds}"); // shape: (12, 6), then the first and last rows
+/// assert!(format!("{ds}").contains("Aarav Shah"));
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// print(ds)
+/// assert "Aarav Shah" in str(ds)
+/// ```
 pub struct Dataset {
-    pub dataframe: DataFrame,
+    pub(crate) dataframe: DataFrame,
     pub metadata: Metadata,
+}
+
+impl std::fmt::Display for Dataset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.dataframe, f)
+    }
+}
+
+impl std::fmt::Debug for Dataset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.dataframe, f)
+    }
 }
 
 impl Dataset {
     /// A `Dataset` from a Polars `DataFrame` you already have. (pandas: `pd.DataFrame(data)`)
     ///
-    /// The stats of every column are computed now. Nothing is read from or written to disk:
-    /// `path` is only the name that `metadata()` shows, and `""` is fine.
+    /// The stats of every column are computed now, and nothing is read from disk. `path` is
+    /// the CSV this data belongs to: `metadata()` shows it, charts auto-save in its folder, and
+    /// model fits use its model cache. `""` means none, so nothing is written either.
     ///
     /// # Panics
     ///
@@ -60,7 +95,6 @@ impl Dataset {
     ///
     /// Basic: a small table built in code:
     /// ```
-    /// use polars::df;
     /// use rusmlai::prelude::*;
     ///
     /// let frame = df!("x" => [1.0, 2.0, 3.0], "label" => ["a", "b", "a"]).unwrap();
@@ -68,17 +102,8 @@ impl Dataset {
     /// assert_eq!(ds.shape(), (3, 2));
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import pandas as pd
-    /// ds = pd.DataFrame({"x": [1.0, 2.0, 3.0], "label": ["a", "b", "a"]})
-    /// assert ds.shape == (3, 2)
-    /// ```
-    ///
     /// Advanced: the stats are ready at once:
     /// ```
-    /// # use polars::df;
     /// # use rusmlai::prelude::*;
     /// let frame = df!("x" => [1.0, 2.0, 3.0, 10.0]).unwrap();
     /// let ds = Dataset::new(frame, "");
@@ -89,11 +114,19 @@ impl Dataset {
     ///
     /// Edge case: a table with no rows gets NaN stats, not a panic:
     /// ```
-    /// # use polars::prelude::*;
+    /// # use rusmlai::polars::prelude::*;
     /// # use rusmlai::prelude::*;
     /// let frame = df!("x" => Vec::<f64>::new()).unwrap();
     /// let ds = Dataset::new(frame, "");
     /// assert!(ds.try_numeric_stats("x").unwrap().mean.is_nan());
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.DataFrame({"x": [1.0, 2.0, 3.0], "label": ["a", "b", "a"]})
+    /// assert ds.shape == (3, 2)
     /// ```
     #[track_caller]
     pub fn new(dataframe: DataFrame, path: impl AsRef<Path>) -> Self {
@@ -219,14 +252,6 @@ impl Dataset {
     /// # Ok::<(), DatasetError>(())
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import pandas as pd
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// assert ds["age"].isna().sum() == 1
-    /// ```
-    ///
     /// Advanced: branch on the dtype:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -244,6 +269,15 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// assert!(ds.try_column_info("Age").is_err());
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds["age"].isna().sum() == 1
+    /// assert ds.select_dtypes("number").columns.tolist() == ["id", "age", "cgpa"]
     /// ```
     pub fn try_column_info(&self, column_name: &str) -> Result<&ColumnInfo, DatasetError> {
         match self
@@ -284,15 +318,6 @@ impl Dataset {
     /// # Ok::<(), DatasetError>(())
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import pandas as pd
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// age = ds["age"]
-    /// assert (age.min(), age.median(), age.max()) == (19.0, 21.0, 24.0)
-    /// ```
-    ///
     /// Advanced: an interquartile-range outlier rule:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -310,6 +335,20 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let err = ds.try_numeric_stats("batch").unwrap_err();
     /// assert_eq!(err.to_string(), "column 'batch' is not numeric (found str)");
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// age = ds["age"]
+    /// assert (age.min(), age.median(), age.max()) == (19.0, 21.0, 24.0)
+    ///
+    /// cgpa = ds["cgpa"]
+    /// q25, q75 = cgpa.quantile([0.25, 0.75])
+    /// iqr = q75 - q25
+    /// assert q25 - 1.5 * iqr < cgpa.min() and cgpa.max() < q75 + 1.5 * iqr  # no outliers here
     /// ```
     pub fn try_numeric_stats(&self, column_name: &str) -> Result<&NumericStats, DatasetError> {
         let (info, stats): (&ColumnInfo, &ColumnStats) = self.try_stats(column_name)?;
@@ -345,14 +384,6 @@ impl Dataset {
     /// # Ok::<(), DatasetError>(())
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import pandas as pd
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// assert ds["passed"].value_counts().to_dict() == {True: 8, False: 4}
-    /// ```
-    ///
     /// Advanced: three batches of four rows: a tie, broken by name, and the largest entropy:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -371,6 +402,16 @@ impl Dataset {
     /// assert_eq!(name.unique_count, 11);
     /// assert!(name.categories.iter().any(|(n, _)| n == "Zoë Müller"));
     /// # Ok::<(), DatasetError>(())
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds["passed"].value_counts().to_dict() == {True: 8, False: 4}
+    /// assert ds["batch"].mode()[0] == "B13"  # pandas also breaks ties by name
+    /// assert ds["name"].nunique() == 11  # the null is left out, as in rusmlai
     /// ```
     pub fn try_categorical_stats(
         &self,
@@ -766,6 +807,103 @@ impl Dataset {
             .collect()
     }
 
+    /// The Polars table, to read or to copy for Polars operations that rusmlai doesn't have.
+    /// It is read-only, so the cached stats stay true; make a new `Dataset` of a changed copy.
+    ///
+    /// ```
+    /// use rusmlai::{polars::prelude::*, prelude::*};
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
+    /// let passed: DataFrame = ds.dataframe().clone().lazy().filter(col("passed")).collect().unwrap();
+    /// let ds = Dataset::new(passed, "tests/fixtures/data/students.csv");
+    /// assert_eq!(ds.height(), 8);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert len(ds[ds["passed"]]) == 8
+    /// ```
+    pub fn dataframe(&self) -> &DataFrame {
+        &self.dataframe
+    }
+
+    /// The Polars table, without the stats.
+    pub fn into_dataframe(self) -> DataFrame {
+        self.dataframe
+    }
+
+    /// A `Dataset` from a table and metadata computed before, for the benches, which time one
+    /// step without recomputing the stats. `metadata` must describe `dataframe`.
+    #[doc(hidden)]
+    pub fn from_parts(dataframe: DataFrame, metadata: Metadata) -> Self {
+        Self {
+            dataframe,
+            metadata,
+        }
+    }
+
+    /// [`Dataset::to_list`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// - [`DatasetError::ColumnNotFound`] for an unknown name.
+    /// - [`DatasetError::ColumnNotNumeric`] for a text column.
+    pub fn try_to_list(&self, column: &str) -> Result<Vec<f64>, DatasetError> {
+        let values: &Column = self.column(column)?;
+        if !(values.dtype().is_primitive_numeric() || values.dtype() == &DataType::Boolean) {
+            return Err(DatasetError::ColumnNotNumeric {
+                column: column.into(),
+                actual_dtype: values.dtype().to_string(),
+            });
+        }
+        let floats: Column = values.cast(&DataType::Float64)?;
+        Ok(floats
+            .f64()?
+            .iter()
+            .map(|v| v.unwrap_or(f64::NAN))
+            .collect())
+    }
+
+    /// The values of a number or true/false column as `f64`, in row order. A null becomes NaN,
+    /// and `true` / `false` become 1 / 0. (pandas: `df[col].to_list()`)
+    ///
+    /// # Panics
+    ///
+    /// For an unknown or text column. [`Dataset::try_to_list`] returns these as errors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
+    /// let cgpa: Vec<f64> = ds.to_list("cgpa");
+    /// assert_eq!(cgpa[..3], [8.1, 7.4, 6.2]);
+    /// assert!(cgpa[5].is_nan()); // the null
+    /// ```
+    ///
+    /// Edge case: a text column has no numbers:
+    /// ```should_panic
+    /// # use rusmlai::prelude::*;
+    /// read_csv("tests/fixtures/data/students.csv").to_list("batch"); // panics: column 'batch' is not numeric (found str)
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import math
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// cgpa = ds["cgpa"].to_list()
+    /// assert cgpa[:3] == [8.1, 7.4, 6.2]
+    /// assert math.isnan(cgpa[5])
+    /// ```
+    #[track_caller]
+    pub fn to_list(&self, column: &str) -> Vec<f64> {
+        self.try_to_list(column).or_fatal()
+    }
+
     /// A new `Dataset` with these columns, in this order. (pandas: `df[["a", "b"]]`)
     ///
     /// The stats and the plot cache are shared with `self`, so nothing is computed again.
@@ -783,14 +921,6 @@ impl Dataset {
     /// assert_eq!(ds.select(&["cgpa", "age"]).columns(), ["cgpa", "age"]);
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import pandas as pd
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// assert ds[["cgpa", "age"]].columns.tolist() == ["cgpa", "age"]
-    /// ```
-    ///
     /// Advanced: the stats are the same objects, not copies:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -804,6 +934,14 @@ impl Dataset {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// read_csv("tests/fixtures/data/students.csv").select(&["grade"]); // panics, listing the columns
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds[["cgpa", "age"]].columns.tolist() == ["cgpa", "age"]
     /// ```
     #[track_caller]
     pub fn select(&self, columns: &[&str]) -> Dataset {
@@ -828,14 +966,6 @@ impl Dataset {
     /// assert_eq!(ds.drop(&["id", "name"]).width(), 4);
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import pandas as pd
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// assert ds.drop(columns=["id", "name"]).shape[1] == 4
-    /// ```
-    ///
     /// Advanced: features and target, sklearn style:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -850,6 +980,17 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.drop(&["id", "name", "age", "cgpa", "batch", "passed"]);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// assert ds.drop(columns=["id", "name"]).shape[1] == 4
+    ///
+    /// X, y = ds.drop(columns=["id", "name", "passed"]), ds["passed"]  # y is a Series in pandas
+    /// assert (X.shape[1], X.shape[0]) == (3, 12)
     /// ```
     #[track_caller]
     pub fn drop(&self, columns: &[&str]) -> Dataset {
@@ -883,18 +1024,6 @@ impl Dataset {
     /// }
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import pandas as pd
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// from sklearn.metrics import mutual_info_score
-    /// # Text columns: the exact count, the number rusmlai gives. Numbers: rusmlai first cuts them
-    /// # into up to 256 bins; scikit-learn's mutual_info_classif estimates them with neighbors.
-    /// for column in ["batch"]:
-    ///     print(column, round(mutual_info_score(ds[column], ds["passed"]), 3))
-    /// ```
-    ///
     /// Advanced: an id column tops the list with the target's whole entropy, which is why
     /// ids should be dropped first:
     /// ```
@@ -910,6 +1039,23 @@ impl Dataset {
     /// ```should_panic
     /// # use rusmlai::prelude::*;
     /// read_csv("tests/fixtures/data/students.csv").information_gain("grade"); // panics: column 'grade' not found
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import pandas as pd
+    /// from sklearn.metrics import mutual_info_score
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// gains = {}
+    /// for column in ["age", "cgpa", "batch"]:
+    ///     rows = ds[[column, "passed"]].dropna()  # rusmlai leaves out each column's missing rows too
+    ///     x = rows[column]
+    ///     if x.dtype.kind in "if":
+    ///         x = pd.cut(x, 256)  # 256 equal bins, like rusmlai; mutual_info_classif would guess instead
+    ///     gains[column] = mutual_info_score(x, rows["passed"])
+    /// for column, gain in sorted(gains.items(), key=lambda g: -g[1]):
+    ///     print(f"{column}: {gain:.3f}")
     /// ```
     #[track_caller]
     pub fn information_gain(&self, target: &str) -> Vec<(String, f64)> {
@@ -956,6 +1102,10 @@ fn frame_view(frame: &DataFrame) -> TableView {
 /// as the CSV's size and modification time are unchanged. A stale or broken cache file is
 /// computed again, never an error. Each saved file prints `[rusmlai] saved <path>`.
 ///
+/// The cache is trusted like code, because only the size and time are checked. For a folder
+/// that came from someone else with its `metadata/`, call
+/// [`set_cache(false)`](crate::metadata::set_cache) first.
+///
 /// # Panics
 ///
 /// If the file doesn't exist or Polars cannot parse it. [`try_read_csv`] returns these as
@@ -971,14 +1121,6 @@ fn frame_view(frame: &DataFrame) -> TableView {
 /// assert_eq!(ds.shape(), (12, 6));
 /// ```
 ///
-/// Python:
-///
-/// ```python
-/// import pandas as pd
-/// ds = pd.read_csv("tests/fixtures/data/students.csv")
-/// assert ds.shape == (12, 6)
-/// ```
-///
 /// Advanced: the second read comes from the cache, with the same stats:
 /// ```
 /// # use rusmlai::prelude::*;
@@ -990,9 +1132,49 @@ fn frame_view(frame: &DataFrame) -> TableView {
 /// );
 /// ```
 ///
+/// Advanced: other options (a separator, some columns, no header row) are Polars' own: read
+/// the file through `rusmlai::polars` and make a `Dataset` of the table, under the file's path
+/// so charts and models still use its folder:
+/// ```
+/// use rusmlai::{polars::prelude::*, prelude::*};
+/// # let dir = std::env::temp_dir().join("rusmlai-read-options-doc");
+/// # std::fs::create_dir_all(&dir).unwrap();
+/// let path = dir.join("semi.csv");
+/// std::fs::write(&path, "a;b\n1;2\n").unwrap();
+/// let frame: DataFrame = CsvReadOptions::default()
+///     .with_parse_options(CsvParseOptions::default().with_separator(b';'))
+///     .try_into_reader_with_file_path(Some(path.clone()))?
+///     .finish()?;
+/// let ds = Dataset::new(frame, &path);
+/// assert_eq!(ds.columns(), ["a", "b"]);
+/// # Ok::<(), PolarsError>(())
+/// ```
+///
+/// A `.tsv` file is read with tabs (pandas: `read_csv(path, sep="\t")`):
+/// ```
+/// # use rusmlai::prelude::*;
+/// assert_eq!(read_csv("tests/fixtures/data/students.tsv").shape(), (12, 6));
+/// ```
+///
 /// Edge case: a missing file panics with the path and the working directory:
 /// ```should_panic
 /// rusmlai::prelude::read_csv("does/not/exist.csv"); // panics: file not found at 'does/not/exist.csv'
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import os
+/// import tempfile
+/// import pandas as pd
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// assert ds.shape == (12, 6)
+///
+/// path = os.path.join(tempfile.mkdtemp(), "semi.csv")
+/// with open(path, "w") as f:
+///     f.write("a;b\n1;2\n")
+/// assert pd.read_csv(path, sep=";").columns.tolist() == ["a", "b"]
+/// assert pd.read_csv("tests/fixtures/data/students.tsv", sep="\t").shape == (12, 6)
 /// ```
 #[track_caller]
 pub fn read_csv(path: impl AsRef<Path>) -> Dataset {
@@ -1036,9 +1218,37 @@ pub fn read_csv(path: impl AsRef<Path>) -> Dataset {
 /// assert_eq!(ds.try_column_info("temp")?.null_count, 2);
 /// # Ok::<(), DatasetError>(())
 /// ```
+/// `Ok` if `path` is a file, else [`DatasetError::FileNotFound`] with the working directory,
+/// because a relative path starts there.
+pub(crate) fn existing(path: &Path) -> Result<(), DatasetError> {
+    if path.is_file() {
+        return Ok(());
+    }
+    let cwd: String =
+        std::env::current_dir().map_or_else(|_| "unknown".to_string(), |p| p.display().to_string());
+    Err(DatasetError::FileNotFound {
+        path: path.display().to_string(),
+        cwd,
+    })
+}
+
 pub fn try_read_csv(path: impl AsRef<Path>) -> Result<Dataset, DatasetError> {
     let path: &Path = path.as_ref();
-    let dataframe: DataFrame = Reader::new(path).finish()?;
+    existing(path)?;
+    let tab: bool = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("tsv"));
+    // One chunk per column: Polars leaves one per read thread (129 for 630,000 rows), and a
+    // model would copy every column into one piece on every fit and predict.
+    let dataframe: DataFrame = CsvReadOptions::default()
+        .with_rechunk(true)
+        .with_parse_options(CsvParseOptions::default().with_separator(if tab {
+            b'\t'
+        } else {
+            b','
+        }))
+        .try_into_reader_with_file_path(Some(path.to_path_buf()))?
+        .finish()?;
     let metadata: Metadata = Metadata::try_load(&dataframe, path)?;
     Ok(Dataset {
         dataframe,

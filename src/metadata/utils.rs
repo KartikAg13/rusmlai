@@ -35,16 +35,28 @@ pub fn file_fingerprint(path: impl AsRef<Path>) -> io::Result<(u64, u64)> {
     Ok((meta.len(), mtime))
 }
 
-/// Where the cache file with `suffix` for `csv` lives: `{csv dir}/metadata/{stem}{suffix}`.
+/// Where the cache file with `suffix` for `csv` lives: `{csv dir}/metadata/{stem}{suffix}`. A
+/// file other than a CSV keeps its whole name (`train.parquet.json`), so `train.csv` and
+/// `train.parquet` in one folder never share a cache.
 ///
 /// ```
 /// use std::path::Path;
 /// use rusmlai::metadata::utils::cache_path;
 /// let path = cache_path(Path::new("data/train.csv"), ".json");
 /// assert_eq!(path, Path::new("data/metadata/train.json"));
+/// let other = cache_path(Path::new("data/train.parquet"), ".json");
+/// assert_eq!(other, Path::new("data/metadata/train.parquet.json"));
 /// ```
 pub fn cache_path(csv: &Path, suffix: &str) -> PathBuf {
-    let stem: Cow<str> = csv.file_stem().unwrap_or_default().to_string_lossy();
+    let is_csv: bool = csv
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("csv"));
+    let name = if is_csv {
+        csv.file_stem()
+    } else {
+        csv.file_name()
+    };
+    let stem: Cow<str> = name.unwrap_or_default().to_string_lossy();
     csv.with_file_name(CACHE_DIRECTORY)
         .join(format!("{stem}{suffix}"))
 }
@@ -64,18 +76,38 @@ pub fn read_jsonl<T: DeserializeOwned>(path: &Path, fingerprint: (u64, u64)) -> 
     )
 }
 
+/// `options` that refuse to open a symlink in place of the file (Unix): a cache next to a CSV
+/// in a shared folder like `/tmp` can then not be sent elsewhere by a link that someone else
+/// put there (`/tmp/metadata/train.json -> ~/.bashrc`). The write fails, which is a warning.
+// ponytail: checks the file only; a `metadata` folder that is itself a planted link still
+// moves the writes into the folder it points to. Open each folder with O_NOFOLLOW if needed.
+pub(crate) fn no_symlink(options: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(options, libc::O_NOFOLLOW);
+    options
+}
+
+/// Writes `bytes` to the cache file at `path`, creating its folder, through [`no_symlink`].
+pub(crate) fn write_cache(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
+    no_symlink(OpenOptions::new().write(true).create(true).truncate(true))
+        .open(path)?
+        .write_all(bytes)
+}
+
 /// Writes `fingerprint` and then one line per entry, replacing the file.
 pub fn write_jsonl<T: Serialize>(
     path: &Path,
     fingerprint: (u64, u64),
     entries: &[T],
 ) -> io::Result<()> {
-    fs::create_dir_all(path.parent().unwrap())?;
     let mut out: String = serde_json::to_string(&fingerprint)? + "\n";
     for entry in entries {
         out += &(serde_json::to_string(entry)? + "\n");
     }
-    fs::write(path, out)?;
+    write_cache(path, out.as_bytes())?;
     print_saved(path);
     Ok(())
 }
@@ -83,8 +115,7 @@ pub fn write_jsonl<T: Serialize>(
 /// Appends one line. Fails with `NotFound` if the file doesn't exist.
 pub fn append_jsonl<T: Serialize>(path: &Path, entry: &T) -> io::Result<()> {
     let line: String = serde_json::to_string(entry)? + "\n";
-    OpenOptions::new()
-        .append(true)
+    no_symlink(OpenOptions::new().append(true))
         .open(path)?
         .write_all(line.as_bytes())?;
     print_saved(path);
@@ -171,5 +202,19 @@ mod tests {
         let frame: DataFrame = polars::df!("x" => [None::<f64>]).unwrap();
         assert!(unwrap_f64(&frame, "x").unwrap().is_nan());
         assert!(unwrap_f64(&frame, "missing").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_cache_write_never_follows_a_planted_symlink() {
+        let dir: PathBuf = scratch("symlink");
+        let victim: PathBuf = dir.join("victim.txt");
+        fs::write(&victim, "keep").unwrap();
+        let link: PathBuf = dir.join("metadata").join("train.json");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(write_cache(&link, b"overwritten").is_err());
+        assert!(append_jsonl(&link, &1).is_err());
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
     }
 }

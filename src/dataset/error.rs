@@ -30,6 +30,12 @@ pub enum DatasetError {
         actual_dtype: String,
     },
 
+    #[error("sheet '{sheet}' not found. Sheets: {available}")]
+    SheetNotFound { sheet: String, available: String },
+
+    #[error("could not read {what}: {reason}")]
+    Read { what: String, reason: String },
+
     #[error(transparent)]
     Metadata(#[from] MetadataError),
 

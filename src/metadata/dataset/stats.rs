@@ -82,13 +82,16 @@ pub struct NumericStats {
 /// Python:
 ///
 /// ```python
-/// import pandas as pd
-/// ds = pd.read_csv("tests/fixtures/data/students.csv")
 /// import math
+/// import pandas as pd
 /// from scipy.stats import entropy
-/// batch = ds["batch"].value_counts()
-/// assert (len(batch), batch.idxmax()) == (3, "B13")
-/// assert abs(entropy(batch) - math.log(3)) < 1e-12  # nats, like rusmlai
+/// ds = pd.read_csv("tests/fixtures/data/students.csv")
+/// assert ds["passed"].value_counts().to_dict() == {True: 8, False: 4}
+/// assert ds["passed"].mode()[0] == True
+///
+/// batch = ds["batch"]
+/// assert (batch.nunique(), batch.mode()[0]) == (3, "B13")  # pandas also breaks ties by name
+/// assert abs(entropy(batch.value_counts()) - math.log(3)) < 1e-12  # nats, like rusmlai
 /// ```
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CategoricalStats {
@@ -119,7 +122,7 @@ impl ColumnStats {
     /// The stats of every column of `dataframe`, in column order, from one Polars plan.
     ///
     /// ```
-    /// use polars::df;
+    /// use rusmlai::polars::df;
     /// use rusmlai::metadata::dataset::stats::ColumnStats;
     /// let frame = df!("x" => [1.0, 2.0, 4.0], "s" => ["a", "b", "a"]).unwrap();
     /// let stats = ColumnStats::compute_stats(&frame).unwrap();

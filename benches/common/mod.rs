@@ -5,13 +5,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use polars::frame::DataFrame;
-use rusmlai::{
-    dataset::reader::Reader,
-    metadata::{
-        constants::{DATASET_CACHE, PLOTS_CACHE},
-        utils::cache_path,
-    },
+use polars::{
+    frame::DataFrame,
+    io::{SerReader, csv::read::CsvReadOptions},
+};
+use rusmlai::metadata::{
+    constants::{DATASET_CACHE, PLOTS_CACHE},
+    utils::cache_path,
 };
 
 /// CSV every bench runs on: the Kaggle S6E1 file (630,000 rows x 13 columns, local only).
@@ -38,7 +38,12 @@ pub fn scratch_csv(name: &str) -> PathBuf {
 }
 
 pub fn load(csv: &Path) -> DataFrame {
-    Reader::new(csv).finish().unwrap()
+    CsvReadOptions::default()
+        .with_rechunk(true)
+        .try_into_reader_with_file_path(Some(csv.to_path_buf()))
+        .unwrap()
+        .finish()
+        .unwrap()
 }
 
 pub fn remove_caches(csv: &Path) {

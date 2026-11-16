@@ -52,10 +52,7 @@ fn a_transformed_dataset_has_its_own_empty_cache_and_writes_no_files() {
         .after_transform(&ds, vec!["cgpa".into()], false);
     assert!(metadata.filepath.is_none());
     assert!(metadata.plot_cache.entries.read().unwrap().is_empty());
-    let new: Dataset = Dataset {
-        dataframe: ds.dataframe.clone(),
-        metadata,
-    };
+    let new: Dataset = StandardScaler::new().fit_transform(&ds.select(&["cgpa"]));
     new.hist("cgpa", "", 10).svg();
     assert_eq!(lines(&plots), n);
 }
@@ -65,9 +62,9 @@ fn a_dataset_made_in_memory_never_writes_into_a_csv_cache() {
     let csv: PathBuf = scratch_csv("plots_in_memory");
     let plots: PathBuf = cache_file(&csv, ".plots.jsonl");
     let ds: Dataset = read_csv(&csv);
-    // Four rows under the CSV's name (what `Reader` with a row limit gives): their histogram
+    // Four rows under the CSV's name (what Polars' reader with a row limit gives): their histogram
     // must not become the CSV's cached histogram.
-    let part: Dataset = Dataset::new(ds.dataframe.head(Some(4)), &csv);
+    let part: Dataset = Dataset::new(ds.dataframe().head(Some(4)), &csv);
     part.hist("cgpa", "", 10).svg();
     assert_eq!(lines(&plots), 1); // still only the fingerprint
 

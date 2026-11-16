@@ -15,7 +15,7 @@ use crate::metadata::{
 ///
 /// ```
 /// use rusmlai::prelude::*;
-/// use polars::prelude::DataType;
+/// use rusmlai::polars::prelude::DataType;
 /// let ds = read_csv("tests/fixtures/data/students.csv");
 /// let info = ds.try_column_info("cgpa").unwrap();
 /// assert_eq!(info.dtype, DataType::Float64);
@@ -26,7 +26,7 @@ use crate::metadata::{
 /// [`ColumnInfo::new`] leaves the stats empty, and [`ColumnInfo::ensure_stats`] fills them once:
 ///
 /// ```
-/// use polars::prelude::Column;
+/// use rusmlai::polars::prelude::Column;
 /// use rusmlai::metadata::dataset::{info::ColumnInfo, stats::ColumnStats};
 /// let column = Column::new("x".into(), [1.0, 2.0, 3.0]);
 /// let info = ColumnInfo::new(&column);

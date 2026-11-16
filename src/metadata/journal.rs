@@ -16,7 +16,7 @@ use crate::{
     metadata::{
         constants::JOURNAL,
         models::{Entry, FitRecord, ModelCache, ScoreRecord},
-        utils::{cache_path, print_saved},
+        utils::{cache_path, print_saved, write_cache},
     },
     models::ModelError,
     plot::{
@@ -88,25 +88,22 @@ fn text(value: &Value) -> String {
     }
 }
 
-/// The left third of a card: the training and validation loss per round. A run with no curve
+/// The left third of a card: the training loss per round. A run with no curve
 /// of two or more rounds (an exact solve, a baseline) shows its train and test r2 instead.
 /// The charts are built from the numbers as they are: no `Dataset` and no Polars query, which
 /// cost 0.5 ms per card for a few rows.
 fn chart(run: &Run) -> String {
-    let lines: Vec<(&str, Vec<(f64, f64)>)> = [
-        ("train", &run.fit.loss_curve),
-        ("validation", &run.fit.validation_loss_curve),
-    ]
-    .into_iter()
-    .map(|(name, curve)| {
-        let line: Vec<(f64, f64)> = (curve.iter().flatten().enumerate())
-            .filter(|(_, loss)| loss.is_finite())
-            .map(|(i, loss)| ((i + 1) as f64, *loss))
-            .collect();
-        (name, line)
-    })
-    .filter(|(_, line)| !line.is_empty())
-    .collect();
+    let lines: Vec<(&str, Vec<(f64, f64)>)> = [("train", &run.fit.loss_curve)]
+        .into_iter()
+        .map(|(name, curve)| {
+            let line: Vec<(f64, f64)> = (curve.iter().flatten().enumerate())
+                .filter(|(_, loss)| loss.is_finite())
+                .map(|(i, loss)| ((i + 1) as f64, *loss))
+                .collect();
+            (name, line)
+        })
+        .filter(|(_, line)| !line.is_empty())
+        .collect();
     let figure: Option<Figure> = if lines.iter().any(|(_, line)| line.len() >= 2) {
         let top: f64 = (lines.iter().flat_map(|(_, line)| line))
             .fold(f64::MIN_POSITIVE, |top, point| top.max(point.1));
@@ -216,7 +213,8 @@ fn stats(run: &Run) -> String {
         .iter()
         .map(|(name, row)| {
             format!(
-                "<tr><th>{name}</th><td>{}</td><td>{}</td></tr>",
+                "<tr><th>{}</th><td>{}</td><td>{}</td></tr>",
+                escape(name),
                 stat(run.train, row),
                 stat(run.test, row)
             )
@@ -256,7 +254,7 @@ fn card(run: &Run) -> String {
          <div class=\"cols\"><div><h3>Hyperparameters</h3><dl>{settings}</dl></div>\
          <div><h3>Train and test</h3>{metrics}\
          <p class=\"fit\">fit time {seconds:.3} s</p></div></div>\
-         <p class=\"load\">Back to this model: <code>model.load_run(&amp;ds, \"{label}\")</code></p>\
+         <p class=\"load\">Back to this model, on the rows it trained on: <code>model.load_run(&amp;train, \"{label}\")</code></p>\
          </div></section>",
         label = run.label,
         chart = chart(run),
@@ -319,7 +317,8 @@ fn page(csv: &Path, runs: &[Run]) -> String {
         .max_by(|a, b| a.1.1.total_cmp(&b.1.1))
         .map_or(String::new(), |(r, (name, v))| {
             format!(
-                " Best test {name}: <a href=\"#{0}\">{0}</a> ({v:.6}).",
+                " Best test {}: <a href=\"#{1}\">{1}</a> ({v:.6}).",
+                escape(name),
                 r.label
             )
         });
@@ -360,11 +359,8 @@ impl Dataset {
     /// ds.journal();
     /// ```
     ///
-    /// Python has no journal of its own; MLflow's tracking UI is the closest:
-    ///
-    /// ```python
-    /// # mlflow.sklearn.autolog(); model.fit(X, y); then run `mlflow ui` and open the browser.
-    /// ```
+    /// Python has no journal of its own. The closest is MLflow's tracking UI:
+    /// `mlflow.sklearn.autolog()` before `fit`, then `mlflow ui` in a terminal.
     #[track_caller]
     pub fn journal(&self) {
         let path: PathBuf = self.try_journal().or_fatal();
@@ -385,7 +381,6 @@ impl Dataset {
     /// - [`ModelError::Io`] when the page can't be written.
     ///
     /// ```
-    /// use polars::df;
     /// use rusmlai::{models::ModelError, prelude::*};
     /// let ds = Dataset::new(df!("x" => [1.0]).unwrap(), "");
     /// assert!(matches!(ds.try_journal(), Err(ModelError::NoCache)));
@@ -402,10 +397,7 @@ impl Dataset {
 pub(crate) fn write(cache: &ModelCache) -> Result<PathBuf, ModelError> {
     let entries: Vec<Entry> = cache.entries();
     let path: PathBuf = cache_path(&cache.csv, JOURNAL);
-    if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    fs::write(&path, page(&cache.csv, &runs(&entries)))?;
+    write_cache(&path, page(&cache.csv, &runs(&entries)).as_bytes())?;
     print_saved(&path);
     Ok(path)
 }
@@ -481,11 +473,27 @@ mod tests {
         );
         assert!(html.contains("DummyRegressor") && html.contains("<dt>alpha</dt>"));
         assert!(html.contains("<dt>strategy</dt><dd>mean</dd>"));
+
+        // A tampered cache line can't put markup on the page: a metric name is text.
+        let models: PathBuf = cache_path(&csv, crate::metadata::constants::MODELS_CACHE);
+        let last: String = fs::read_to_string(&models)
+            .unwrap()
+            .lines()
+            .last()
+            .unwrap()
+            .into();
+        let mut score: Value = serde_json::from_str(&last).unwrap();
+        score["metrics"] = serde_json::json!({"<script>alert(1)</script>": 1.0});
+        let mut text: String = fs::read_to_string(&models).unwrap();
+        text += &format!("{score}\n");
+        fs::write(&models, text).unwrap();
+        let html: String = fs::read_to_string(ds.try_journal().unwrap()).unwrap();
+        assert!(!html.contains("<script>") && html.contains("&lt;script&gt;"));
         assert!(
             html.contains("Loss per round"),
             "coordinate descent records its loss"
         );
-        assert!(html.contains("model.load_run(&amp;ds, \"r02\")"));
+        assert!(html.contains("model.load_run(&amp;train, \"r02\")"));
         assert!(html.contains("<th>Test</th>") && html.contains("<th>RMSE</th>"));
         assert!(
             html.contains("class=\"pt\""),

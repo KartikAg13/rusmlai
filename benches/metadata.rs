@@ -144,10 +144,7 @@ fn load_and_derive(c: &mut Criterion) {
     g.bench_function("select/2_cols", |b| {
         b.iter(|| black_box(meta.select(&["gender", "exam_score"])))
     });
-    let ds: Dataset = Dataset {
-        dataframe: df.clone(),
-        metadata: meta.clone(),
-    };
+    let ds: Dataset = Dataset::from_parts(df.clone(), meta.clone());
     g.bench_function("after_transform/1_col", |b| {
         b.iter(|| {
             black_box(meta.dataset_cache.after_transform(

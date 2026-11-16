@@ -15,9 +15,10 @@ use serde_json::Value;
 
 use crate::{
     dataset::Dataset,
-    error::{OrFatal, warn},
+    error::warn,
+    metadata::models::CachedRun,
     models::{
-        Classifier, Model, ModelError, class_labels,
+        Classifier, Model, ModelError, bad_learned, check, class_labels,
         design::{CHUNK, DesignMatrix, col, scores},
         label_target,
         linear::solve,
@@ -86,6 +87,9 @@ struct Learned {
     dtype: DataType,
 }
 
+/// Predicts a class (yes / no, or one of several) and how likely each class is, from a weighted
+/// sum of the features.
+///
 /// Logistic regression, like scikit-learn's `LogisticRegression`: the probability of each class
 /// is the sigmoid (two classes) or the softmax (more) of a linear function of the features. It
 /// minimizes the mean log loss of the rows plus `1 / (2 · C · rows) · ‖w‖²`, which is
@@ -107,7 +111,6 @@ struct Learned {
 /// another solver) and `class_weight` (backlog).
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(
 ///     df!(
@@ -169,20 +172,7 @@ pub struct LogisticRegression {
     pub loss_curve_: Vec<f64>,
     dtype: Option<DataType>,
     target: Option<String>,
-    run: Option<String>,
-}
-
-/// Panics at the caller's line with [`ModelError::InvalidSetting`] unless `ok`.
-#[track_caller]
-fn check(ok: bool, setting: &'static str, value: impl ToString, expected: &'static str) {
-    if !ok {
-        Err::<(), ModelError>(ModelError::InvalidSetting {
-            setting,
-            value: value.to_string(),
-            expected,
-        })
-        .or_fatal();
-    }
+    run: Option<CachedRun>,
 }
 
 impl LogisticRegression {
@@ -604,7 +594,25 @@ impl Model for LogisticRegression {
 
     fn try_load(&mut self, learned: Value, target: &str) -> Result<(), ModelError> {
         let l: Learned = serde_json::from_value(learned)?;
-        self.n_features_in_ = l.feature_names_in_.len();
+        let outputs: usize = if l.classes_.len() == 2 {
+            1
+        } else {
+            l.classes_.len()
+        };
+        let features: usize = l.feature_names_in_.len();
+        if l.classes_.len() < 2
+            || l.coef_.len() != outputs
+            || l.intercept_.len() != outputs
+            || l.coef_.iter().any(|row| row.len() != features)
+        {
+            return Err(bad_learned(format!(
+                "{} classes, {} coefficient rows and {} intercepts for {features} features",
+                l.classes_.len(),
+                l.coef_.len(),
+                l.intercept_.len()
+            )));
+        }
+        self.n_features_in_ = features;
         (self.classes_, self.coef_, self.intercept_) = (l.classes_, l.coef_, l.intercept_);
         (self.feature_names_in_, self.n_iter_) = (l.feature_names_in_, l.n_iter_);
         (self.loss_curve_, self.dtype) = (l.loss_curve_, Some(l.dtype));
@@ -612,11 +620,11 @@ impl Model for LogisticRegression {
         Ok(())
     }
 
-    fn run(&self) -> Option<&str> {
-        self.run.as_deref()
+    fn run(&self) -> Option<&CachedRun> {
+        self.run.as_ref()
     }
 
-    fn set_run(&mut self, run: Option<String>) {
+    fn set_run(&mut self, run: Option<CachedRun>) {
         self.run = run;
     }
 
@@ -878,6 +886,17 @@ mod tests {
     }
 
     #[test]
+    fn a_label_unseen_in_fit_still_gets_an_accuracy() {
+        let model: LogisticRegression = fitted(LogisticRegression::new(), &binary());
+        let unseen: Dataset = Dataset::new(
+            df!("x1" => [0.5, 5.0], "x2" => [1.0, 3.5], "y" => ["maybe", "yes"]).unwrap(),
+            "",
+        );
+        // scikit-learn's score is the accuracy; only the journal's log loss is left out.
+        assert_eq!(model.try_score(&unseen, "y").unwrap(), 0.5);
+    }
+
+    #[test]
     fn errors_name_the_problem() {
         let fit = |ds: Dataset| {
             LogisticRegression::new()
@@ -891,9 +910,20 @@ mod tests {
             df!("x" => [1.0, 2.0], "y" => [Some("a"), None]).unwrap(),
             "",
         );
-        assert!(fit(nulls).starts_with("target 'y' has 1 nulls"));
+        assert!(fit(nulls).starts_with("target 'y' has 1 null;"));
         let text: Dataset = Dataset::new(df!("s" => ["u", "v"], "y" => ["a", "b"]).unwrap(), "");
         assert!(fit(text).starts_with("feature 's' is str, not a number"));
+        // scikit-learn: "Unknown label type: continuous"; whole numbers are classes.
+        let scores: Dataset = Dataset::new(
+            df!("x" => [1.0, 2.0, 3.0], "y" => [1.0, 0.5, 1.5]).unwrap(),
+            "",
+        );
+        assert!(fit(scores).starts_with("target 'y' has continuous values (like 0.5)"));
+        let codes: Dataset = Dataset::new(
+            df!("x" => [1.0, 2.0, 3.0, 4.0], "y" => [0.0, 0.0, 1.0, 1.0]).unwrap(),
+            "",
+        );
+        LogisticRegression::new().try_train(&codes, "y").unwrap();
         assert!(matches!(
             LogisticRegression::new().try_predict(&binary()),
             Err(ModelError::NotFitted { .. })
@@ -904,5 +934,22 @@ mod tests {
     #[should_panic(expected = "C = 0 is not valid")]
     fn a_bad_setting_panics_at_the_setter() {
         let _ = LogisticRegression::new().C(0.0);
+    }
+
+    #[test]
+    fn a_cached_record_of_the_wrong_shape_is_refused_and_changes_nothing() {
+        let mut model: LogisticRegression = LogisticRegression::new();
+        let learned: Value = serde_json::json!({
+            "classes_": ["no", "yes"],
+            "coef_": [[1.0], [2.0]],
+            "intercept_": [0.0, 0.0],
+            "feature_names_in_": ["x"],
+            "n_iter_": 1,
+            "loss_curve_": [],
+            "dtype": serde_json::to_value(DataType::String).unwrap(),
+        });
+        let err: String = model.try_load(learned, "y").unwrap_err().to_string();
+        assert!(err.contains("2 classes, 2 coefficient rows"), "{err}");
+        assert!(model.coef_.is_empty());
     }
 }

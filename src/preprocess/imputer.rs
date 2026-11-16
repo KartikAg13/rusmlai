@@ -2,8 +2,8 @@
 
 use indexmap::IndexMap;
 use polars::prelude::{
-    Column, DataFrame, DataType, Expr, IntoLazy, Literal, NULL, Scalar, SortMultipleOptions, len,
-    lit, when,
+    AnyValue, Column, DataFrame, DataType, Expr, IntoLazy, Literal, NULL, Scalar,
+    SortMultipleOptions, len, lit, when,
 };
 
 use crate::utils::col;
@@ -35,20 +35,18 @@ use crate::{
 ///   `"constant"`, which never drops).
 ///
 /// ```
-/// use polars::df;
 /// use rusmlai::prelude::*;
 /// let ds = Dataset::new(df!("x" => [Some(1.0), None, Some(5.0), Some(9.0)]).unwrap(), "");
 /// let out = SimpleImputer::new().strategy("median").fit_transform(&ds);
-/// let x: Vec<f64> = out.dataframe.column("x").unwrap().f64().unwrap().into_no_null_iter().collect();
-/// assert_eq!(x, [1.0, 5.0, 5.0, 9.0]);
+/// assert_eq!(out.to_list("x"), [1.0, 5.0, 5.0, 9.0]);
 ///
 /// let ds = Dataset::new(df!("n" => [Some(3), Some(1), Some(3), Some(1), None]).unwrap(), "");
 /// let out = SimpleImputer::new().strategy("most_frequent").fit_transform(&ds);
-/// assert_eq!(out.dataframe.column("n").unwrap().cast(&polars::prelude::DataType::Float64).unwrap().f64().unwrap().get(4), Some(1.0));
+/// assert_eq!(out.to_list("n")[4], 1.0);
 ///
 /// let ds = Dataset::new(df!("c" => [Some("a"), None]).unwrap(), "");
 /// let out = SimpleImputer::new().strategy("constant").fit_transform(&ds);
-/// assert_eq!(out.dataframe.column("c").unwrap().str().unwrap().get(1), Some("missing_value"));
+/// assert_eq!(out.dataframe().column("c").unwrap().str().unwrap().get(1), Some("missing_value"));
 /// ```
 ///
 /// Python:
@@ -66,8 +64,8 @@ use crate::{
 /// assert out["n"][4] == 1.0
 ///
 /// ds = pd.DataFrame({"c": ["a", np.nan]})
-/// out = SimpleImputer(strategy="constant").fit_transform(ds)
-/// assert out[1][0] == "missing_value"
+/// out = SimpleImputer(strategy="constant").set_output(transform="pandas").fit_transform(ds)
+/// assert out["c"][1] == "missing_value"
 /// ```
 #[derive(Debug, Clone)]
 pub struct SimpleImputer {
@@ -83,6 +81,8 @@ pub struct SimpleImputer {
     pub indicator_features_: Vec<String>,
     /// Columns with no value in `fit`, which `transform` drops.
     dropped: Vec<String>,
+    /// Columns whose type can hold `missing_values`, learned by `fit`.
+    marked_columns: Vec<String>,
 }
 
 impl Default for SimpleImputer {
@@ -96,6 +96,7 @@ impl Default for SimpleImputer {
             statistics_: IndexMap::new(),
             indicator_features_: Vec::new(),
             dropped: Vec::new(),
+            marked_columns: Vec::new(),
         }
     }
 }
@@ -138,12 +139,11 @@ impl SimpleImputer {
         self
     }
 
-    /// `x` with `missing_values` turned into null. A float NaN is never equal to itself, so it
-    /// is tested with `is_nan`.
-    fn marked(&self, x: Expr) -> Expr {
+    /// Column `name` (`x`) with `missing_values` turned into null, when its type can hold that
+    /// value. A float NaN is never equal to itself, so it is tested with `is_nan`.
+    fn marked(&self, name: &str, x: Expr) -> Expr {
         match &self.missing_values {
-            None => x,
-            Some(v) => {
+            Some(v) if self.marked_columns.iter().any(|c| c == name) => {
                 let missing: Expr = if is_nan(v) {
                     x.clone().is_nan()
                 } else {
@@ -151,7 +151,24 @@ impl SimpleImputer {
                 };
                 when(missing).then(lit(NULL)).otherwise(x)
             }
+            _ => x,
         }
+    }
+}
+
+/// Whether a column of `dtype` can hold `value`: NaN only in a float column, a number in a
+/// numeric column, text in a text column, true or false in a boolean column. scikit-learn
+/// compares like with like the same way, so `"?"` never matches a number.
+fn can_hold(value: &Expr, dtype: &DataType) -> bool {
+    let Expr::Literal(v) = value else {
+        return false;
+    };
+    match v.to_any_value() {
+        Some(AnyValue::String(_) | AnyValue::StringOwned(_)) => dtype.is_string(),
+        Some(AnyValue::Boolean(_)) => dtype.is_bool(),
+        Some(a) if a.extract::<f64>().is_some_and(f64::is_nan) => dtype.is_float(),
+        Some(a) if a.extract::<f64>().is_some() => dtype.is_primitive_numeric(),
+        _ => false,
     }
 }
 
@@ -167,11 +184,26 @@ impl Transform for SimpleImputer {
         self.dropped.clear();
         // With `missing_values`, the stats must leave those values out: one pass on a copy
         // where they are null.
+        self.marked_columns = match &self.missing_values {
+            Some(v) => dataset
+                .columns()
+                .into_iter()
+                .filter(|c| {
+                    dataset
+                        .try_column_info(c)
+                        .is_ok_and(|info| can_hold(v, &info.dtype))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         let marked: Dataset;
         let dataset: &Dataset = if self.missing_values.is_some() {
             let exprs: Exprs = identity(dataset)
                 .into_iter()
-                .map(|(name, x)| (name, self.marked(x)))
+                .map(|(name, x)| {
+                    let x: Expr = self.marked(&name, x);
+                    (name, x)
+                })
                 .collect();
             marked = apply(dataset, &exprs)?;
             marked.try_fill_stats()?;
@@ -239,12 +271,15 @@ impl Transform for SimpleImputer {
                     })?;
             out.insert(
                 name.clone(),
-                self.marked(expr.clone()).fill_null(fill.clone()),
+                self.marked(name, expr.clone()).fill_null(fill.clone()),
             );
         }
         for name in &self.indicator_features_ {
             if let Some(expr) = inputs.get(name) {
-                let missing: Expr = self.marked(expr.clone()).is_null().cast(DataType::Float64);
+                let missing: Expr = self
+                    .marked(name, expr.clone())
+                    .is_null()
+                    .cast(DataType::Float64);
                 out.insert(format!("missingindicator_{name}"), missing);
             }
         }
@@ -297,6 +332,39 @@ mod tests {
     use polars::df;
 
     use super::*;
+
+    #[test]
+    fn a_missing_value_marks_only_the_columns_that_can_hold_it() {
+        let ds: Dataset = Dataset::new(
+            df!("x" => [1.0, f64::NAN, 3.0, 1.0], "s" => ["a", "?", "a", "b"]).unwrap(),
+            "",
+        );
+        let mut nan: SimpleImputer = SimpleImputer::new()
+            .strategy("most_frequent")
+            .missing_values(f64::NAN);
+        let out: Dataset = nan.fit_transform(&ds);
+        assert_eq!(
+            floats(&out, "x"),
+            [Some(1.0), Some(1.0), Some(3.0), Some(1.0)]
+        );
+        let mut text: SimpleImputer = SimpleImputer::new()
+            .strategy("most_frequent")
+            .missing_values("?");
+        let out: Dataset = text.fit_transform(&ds);
+        let s: Vec<Option<&str>> = out
+            .dataframe
+            .column("s")
+            .unwrap()
+            .str()
+            .unwrap()
+            .iter()
+            .collect();
+        assert_eq!(s, [Some("a"), Some("a"), Some("a"), Some("b")]);
+        assert!(
+            floats(&out, "x")[1].unwrap().is_nan(),
+            "\"?\" never matches a number"
+        );
+    }
 
     fn floats(dataset: &Dataset, name: &str) -> Vec<Option<f64>> {
         let column: &Column = dataset.dataframe.column(name).unwrap();

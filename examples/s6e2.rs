@@ -29,14 +29,14 @@ fn main() {
     let (train, test) = train_test_split(&dataset.drop(&["id"]), 0.2, 42, "Heart Disease");
     for c in [1.0, 0.01] {
         let model = LogisticRegression::new().C(c);
-        let mut pipe = Pipeline::new(preprocessing(), ModelStacker::new(model));
+        let mut pipe = Pipeline::new(preprocessing(), model);
         pipe.fit(&train, "Heart Disease");
         pipe.score(&train, "Heart Disease");
         println!(
             "LogisticRegression(C = {c}): accuracy {:.4} on {} test rows, {} Newton steps",
             pipe.score(&test, "Heart Disease"),
             test.height(),
-            pipe.model.model.n_iter_
+            pipe.model.n_iter_
         );
     }
     // Each fit and score above also rewrote the journal, metadata/train.journal.html;

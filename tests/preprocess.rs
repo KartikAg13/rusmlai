@@ -6,7 +6,7 @@ use proptest::{collection::vec, option, prelude::*};
 use rusmlai::{prelude::*, steps};
 
 fn floats(dataset: &Dataset, name: &str) -> Vec<Option<f64>> {
-    let column: &Column = dataset.dataframe.column(name).unwrap();
+    let column: &Column = dataset.dataframe().column(name).unwrap();
     column.f64().unwrap().iter().collect()
 }
 
@@ -14,7 +14,7 @@ fn floats(dataset: &Dataset, name: &str) -> Vec<Option<f64>> {
 fn train_test() -> (Dataset, Dataset) {
     let frame: DataFrame = try_read_csv("tests/fixtures/data/students.csv")
         .unwrap()
-        .dataframe;
+        .into_dataframe();
     (
         Dataset::new(frame.head(Some(8)), ""),
         Dataset::new(frame.tail(Some(4)), ""),
@@ -78,7 +78,12 @@ fn a_column_transformer_applies_what_the_training_part_taught_it() {
         floats(&out, "flag__passed"),
         [Some(1.0), Some(0.0), Some(1.0), Some(1.0)]
     );
-    assert!(out.dataframe.columns().iter().all(|c| c.null_count() == 0));
+    assert!(
+        out.dataframe()
+            .columns()
+            .iter()
+            .all(|c| c.null_count() == 0)
+    );
 }
 
 #[test]
@@ -174,7 +179,7 @@ proptest! {
         let mut label: LabelEncoder = LabelEncoder::new();
         let coded: Dataset = label.fit_transform(&ds);
         let back: Dataset = label.inverse_transform(&coded);
-        let names: Vec<Option<&str>> = back.dataframe.column("c").unwrap().str().unwrap().iter().collect();
+        let names: Vec<Option<&str>> = back.dataframe().column("c").unwrap().str().unwrap().iter().collect();
         prop_assert_eq!(names, values);
     }
 }

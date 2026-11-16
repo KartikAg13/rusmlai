@@ -62,11 +62,14 @@ pub enum PreprocessError {
 
     /// `transform` gave an encoder a value that its `fit` never saw.
     #[error(
-        "output column '{column}' got a value that fit never saw. To allow a category, use .handle_unknown(\"ignore\") on a OneHotEncoder, or .handle_unknown(\"use_encoded_value\").unknown_value(..) on an OrdinalEncoder"
+        "column '{column}' has {}, which fit never saw. To allow it, use .handle_unknown(\"ignore\") on a OneHotEncoder, or .handle_unknown(\"use_encoded_value\").unknown_value(..) on an OrdinalEncoder",
+        .category.as_ref().map_or("a category".to_string(), |c| format!("the category '{c}'"))
     )]
     UnknownAtTransform {
-        /// The output column that failed.
+        /// The input column with the unknown category.
         column: String,
+        /// The first unknown category, when one of the first 10,000 distinct values is it.
+        category: Option<String>,
     },
 
     /// An encoder found categories it was not told about.

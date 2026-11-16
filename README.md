@@ -2,7 +2,19 @@
 
 A Rust library for tabular machine learning, with the names you know from pandas, scikit-learn and seaborn. Tables run on [Polars](https://docs.pola.rs/). The same code works in a `.rs` program and in a Jupyter notebook through the [evcxr](https://github.com/evcxr/evcxr) kernel.
 
-rusmlai is early. Data loading, column statistics, table display and charts work today. Preprocessing and models come next.
+rusmlai is young, but it works end to end today: load a CSV, look at it, draw 18 kinds of chart, preprocess, split, train linear and logistic models, score them, and compare every run in a training journal. On a 630,000-row Kaggle file the linear models train 9× to 26× faster than scikit-learn, and logistic regression 1.3× to 5.6× faster, with the same coefficients. Trees come next.
+
+## Install
+
+You need Rust 1.95 or newer ([rustup.rs](https://rustup.rs)). Then:
+
+```sh
+cargo new first-look
+cd first-look
+cargo add rusmlai
+```
+
+rusmlai runs on Polars, a large crate: the first build prints `Compiling` lines for a few minutes, once. Later builds take seconds.
 
 ## What works today
 
@@ -24,7 +36,19 @@ fn main() {
 ```
 
 - `read_csv` parses the file with Polars and computes stats for every column in one pass. Numeric columns get mean, std, variance, min, max and quartiles. Text columns get category counts and the mode.
+- Other sources give the same `Dataset`, with pandas' names:
+
+  | Source | Call |
+  |---|---|
+  | CSV, or TSV by its `.tsv` extension | `read_csv("train.tsv")` |
+  | Parquet | `read_parquet("train.parquet")` |
+  | Excel (`.xlsx`, `.xls`, `.xlsb`) and `.ods` | `read_excel("train.xlsx", "")` (`""` is the first sheet) |
+  | SQLite | `read_sql("SELECT * FROM students", "school.db")` |
+  | PostgreSQL, MySQL | `read_sql(query, "postgresql://user:pw@host/db")` or `"mysql://..."` (no TLS) |
+
+  Parquet caches its stats like a CSV. Excel and SQL compute them on every read: a workbook has several sheets, and a query's rows can change.
 - The stats go into a `metadata/` folder next to the CSV, with the size and modification time of the file. The next `read_csv` of an unchanged file loads them and does not compute them again.
+- The `metadata/` folder is trusted like code: its files set what scalers, imputers and models learn. For a data folder that came from someone else with its `metadata/` folder, call `set_cache(false)` first (or set `RUSMLAI_CACHE=off`). rusmlai then reads and writes nothing next to your data.
 - `select` and `drop` share the stats of the original dataset. They do not copy or compute them again.
 - Chart results get the same cache. The aggregated numbers of each chart are stored per CSV, so a chart comes back instantly, also after a restart.
 - Tables print as text in a terminal and as HTML tables in a Jupyter notebook. `notebooks/s6e1.ipynb` and `s6e2.ipynb` are sample notebooks with every chart, one per cell.
@@ -68,6 +92,37 @@ On a 630,000-row, 13-column Kaggle CSV (an i5-1135G7 laptop):
 | load the cached stats alone | 21 µs |
 | stats for all 13 columns | 58 ms |
 
+## Models
+
+```rust
+use rusmlai::{prelude::*, steps};
+
+fn main() {
+    let ds: Dataset = read_csv("train.csv").drop(&["id"]);
+    let (train, test) = train_test_split(&ds, 0.2, 42, "");
+    let prep = ColumnTransformer::new()
+        .add("num", &["study_hours", "class_attendance"], steps![StandardScaler::new()])
+        .add("cat", &["course", "sleep_quality"], steps![OneHotEncoder::new()]);
+    let mut model = Pipeline::new(prep, LinearRegression::new());
+    model.fit(&train, "exam_score");
+    println!("R² on the test rows: {:.3}", model.score(&test, "exam_score"));
+    ds.journal(); // every model trained on this CSV, with its settings and scores
+}
+```
+
+- Transformers: `StandardScaler`, `MinMaxScaler`, `MaxAbsScaler`, `RobustScaler`, `SimpleImputer`, `OneHotEncoder`, `OrdinalEncoder` and `LabelEncoder`, with scikit-learn's settings. They learn from the cached stats, so a fit makes no pass over the data.
+- Models: `LinearRegression` (Ridge, Lasso and ElasticNet are its `alpha` and `l1_ratio` settings), `LogisticRegression` (two or more classes) and `DummyRegressor`. They give scikit-learn's coefficients.
+- A fit with the same settings on the same data loads the earlier result from the cache instead of training again. Every fit and score goes into `metadata/{stem}.journal.html`, an offline page with each run's settings, scores and loss curve. `model.load_run(&train, "r03")` brings a run back.
+- Errors name the fix: `feature 'course' is str, not a number: encode it with OneHotEncoder or OrdinalEncoder in the ColumnTransformer`.
+
+Fit times on the same 630,000-row file, against scikit-learn 1.9:
+
+| Fit | rusmlai, 1 core | scikit-learn, 1 core | rusmlai, all cores | scikit-learn, all cores |
+|---|---:|---:|---:|---:|
+| `LinearRegression` | 48.9 ms | 544.5 ms | 20.6 ms | 528.5 ms |
+| `LogisticRegression` (scikit-learn: `newton-cholesky`) | 175.0 ms | 398.8 ms | 84.5 ms | 476.8 ms |
+| `Pipeline`: scale, one-hot, linear | 228.1 ms | 1083.7 ms | 103.9 ms | 1069.5 ms |
+
 ## Conventions
 
 - Function and parameter names follow Python: `read_csv`, `head`, `describe`, `fit`, `predict`, `n_jobs`, `max_depth`. Defaults follow scikit-learn, so you can compare results directly.
@@ -76,10 +131,11 @@ On a 630,000-row, 13-column Kaggle CSV (an i5-1135G7 laptop):
 
 ## Roadmap
 
-1. Preprocessing: `StandardScaler`, `MinMaxScaler`, `RobustScaler`, `SimpleImputer`, `OneHotEncoder` and others, combined in a `ColumnTransformer` and joined to the model in a `Pipeline`, `train_test_split` and cross validation. Scalers and imputers fit from the cached stats, so a fit on a newly loaded CSV makes no pass over the data.
-2. About 25 models:
-   - linear regression (with Ridge, Lasso and ElasticNet penalties as settings) and logistic regression;
-   - decision trees, random forests, bagging, AdaBoost and histogram gradient boosting;
+Done: data loading, stats, charts, the transformers, `ColumnTransformer`, `Pipeline`, `train_test_split`, linear and logistic regression, the model cache and the journal. Next:
+
+1. Data operations that pandas users reach for: saving a dataset (`to_csv`), filtering and sorting rows, and cross validation. Until then, `ds.dataframe()` is the Polars table, and `Dataset::new` makes a dataset of a changed copy.
+2. About 20 more models:
+   - decision trees, random forests, bagging, AdaBoost and histogram gradient boosting (next);
    - kNN, Naive Bayes, linear SVM, an MLP;
    - k-means, DBSCAN and agglomerative clustering;
    - PCA, SVD, LDA and feature selection;

@@ -14,6 +14,19 @@
 //! assert!(svg.starts_with("<svg"));
 //! ```
 //!
+//! Each public item's docs end the same way, with its Python equivalent under "Python:".
+//!
+//! Public methods panic with a clear message at your line, like Python raising. Each one has a
+//! `try_*` twin that returns a `Result` instead, for `?` in your own functions.
+//!
+//! Some examples use `?` on a `try_*` method. To copy one into your `main`, write
+//! `fn main() -> Result<(), Box<dyn std::error::Error>>` and end it with `Ok(())`, or call the
+//! method without `try_`.
+//!
+//! The cache files in `metadata/` next to a CSV are trusted like code: they set what scalers,
+//! imputers and models learn. For data that came from someone else with its `metadata/` folder,
+//! turn the cache off with [`set_cache(false)`](metadata::set_cache).
+//!
 //! Python:
 //!
 //! ```python
@@ -24,18 +37,16 @@
 //! ds = pd.read_csv("tests/fixtures/data/students.csv")  # no cache: every stat is computed again
 //! ds.info()
 //! print(ds.describe())
-//! features = ds.drop(columns=["id", "name", "passed"])
-//! gains = {c: mutual_info_score(features[c].map(str), ds["passed"]) for c in features}
+//! gains = {}
+//! for column in ["age", "cgpa", "batch"]:
+//!     rows = ds[[column, "passed"]].dropna()  # rusmlai leaves out missing values too
+//!     x = rows[column]
+//!     gains[column] = mutual_info_score(pd.cut(x, 256) if x.dtype.kind in "if" else x, rows["passed"])
 //! print("most informative:", max(gains, key=gains.get))
 //! ax = sns.countplot(data=ds, x="batch", hue="passed")
 //! ax.set_title("Batches")
 //! plt.show()
 //! ```
-//!
-//! Each public item's docs show its Python equivalent the same way, under "Python:".
-//!
-//! Public methods panic with a clear message at your line, like Python raising. Each one has a
-//! `try_*` twin that returns a `Result` instead, for `?` in your own functions.
 
 pub mod dataset;
 pub mod display;
@@ -46,19 +57,28 @@ pub mod models;
 pub mod pipeline;
 pub mod plot;
 pub mod preprocess;
-pub mod utils;
+mod utils;
+
+/// The Polars version rusmlai is built on, so your code can use the same one without a
+/// dependency of its own: `use rusmlai::polars::prelude::*;`.
+pub use polars;
 
 pub mod prelude {
+    pub use polars::df;
+
     pub use crate::{
         dataset::{
             Dataset,
             error::DatasetError,
+            read::{
+                read_excel, read_parquet, read_sql, try_read_excel, try_read_parquet, try_read_sql,
+            },
             read_csv,
             split::{train_test_split, try_train_test_split},
             try_read_csv,
         },
         display::{Figure, TableView},
-        metadata::models::ModelCache,
+        metadata::{models::ModelCache, set_cache},
         metrics::{
             accuracy_score, log_loss, mean_absolute_error, mean_squared_error, r2_score,
             root_mean_squared_error,
@@ -67,7 +87,7 @@ pub mod prelude {
             Classifier, DummyRegressor, LinearRegression, LogisticRegression, Model, ModelError,
             Regressor,
         },
-        pipeline::{ModelStacker, Pipeline},
+        pipeline::Pipeline,
         plot::style::{set_palette, set_theme},
         preprocess::{
             ColumnTransformer, LabelEncoder, MaxAbsScaler, MinMaxScaler, OneHotEncoder,

@@ -97,7 +97,7 @@ pub(crate) fn try_regression_scores(
 /// perfect predictions and 0 otherwise, like scikit-learn.
 ///
 /// ```
-/// use polars::prelude::*;
+/// use rusmlai::polars::prelude::*;
 /// use rusmlai::prelude::*;
 /// let y_true = Series::new("y".into(), [3.0, -0.5, 2.0, 7.0]);
 /// let y_pred = Series::new("p".into(), [2.5, 0.0, 2.0, 8.0]);
@@ -130,7 +130,7 @@ pub fn try_r2_score(y_true: &Series, y_pred: &Series) -> Result<f64, ModelError>
 /// The mean of the squared errors.
 ///
 /// ```
-/// use polars::prelude::*;
+/// use rusmlai::polars::prelude::*;
 /// use rusmlai::prelude::*;
 /// let y_true = Series::new("y".into(), [3.0, -0.5, 2.0, 7.0]);
 /// let y_pred = Series::new("p".into(), [2.5, 0.0, 2.0, 8.0]);
@@ -200,7 +200,7 @@ pub fn try_mean_absolute_error(y_true: &Series, y_pred: &Series) -> Result<f64, 
 /// label type works when both sides have the same one.
 ///
 /// ```
-/// use polars::prelude::*;
+/// use rusmlai::polars::prelude::*;
 /// use rusmlai::prelude::*;
 /// let y_true = Series::new("y".into(), ["cat", "dog", "dog", "cat"]);
 /// let y_pred = Series::new("p".into(), ["cat", "dog", "cat", "cat"]);
@@ -248,7 +248,7 @@ pub fn try_accuracy_score(y_true: &Series, y_pred: &Series) -> Result<f64, Model
 /// infinity, like scikit-learn.
 ///
 /// ```
-/// use polars::prelude::*;
+/// use rusmlai::polars::prelude::*;
 /// use rusmlai::prelude::*;
 /// let y_true = Series::new("y".into(), ["a", "b", "a"]);
 /// let proba = Dataset::new(df!("a" => [0.9, 0.2, 0.6], "b" => [0.1, 0.8, 0.4]).unwrap(), "");
@@ -342,7 +342,7 @@ mod tests {
             .to_string();
         assert_eq!(
             err,
-            "y_pred has 1 nulls; a metric needs a value in every row"
+            "y_pred has 1 null; a metric needs a value in every row"
         );
 
         let labels: Series = Series::new("y".into(), ["a", "c"]);

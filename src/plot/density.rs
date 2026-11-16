@@ -204,17 +204,6 @@ impl Dataset {
     /// ds.kdeplot("cgpa", ""); // saves metadata/plots/Density cgpa.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.kdeplot(data=ds, x="cgpa")
-    /// plt.show()
-    /// ```
-    ///
     /// One curve for passed and one for failed, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -245,6 +234,17 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.kdeplot("cgpa", "name"); // panics: cgpa has a single value, so it has no shape to draw
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.kdeplot(data=ds, x="cgpa")
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn kdeplot(&self, column: &str, hue: &str) -> Figure {
@@ -326,17 +326,6 @@ impl Dataset {
     /// ds.violinplot("batch", "cgpa", ""); // saves metadata/plots/Violin batch vs cgpa.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.violinplot(data=ds, x="batch", y="cgpa")
-    /// plt.show()
-    /// ```
-    ///
     /// Split by `passed`, with most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -368,6 +357,17 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.violinplot("name", "cgpa", "").svg();
     /// assert!(svg.contains("name = Aarav Shah\nupper fence = 8.10"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.violinplot(data=ds, x="batch", y="cgpa")
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn violinplot(&self, x: &str, y: &str, hue: &str) -> Figure {
@@ -480,18 +480,6 @@ impl Dataset {
     /// ds.qqplot("cgpa"); // saves metadata/plots/Q-Q plot cgpa.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// from scipy import stats
-    /// stats.probplot(ds["cgpa"].dropna(), plot=plt)
-    /// plt.show()
-    /// ```
-    ///
     /// With 5 points and most options:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -520,6 +508,17 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.qqplot("batch"); // panics: column 'batch' is not numeric (found str)
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// from scipy import stats
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// stats.probplot(ds["cgpa"].dropna(), plot=plt)
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn qqplot(&self, column: &str) -> Figure {

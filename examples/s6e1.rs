@@ -22,9 +22,9 @@ fn main() {
     // Pipelines: split the rows, fit on the train rows, score on the test rows. The baseline
     // predicts the mean score of the train rows, so its R² is about 0; a model must beat it.
     let (train, test) = train_test_split(&dataset.drop(&["id"]), 0.2, 42, "");
-    let mut baseline = Pipeline::new(preprocessing(), ModelStacker::new(DummyRegressor::new()));
+    let mut baseline = Pipeline::new(preprocessing(), DummyRegressor::new());
     baseline.fit(&train, "exam_score");
-    let mut linear = Pipeline::new(preprocessing(), ModelStacker::new(LinearRegression::new()));
+    let mut linear = Pipeline::new(preprocessing(), LinearRegression::new());
     linear.fit(&train, "exam_score");
     println!(
         "R² on {} test rows: DummyRegressor {:.4}, LinearRegression {:.4}",
@@ -37,7 +37,7 @@ fn main() {
     // score goes into the model cache (a second run loads them), and the journal draws them all.
     for (alpha, l1_ratio) in [(0.001, 0.0), (0.01, 1.0), (0.01, 0.5)] {
         let model = LinearRegression::new().alpha(alpha).l1_ratio(l1_ratio);
-        let mut pipe = Pipeline::new(preprocessing(), ModelStacker::new(model));
+        let mut pipe = Pipeline::new(preprocessing(), model);
         pipe.fit(&train, "exam_score");
         pipe.score(&train, "exam_score");
         println!(

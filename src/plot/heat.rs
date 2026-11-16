@@ -49,17 +49,6 @@ impl Dataset {
     /// ds.heatmap("batch", "passed", "", ""); // saves metadata/plots/Heatmap batch vs passed.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.heatmap(pd.crosstab(ds["passed"], ds["batch"]), annot=True)  # rows per cell
-    /// plt.show()
-    /// ```
-    ///
     /// The mean CGPA of each cell, with every option:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -84,6 +73,17 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.heatmap("batch", "passed", "", "mean"); // panics: estimator needs a column of values
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.heatmap(pd.crosstab(ds["passed"], ds["batch"]), annot=True)  # rows per cell
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn heatmap(&self, x: &str, y: &str, value: &str, estimator: &str) -> Figure {
@@ -188,17 +188,6 @@ impl Dataset {
     /// ds.missing_matrix(); // saves metadata/plots/Missing values by row.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.heatmap(ds.isna(), cbar=False)  # or missingno.matrix(ds)
-    /// plt.show()
-    /// ```
-    ///
     /// With every option:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -221,6 +210,17 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// let svg = ds.select(&["id", "batch"]).missing_matrix().svg();
     /// assert!(svg.contains("no missing values"));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.heatmap(ds.isna(), cbar=False)  # or missingno.matrix(ds)
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn missing_matrix(&self) -> Figure {
@@ -305,17 +305,6 @@ impl Dataset {
     /// ds.corrplot(); // saves metadata/plots/Corrplot Correlation Matrix.png
     /// ```
     ///
-    /// Python:
-    ///
-    /// ```python
-    /// import matplotlib.pyplot as plt
-    /// import pandas as pd
-    /// import seaborn as sns
-    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
-    /// sns.heatmap(ds.corr(numeric_only=True), annot=True, vmin=-1, vmax=1, cmap="RdBu_r")
-    /// plt.show()
-    /// ```
-    ///
     /// Age and CGPA only, with every option:
     /// ```
     /// # use rusmlai::prelude::*;
@@ -341,6 +330,17 @@ impl Dataset {
     /// # use rusmlai::prelude::*;
     /// let ds = read_csv("tests/fixtures/data/students.csv");
     /// ds.select(&["name", "batch"]).corrplot(); // panics: nothing to plot
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import matplotlib.pyplot as plt
+    /// import pandas as pd
+    /// import seaborn as sns
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv")
+    /// sns.heatmap(ds.corr(numeric_only=True), annot=True, vmin=-1, vmax=1, cmap="RdBu_r")
+    /// plt.show()
     /// ```
     #[track_caller]
     pub fn corrplot(&self) -> Figure {
