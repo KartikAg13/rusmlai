@@ -6,8 +6,12 @@ use crate::metadata::error::MetadataError;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DatasetError {
-    #[error("file not found at '{path}' (current working directory: '{cwd}')")]
-    FileNotFound { path: String, cwd: String },
+    #[error("file not found at '{absolute}' (given '{path}', relative to '{cwd}')")]
+    FileNotFound {
+        path: String,
+        absolute: String,
+        cwd: String,
+    },
 
     #[error("column '{requested}' not found in dataset. Available columns: {available}")]
     ColumnNotFound {
@@ -35,6 +39,9 @@ pub enum DatasetError {
 
     #[error("could not read {what}: {reason}")]
     Read { what: String, reason: String },
+
+    #[error("could not write {path}: {reason}")]
+    Write { path: String, reason: String },
 
     #[error(transparent)]
     Metadata(#[from] MetadataError),

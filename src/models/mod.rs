@@ -1,16 +1,40 @@
 //! Every model: [`Model`], the trait they share, [`Regressor`] and [`Classifier`] on top of it,
-//! [`ModelError`], and one file per model family ([`dummy`], [`linear`], [`logistic`]).
+//! [`ModelError`], and one file per model family ([`dummy`], [`linear`], [`logistic`], [`tree`], [`forest`], [`bagging`]).
 
 use std::fmt::Debug;
 
+pub mod adaboost;
+pub mod bagging;
+pub mod boosting;
 pub(crate) mod design;
 pub mod dummy;
+pub mod folds;
+pub mod forest;
+pub(crate) mod hist;
+pub mod search;
+pub mod stacking;
+pub mod lightgbm;
 pub mod linear;
 pub mod logistic;
+pub mod tree;
+pub mod xgboost;
 
+pub use adaboost::AdaBoostClassifier;
+pub use bagging::{BaggingClassifier, BaggingRegressor};
+pub use search::{GridSearchCV, cross_val_score, try_cross_val_score};
+pub use stacking::{AnyModel, StackingClassifier, StackingRegressor};
+pub use boosting::{GradientBoostingClassifier, GradientBoostingRegressor};
 pub use dummy::DummyRegressor;
-pub use linear::LinearRegression;
+pub use folds::{Cv, KFold, StratifiedKFold, cross_val_predict, try_cross_val_predict};
+pub use forest::{ExtraTreesClassifier, ExtraTreesRegressor, RandomForestClassifier, RandomForestRegressor};
+pub use lightgbm::{LGBMClassifier, LGBMRegressor};
+pub use linear::{ElasticNet, Lasso, LinearRegression, Ridge, RidgeCV};
 pub use logistic::LogisticRegression;
+pub use tree::{
+    ClassWeight, DecisionTreeClassifier, DecisionTreeRegressor, compute_sample_weight,
+    try_compute_sample_weight,
+};
+pub use xgboost::{XGBClassifier, XGBRegressor};
 
 use indexmap::IndexMap;
 use polars::{
@@ -27,7 +51,10 @@ use crate::{
         dataset::stats::NumericStats,
         models::{self, CachedRun},
     },
-    metrics::{try_accuracy_score, try_log_loss, try_regression_scores},
+    metrics::{
+        try_accuracy_score, try_balanced_accuracy_score, try_log_loss, try_regression_scores,
+        try_roc_auc_score,
+    },
     preprocess::{LabelEncoder, Transform, error::PreprocessError},
     utils::col,
 };
@@ -43,6 +70,10 @@ pub enum ModelError {
     /// The preprocessing of a [`Pipeline`](crate::pipeline::Pipeline) failed.
     #[error(transparent)]
     Preprocess(#[from] PreprocessError),
+
+    /// The rows of a fold could not be taken.
+    #[error(transparent)]
+    Split(#[from] crate::dataset::split::SplitError),
 
     /// A Polars query failed.
     #[error(transparent)]
@@ -111,6 +142,30 @@ pub enum ModelError {
     NotFinite {
         /// The column.
         column: String,
+    },
+
+    /// A categorical feature has more categories than a split can tell apart.
+    #[error(
+        "categorical feature '{column}' has {categories} categories; at most max_bins ({max_bins}) fit: group the rare ones, or leave the column out of categorical_features"
+    )]
+    TooManyCategories {
+        /// The column.
+        column: String,
+        /// Its categories (at least).
+        categories: usize,
+        /// The most it may have.
+        max_bins: usize,
+    },
+
+    /// A categorical feature was text at `fit` and is not now, or the other way around.
+    #[error("categorical feature '{column}' is {dtype} now and was {was} at fit")]
+    CategoryType {
+        /// The column.
+        column: String,
+        /// Its dtype now.
+        dtype: String,
+        /// "text" or "numbers".
+        was: &'static str,
     },
 
     /// A setting got a value it doesn't take.
@@ -219,12 +274,26 @@ pub enum ModelError {
 /// every fit and score is a line of the journal (`Dataset::journal`).
 ///
 /// A model implements `try_train` (its own training) and the methods the cache needs:
-/// `params`, `learned`, `try_load`, `try_set_params`, and `run` / `set_run`.
+/// `params`, `learned`, `try_load`, `try_set_params`, and `run` / `set_run`; a tree model also
+/// `write_weights`.
 ///
 /// [`ModelCache`]: crate::metadata::models::ModelCache
 pub trait Model: Debug {
     /// Trains on `dataset`, where `target` is the column to predict, without the cache.
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError>;
+
+    /// [`Model::try_train`] where row `i` counts `weights[i]` times (0 leaves it out), like
+    /// scikit-learn's `sample_weight`; `None` when the model takes no weights, which is the
+    /// default. `Bagging*` gives a bootstrap sample this way to the models that take it, the
+    /// trees, and copies the rows for the others.
+    fn try_train_weighted(
+        &mut self,
+        _dataset: &Dataset,
+        _target: &str,
+        _weights: &[f32],
+    ) -> Option<Result<(), ModelError>> {
+        None
+    }
 
     /// The model's settings, by scikit-learn name: part of the cache key, and the journal's
     /// hyperparameter columns.
@@ -233,11 +302,40 @@ pub trait Model: Debug {
     /// What `fit` learned, by scikit-learn name (`coef_`, `intercept_`, ...).
     fn learned(&self) -> Value;
 
-    /// Puts back what [`Model::learned`] gave, as if `fit` had run on `target`.
-    fn try_load(&mut self, learned: Value, target: &str) -> Result<(), ModelError>;
+    /// Writes what `fit` learned that is too large for JSON, as bytes: the nodes of a tree
+    /// model. The cache keeps them in a binary file next to [`Model::learned`]. Most models
+    /// write nothing.
+    fn write_weights(&self, _out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    /// Puts back what [`Model::learned`] gave and the bytes [`Model::write_weights`] wrote
+    /// (empty for most models), as if `fit` had run on `target`.
+    fn try_load(&mut self, learned: Value, weights: &[u8], target: &str) -> Result<(), ModelError>;
 
     /// Puts back settings that [`Model::params`] gave.
     fn try_set_params(&mut self, params: Value) -> Result<(), ModelError>;
+
+    /// The score of the fitted model on `dataset` by scikit-learn's scorer `scoring`: higher
+    /// is better. `""` is the model's own score, R² or the accuracy. A regressor takes
+    /// `"r2"`, `"neg_mean_squared_error"`, `"neg_root_mean_squared_error"` and
+    /// `"neg_mean_absolute_error"`, a classifier `"accuracy"`, `"balanced_accuracy"`,
+    /// `"roc_auc"` (a binary target) and `"neg_log_loss"`. Unlike
+    /// `score`, it records nothing in the model cache: a search scores many models that are
+    /// never kept.
+    fn try_evaluate(&self, dataset: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError>;
+
+    /// The fitted model's predictions by scikit-learn's method name, as a table: `"predict"`
+    /// gives one column (named after the target), and a classifier's `"predict_proba"` one
+    /// column per class. What `cross_val_predict` and the stacking models call, since they
+    /// hold models of any kind.
+    fn try_predict_method(&self, dataset: &Dataset, method: &str) -> Result<Dataset, ModelError>;
+
+    /// Whether the model predicts classes. A search then gives each fold the same share of
+    /// each class, like scikit-learn's `StratifiedKFold`.
+    fn is_classifier(&self) -> bool {
+        false
+    }
 
     /// The cache record of the last fit (its id and the cache that holds it); `None` before
     /// `fit` or without a cache.
@@ -254,6 +352,12 @@ pub trait Model: Debug {
 
     /// The training loss per round, for models that train in rounds.
     fn loss_curve(&self) -> Option<Vec<f64>> {
+        None
+    }
+
+    /// The loss per round on the rows the model held out of training, for models that stop
+    /// early on them (gradient boosting). The journal draws it next to the training loss.
+    fn validation_curve(&self) -> Option<Vec<f64>> {
         None
     }
 
@@ -393,6 +497,113 @@ pub trait Classifier: Model {
     }
 }
 
+/// The scorer names a regressor takes in [`Model::try_evaluate`].
+const REGRESSION_SCORERS: &str = "\"r2\", \"neg_mean_squared_error\", \"neg_root_mean_squared_error\" or \"neg_mean_absolute_error\" for a regressor";
+
+/// The scorer names a classifier takes in [`Model::try_evaluate`].
+const CLASSIFICATION_SCORERS: &str = "\"accuracy\", \"balanced_accuracy\", \"roc_auc\" or \"neg_log_loss\" for a classifier";
+
+/// [`Model::try_evaluate`] of a regressor.
+pub(crate) fn evaluate_regressor<R: Regressor + ?Sized>(
+    model: &R,
+    dataset: &Dataset,
+    target: &str,
+    scoring: &str,
+) -> Result<f64, ModelError> {
+    let invalid = || ModelError::InvalidSetting {
+        setting: "scoring",
+        value: scoring.into(),
+        expected: REGRESSION_SCORERS,
+    };
+    if !matches!(
+        scoring,
+        "" | "r2" | "neg_mean_squared_error" | "neg_root_mean_squared_error" | "neg_mean_absolute_error"
+    ) {
+        return Err(invalid());
+    }
+    let predicted: Series = model.try_predict(dataset)?;
+    let y: &Series = dataset.column(target)?.as_materialized_series();
+    let (r2, mse, mae): (f64, f64, f64) = try_regression_scores(y, &predicted)?;
+    Ok(match scoring {
+        "neg_mean_squared_error" => -mse,
+        "neg_root_mean_squared_error" => -mse.sqrt(),
+        "neg_mean_absolute_error" => -mae,
+        _ => r2,
+    })
+}
+
+/// [`Model::try_evaluate`] of a classifier.
+pub(crate) fn evaluate_classifier<C: Classifier + ?Sized>(
+    model: &C,
+    dataset: &Dataset,
+    target: &str,
+    scoring: &str,
+) -> Result<f64, ModelError> {
+    let y: &Series = dataset.column(target)?.as_materialized_series();
+    match scoring {
+        "" | "accuracy" => try_accuracy_score(y, &model.try_predict(dataset)?),
+        "neg_log_loss" => Ok(-try_log_loss(y, &model.try_predict_proba(dataset)?)?),
+        "balanced_accuracy" => try_balanced_accuracy_score(y, &model.try_predict(dataset)?),
+        "roc_auc" => {
+            // The score of the greater class: predict_proba's columns are the sorted classes.
+            let proba: Dataset = model.try_predict_proba(dataset)?;
+            if proba.width() != 2 {
+                return Err(ModelError::InvalidSetting {
+                    setting: "scoring",
+                    value: format!("roc_auc with {} classes", proba.width()),
+                    expected: "a binary target for \"roc_auc\"",
+                });
+            }
+            let last: String = proba.columns()[1].clone();
+            try_roc_auc_score(y, proba.column(&last)?.as_materialized_series())
+        }
+        _ => Err(ModelError::InvalidSetting {
+            setting: "scoring",
+            value: scoring.into(),
+            expected: CLASSIFICATION_SCORERS,
+        }),
+    }
+}
+
+/// [`Model::try_predict_method`] of a regressor.
+pub(crate) fn predict_regressor<R: Regressor + ?Sized>(
+    model: &R,
+    dataset: &Dataset,
+    method: &str,
+) -> Result<Dataset, ModelError> {
+    match method {
+        "predict" => one_column(model.try_predict(dataset)?),
+        _ => Err(ModelError::InvalidSetting {
+            setting: "method",
+            value: method.into(),
+            expected: "\"predict\" for a regressor",
+        }),
+    }
+}
+
+/// [`Model::try_predict_method`] of a classifier.
+pub(crate) fn predict_classifier<C: Classifier + ?Sized>(
+    model: &C,
+    dataset: &Dataset,
+    method: &str,
+) -> Result<Dataset, ModelError> {
+    match method {
+        "predict" => one_column(model.try_predict(dataset)?),
+        "predict_proba" => model.try_predict_proba(dataset),
+        _ => Err(ModelError::InvalidSetting {
+            setting: "method",
+            value: method.into(),
+            expected: "\"predict\" or \"predict_proba\" for a classifier",
+        }),
+    }
+}
+
+/// A prediction as a table of one column.
+fn one_column(predicted: Series) -> Result<Dataset, ModelError> {
+    let frame: DataFrame = DataFrame::new(predicted.len(), vec![predicted.into()])?;
+    Ok(Dataset::new(frame, ""))
+}
+
 /// The cached stats of a numeric target with no nulls, NaN or infinity, the check every
 /// regressor's `fit` makes (scikit-learn: "Input y contains NaN"). A sum is finite only when
 /// every value is, so the cached mean is the check.
@@ -414,6 +625,33 @@ pub(crate) fn numeric_target<'a>(
         });
     }
     Ok(stats)
+}
+
+/// `dataset` without its identifier and constant columns ([`ColumnRole::left_out`]), and one
+/// warning that names them, or `None` when it has none. The target always stays. `fit`,
+/// [`GridSearchCV`] and [`cross_val_score`] train on what this keeps.
+///
+/// [`ColumnRole::left_out`]: crate::metadata::dataset::role::ColumnRole::left_out
+pub(crate) fn trainable(dataset: &Dataset, target: &str) -> Result<Option<Dataset>, ModelError> {
+    let (mut kept, mut out): (Vec<String>, Vec<(String, &'static str)>) = (Vec::new(), Vec::new());
+    for name in dataset.columns() {
+        let role = dataset.try_column_info(&name)?.role();
+        match name != target && role.left_out() {
+            true => out.push((name, role.as_str())),
+            false => kept.push(name),
+        }
+    }
+    let Some((first, _)) = out.first() else {
+        return Ok(None);
+    };
+    let named: Vec<String> = out.iter().map(|(name, role)| format!("{name} ({role})")).collect();
+    warn(format_args!(
+        "fit leaves out {}: such columns teach a model nothing about new rows. To learn from \
+         one anyway: ds.set_role(\"{first}\", ColumnRole::Feature)",
+        named.join(", ")
+    ));
+    let kept: Vec<&str> = kept.iter().map(String::as_str).collect();
+    Ok(Some(dataset.try_select(&kept)?))
 }
 
 /// Panics at the caller's line with [`ModelError::InvalidSetting`] unless `ok`.

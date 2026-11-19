@@ -64,7 +64,7 @@ use crate::{
 /// assert len(pipe.predict(test.drop(columns="score"))) == 2
 /// assert pipe.score(test.drop(columns="score"), test["score"]) <= 0.0
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Pipeline<M> {
     /// The preprocessing, `named_steps["prep"]` in scikit-learn.
     pub prep: ColumnTransformer,
@@ -138,12 +138,30 @@ impl<M: Model> Model for Pipeline<M> {
         self.model.learned()
     }
 
-    fn try_load(&mut self, learned: Value, target: &str) -> Result<(), ModelError> {
-        self.model.try_load(learned, target)
+    fn write_weights(&self, out: &mut dyn std::io::Write) -> std::io::Result<()> {
+        self.model.write_weights(out)
+    }
+
+    fn try_load(&mut self, learned: Value, weights: &[u8], target: &str) -> Result<(), ModelError> {
+        self.model.try_load(learned, weights, target)
     }
 
     fn try_set_params(&mut self, params: Value) -> Result<(), ModelError> {
         self.model.try_set_params(params)
+    }
+
+    /// Scores the model on the preprocessed rows, like `score`.
+    fn try_evaluate(&self, dataset: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError> {
+        self.model.try_evaluate(&self.scored(dataset, target)?, target, scoring)
+    }
+
+    /// Predicts from the preprocessed rows, like `predict`.
+    fn try_predict_method(&self, dataset: &Dataset, method: &str) -> Result<Dataset, ModelError> {
+        self.model.try_predict_method(&self.prep.try_transform(dataset)?, method)
+    }
+
+    fn is_classifier(&self) -> bool {
+        self.model.is_classifier()
     }
 
     fn run(&self) -> Option<&CachedRun> {
@@ -160,6 +178,10 @@ impl<M: Model> Model for Pipeline<M> {
 
     fn loss_curve(&self) -> Option<Vec<f64>> {
         self.model.loss_curve()
+    }
+
+    fn validation_curve(&self) -> Option<Vec<f64>> {
+        self.model.validation_curve()
     }
 }
 

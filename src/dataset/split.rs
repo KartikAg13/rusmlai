@@ -224,7 +224,7 @@ fn stratified(
 
 /// The rows of `dataset` at `rows`, in that order, with metadata of their own. The stats start
 /// empty; the plot cache is new and writes no file.
-fn take(dataset: &Dataset, rows: Vec<IdxSize>) -> Result<Dataset, SplitError> {
+pub(crate) fn take(dataset: &Dataset, rows: Vec<IdxSize>) -> Result<Dataset, SplitError> {
     let dataframe: DataFrame = dataset
         .dataframe
         .take(&IdxCa::from_vec(PlSmallStr::EMPTY, rows))?;
@@ -232,9 +232,12 @@ fn take(dataset: &Dataset, rows: Vec<IdxSize>) -> Result<Dataset, SplitError> {
         .columns()
         .iter()
         .map(|column| {
+            // The role of the whole table: a sample of an id column is still an id.
+            let parent = dataset.metadata.dataset_cache.columns.get(column.name().as_str());
+            let role = parent.and_then(|info| info.role.get().copied());
             (
                 column.name().to_string(),
-                std::sync::Arc::new(ColumnInfo::new(column)),
+                std::sync::Arc::new(ColumnInfo::new(column).with_role(role)),
             )
         })
         .collect();

@@ -7,7 +7,10 @@ use crate::{
     dataset::Dataset,
     display::{Figure, escape},
     error::OrFatal,
-    metadata::dataset::stats::{CategoricalStats, NumericStats},
+    metadata::dataset::{
+        role::ColumnRole,
+        stats::{CategoricalStats, NumericStats},
+    },
     plot::{
         MAX_GROUPS, VALUE,
         chart::{Body, Texts},
@@ -253,7 +256,9 @@ impl Dataset {
     /// With a `column` it draws seven bars: min, q25, median, mean, q75, max and std. An
     /// `estimator` (mean, median, min, max, std, count, sum) draws only that one. With
     /// `column = ""` it draws one bar per numeric column, for `estimator` ("mean" when `""`).
-    /// Text columns are skipped, and count is the number of values that aren't null.
+    /// Text columns and identifiers (an `id` column, see
+    /// [`ColumnRole`](crate::metadata::dataset::role::ColumnRole)) are skipped, and count is the
+    /// number of values that aren't null.
     ///
     /// Options: the ones of [`Dataset::bar`].
     ///
@@ -357,6 +362,9 @@ impl Dataset {
                 let Ok(stats) = self.try_numeric_stats(&name) else {
                     continue; // text column
                 };
+                if self.role(&name) == ColumnRole::Identifier {
+                    continue; // an id's mean says nothing
+                }
                 values.push(stat(self, &name, stats, est)?);
                 labels.push(name);
             }

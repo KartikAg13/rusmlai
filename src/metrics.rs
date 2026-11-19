@@ -4,9 +4,19 @@
 //! no nulls; [`log_loss`] takes the probabilities as a `Dataset`, one column per class, as
 //! `predict_proba` gives them. Sums run in `f64`.
 
-use polars::prelude::{ChunkCompareEq, DataType, PlHashMap, Series};
+use polars::prelude::{
+    ChunkCompareEq, DataFrame, DataType, IntoColumn, IntoLazy, IntoSeries, NamedFrom, PlHashMap,
+    Series,
+};
+use polars_core::runtime::THREAD_POOL;
+use rayon::slice::ParallelSliceMut;
 
-use crate::{dataset::Dataset, error::OrFatal, models::ModelError};
+use crate::{
+    dataset::Dataset,
+    error::{OrFatal, warn},
+    models::ModelError,
+    utils::col,
+};
 
 /// The checks every metric shares: `y_true` and `inputs` have `rows` values each, at least
 /// one, and no nulls.
@@ -307,6 +317,246 @@ pub fn try_log_loss(y_true: &Series, y_proba: &Dataset) -> Result<f64, ModelErro
     Ok(total / y_true.len() as f64)
 }
 
+/// The positive class of a binary `y_true`: the given label, or with `""` the greater of the
+/// two labels (numbers as numbers, text by name, `true` over `false`), as scikit-learn's
+/// `roc_auc_score` picks it. Returns the mask of positive rows.
+fn positive(y_true: &Series, pos_label: &str) -> Result<Vec<bool>, ModelError> {
+    let labels: Series = y_true.unique()?.sort(Default::default())?;
+    let label: Series = if pos_label.is_empty() {
+        match labels.len() {
+            2 => labels.slice(1, 1),
+            1 => {
+                return Err(ModelError::OneClass {
+                    column: "y_true".into(),
+                    class: labels.cast(&DataType::String)?.str()?.get(0).unwrap_or("").into(),
+                });
+            }
+            _ => {
+                return Err(ModelError::InvalidSetting {
+                    setting: "y_true",
+                    value: format!("{} classes", labels.len()),
+                    expected: "two classes: a ROC curve is for a binary target",
+                });
+            }
+        }
+    } else {
+        Series::new("".into(), [pos_label]).cast(y_true.dtype())?
+    };
+    let mask = y_true.equal(&label)?;
+    Ok(mask.iter().map(|hit| hit.unwrap_or(false)).collect())
+}
+
+/// `(score, is positive)` per row, highest score first. A NaN or infinite-free score is not
+/// required, but a NaN is refused, like scikit-learn.
+fn ranked(y_true: &Series, y_score: &Series, pos_label: &str) -> Result<Vec<(f64, bool)>, ModelError> {
+    check(y_score.len(), y_true, &[("y_score", y_score)])?;
+    let mask: Vec<bool> = positive(y_true, pos_label)?;
+    let scores: Series = y_score.cast(&DataType::Float64)?.rechunk();
+    let scores: &[f64] = slice(&scores)?;
+    if scores.iter().any(|s| s.is_nan()) {
+        return Err(ModelError::NotFinite {
+            column: "y_score".into(),
+        });
+    }
+    let mut pairs: Vec<(f64, bool)> = scores.iter().copied().zip(mask).collect();
+    // The order of rows that tie on the score does not change the curve.
+    THREAD_POOL.install(|| pairs.par_sort_unstable_by(|a, b| b.0.total_cmp(&a.0)));
+    Ok(pairs)
+}
+
+/// The points of a ROC curve as counts: false and true positives at each distinct score, and
+/// that score, highest first. scikit-learn's `_binary_clf_curve`.
+fn counts(pairs: &[(f64, bool)]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let (mut fps, mut tps, mut thresholds): (Vec<f64>, Vec<f64>, Vec<f64>) =
+        (Vec::new(), Vec::new(), Vec::new());
+    let mut tp: f64 = 0.0;
+    for (i, (score, hit)) in pairs.iter().enumerate() {
+        tp += f64::from(u8::from(*hit));
+        if pairs.get(i + 1).is_none_or(|next| next.0 != *score) {
+            tps.push(tp);
+            fps.push((i + 1) as f64 - tp);
+            thresholds.push(*score);
+        }
+    }
+    (fps, tps, thresholds)
+}
+
+/// What [`roc_curve`] gives: the false positive rates, the true positive rates and the
+/// thresholds.
+pub type RocCurve = (Vec<f64>, Vec<f64>, Vec<f64>);
+
+/// The ROC curve of a binary target: the false positive rate, the true positive rate and the
+/// score threshold at each point, like scikit-learn's `roc_curve` with
+/// `drop_intermediate=True`. The first point is `(0, 0)` at the threshold +∞; points on a
+/// straight line between their neighbours are dropped.
+///
+/// `y_score` is the score of the positive class (a probability, a logit or any score where
+/// higher means more likely positive). `pos_label` is the positive label as text; `""` takes
+/// the greater of the two labels, which is scikit-learn's choice for 0/1 and −1/1 labels and
+/// which rusmlai also makes for text and booleans (scikit-learn asks for `pos_label` there).
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y = Series::new("y".into(), [0, 0, 1, 1]);
+/// let score = Series::new("s".into(), [0.1, 0.4, 0.35, 0.8]);
+/// let (fpr, tpr, thresholds) = roc_curve(&y, &score, "");
+/// assert_eq!(fpr, [0.0, 0.0, 0.5, 0.5, 1.0]);
+/// assert_eq!(tpr, [0.0, 0.5, 0.5, 1.0, 1.0]);
+/// assert_eq!(thresholds, [f64::INFINITY, 0.8, 0.4, 0.35, 0.1]);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import numpy as np
+/// from sklearn.metrics import roc_curve
+/// fpr, tpr, thresholds = roc_curve([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8])
+/// assert fpr.tolist() == [0.0, 0.0, 0.5, 0.5, 1.0]
+/// assert tpr.tolist() == [0.0, 0.5, 0.5, 1.0, 1.0]
+/// assert thresholds.tolist() == [np.inf, 0.8, 0.4, 0.35, 0.1]
+/// ```
+#[track_caller]
+pub fn roc_curve(y_true: &Series, y_score: &Series, pos_label: &str) -> RocCurve {
+    try_roc_curve(y_true, y_score, pos_label).or_fatal()
+}
+
+/// [`roc_curve`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_r2_score`]; [`ModelError::NotFinite`] for a NaN score;
+/// [`ModelError::OneClass`] or [`ModelError::InvalidSetting`] when `y_true` does not have two
+/// classes and `pos_label` is `""`.
+pub fn try_roc_curve(
+    y_true: &Series,
+    y_score: &Series,
+    pos_label: &str,
+) -> Result<RocCurve, ModelError> {
+    let pairs: Vec<(f64, bool)> = ranked(y_true, y_score, pos_label)?;
+    let (mut fps, mut tps, mut thresholds) = counts(&pairs);
+    if fps.len() > 2 {
+        // Keep the ends and every point where the second difference of either count is not 0.
+        let keep: Vec<bool> = (0..fps.len())
+            .map(|i| {
+                i == 0
+                    || i == fps.len() - 1
+                    || fps[i + 1] - 2.0 * fps[i] + fps[i - 1] != 0.0
+                    || tps[i + 1] - 2.0 * tps[i] + tps[i - 1] != 0.0
+            })
+            .collect();
+        let pick = |v: &[f64]| -> Vec<f64> {
+            v.iter().zip(&keep).filter(|(_, k)| **k).map(|(x, _)| *x).collect()
+        };
+        (fps, tps, thresholds) = (pick(&fps), pick(&tps), pick(&thresholds));
+    }
+    let (negatives, positives): (f64, f64) = (*fps.last().unwrap_or(&0.0), *tps.last().unwrap_or(&0.0));
+    if negatives == 0.0 {
+        warn(format_args!("no negative rows in y_true: the false positive rate is NaN"));
+    }
+    if positives == 0.0 {
+        warn(format_args!("no positive rows in y_true: the true positive rate is NaN"));
+    }
+    let fpr: Vec<f64> = std::iter::once(0.0).chain(fps).map(|f| f / negatives).collect();
+    let tpr: Vec<f64> = std::iter::once(0.0).chain(tps).map(|t| t / positives).collect();
+    thresholds.insert(0, f64::INFINITY);
+    Ok((fpr, tpr, thresholds))
+}
+
+/// The area under the ROC curve of a binary target: the chance that a random positive row
+/// scores higher than a random negative one (a tie counts half). 1 is a perfect ranking, 0.5
+/// a random one. Like scikit-learn's `roc_auc_score` for a binary target: `y_score` is the
+/// score of the greater label (`predict_proba`'s last column).
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y = Series::new("y".into(), ["no", "no", "yes", "yes"]);
+/// let score = Series::new("s".into(), [0.1, 0.4, 0.35, 0.8]);
+/// assert_eq!(roc_auc_score(&y, &score), 0.75);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import roc_auc_score
+/// assert roc_auc_score(["no", "no", "yes", "yes"], [0.1, 0.4, 0.35, 0.8]) == 0.75
+/// ```
+#[track_caller]
+pub fn roc_auc_score(y_true: &Series, y_score: &Series) -> f64 {
+    try_roc_auc_score(y_true, y_score).or_fatal()
+}
+
+/// [`roc_auc_score`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_roc_curve`]; [`ModelError::OneClass`] when `y_true` has one class.
+pub fn try_roc_auc_score(y_true: &Series, y_score: &Series) -> Result<f64, ModelError> {
+    let pairs: Vec<(f64, bool)> = ranked(y_true, y_score, "")?;
+    let (fps, tps, _) = counts(&pairs);
+    let (negatives, positives): (f64, f64) = (fps[fps.len() - 1], tps[tps.len() - 1]);
+    // The trapezoids between the points, on the counts, then scaled once.
+    let (mut area, mut last): (f64, (f64, f64)) = (0.0, (0.0, 0.0));
+    for (fp, tp) in fps.iter().zip(&tps) {
+        area += (fp - last.0) * (tp + last.1);
+        last = (*fp, *tp);
+    }
+    Ok(area / (2.0 * negatives * positives))
+}
+
+/// The mean of the recall of each class: the accuracy where every class weighs the same, so a
+/// model that always predicts the majority class scores 1 / classes. Like scikit-learn's
+/// `balanced_accuracy_score`; a class that is only in `y_pred` is left out. Labels compare as
+/// in [`accuracy_score`].
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y_true = Series::new("y".into(), ["a", "a", "a", "b"]);
+/// let y_pred = Series::new("p".into(), ["a", "a", "a", "a"]);
+/// assert_eq!(accuracy_score(&y_true, &y_pred), 0.75);
+/// assert_eq!(balanced_accuracy_score(&y_true, &y_pred), 0.5);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import accuracy_score, balanced_accuracy_score
+/// y_true, y_pred = ["a", "a", "a", "b"], ["a", "a", "a", "a"]
+/// assert accuracy_score(y_true, y_pred) == 0.75
+/// assert balanced_accuracy_score(y_true, y_pred) == 0.5
+/// ```
+#[track_caller]
+pub fn balanced_accuracy_score(y_true: &Series, y_pred: &Series) -> f64 {
+    try_balanced_accuracy_score(y_true, y_pred).or_fatal()
+}
+
+/// [`balanced_accuracy_score`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_r2_score`].
+pub fn try_balanced_accuracy_score(y_true: &Series, y_pred: &Series) -> Result<f64, ModelError> {
+    check(y_pred.len(), y_true, &[("y_pred", y_pred)])?;
+    let (t, p): (Series, Series) = if y_true.dtype() == y_pred.dtype() {
+        (y_true.clone(), y_pred.clone())
+    } else {
+        (y_true.cast(&DataType::String)?, y_pred.cast(&DataType::String)?)
+    };
+    let hit: Series = t.equal(&p)?.into_series().with_name("\0hit".into());
+    let recall: DataFrame = DataFrame::new(t.len(), vec![
+        t.with_name("\0t".into()).into_column(),
+        hit.into_column(),
+    ])?
+    .lazy()
+    .group_by([col("\0t")])
+    .agg([col("\0hit").cast(DataType::Float64).mean()])
+    .select([col("\0hit").mean()])
+    .collect()?;
+    Ok(recall.column("\0hit")?.f64()?.get(0).unwrap_or(f64::NAN))
+}
+
 #[cfg(test)]
 mod tests {
     use polars::prelude::NamedFrom;
@@ -376,4 +626,47 @@ mod tests {
             -(1.0 - f64::EPSILON).ln()
         );
     }
+    /// The same rows as `analysis/2026-11-18/new-features/metrics-parity.py`: scores with
+    /// ties, and a class in `y_pred` that is not in `y_true`.
+    #[test]
+    fn roc_and_balanced_accuracy_match_scikit_learn() {
+        let n: usize = 200;
+        let y: Vec<i64> = (0..n).map(|i| i64::from(i * 7 % 3 == 0)).collect();
+        let s: Vec<f64> = (0..n)
+            .map(|i| (i * 37 % 11) as f64 / 10.0 + 0.3 * y[i] as f64)
+            .collect();
+        let (y, s) = (Series::new("y".into(), y), Series::new("s".into(), s));
+        assert!((try_roc_auc_score(&y, &s).unwrap() - 0.7261811244529234).abs() < 1e-15);
+        let (fpr, tpr, thr) = try_roc_curve(&y, &s, "").unwrap();
+        let close = |a: &[f64], b: &[f64]| {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a == b || (a - b).abs() < 1e-15)
+        };
+        assert!(close(&fpr, &[0.0, 0.0, 0.0, 0.09022556390977443, 0.18045112781954886, 0.18045112781954886, 0.5413533834586466, 0.6390977443609023, 0.7293233082706767, 1.0]), "{fpr:?}");
+        assert!(close(&tpr, &[0.0, 0.08955223880597014, 0.26865671641791045, 0.3582089552238806, 0.3582089552238806, 0.44776119402985076, 0.8059701492537313, 0.8955223880597015, 1.0, 1.0]), "{tpr:?}");
+        assert!(close(&thr, &[f64::INFINITY, 1.3, 1.1, 1.0, 0.9, 0.8999999999999999, 0.5, 0.4, 0.3, 0.0]), "{thr:?}");
+        // The positive label can be named; the other way round the curve swaps.
+        let (fpr0, _, _) = try_roc_curve(&y, &s, "0").unwrap();
+        assert_eq!(fpr0.len(), fpr.len());
+
+        let t: Series = Series::new("t".into(), (0..n).map(|i| (i * 5 % 3) as i64).collect::<Vec<_>>());
+        let p: Series = Series::new("p".into(), (0..n).map(|i| (i * 11 % 4) as i64).collect::<Vec<_>>());
+        assert!((try_balanced_accuracy_score(&t, &p).unwrap() - 0.24498718528569274).abs() < 1e-15);
+    }
+
+    #[test]
+    fn roc_auc_refuses_one_class_many_classes_and_nan() {
+        let one: Series = Series::new("y".into(), ["a", "a"]);
+        let two: Series = Series::new("s".into(), [0.1, 0.2]);
+        assert!(matches!(try_roc_auc_score(&one, &two), Err(ModelError::OneClass { .. })));
+        let three: Series = Series::new("y".into(), ["a", "b", "c"]);
+        let scores: Series = Series::new("s".into(), [0.1, 0.2, 0.3]);
+        assert!(matches!(try_roc_auc_score(&three, &scores), Err(ModelError::InvalidSetting { .. })));
+        let pair: Series = Series::new("y".into(), [true, false]);
+        let nan: Series = Series::new("s".into(), [f64::NAN, 0.2]);
+        assert!(matches!(try_roc_auc_score(&pair, &nan), Err(ModelError::NotFinite { .. })));
+        // Booleans: true is the positive class.
+        let scores: Series = Series::new("s".into(), [0.9, 0.2]);
+        assert_eq!(try_roc_auc_score(&pair, &scores).unwrap(), 1.0);
+    }
+
 }

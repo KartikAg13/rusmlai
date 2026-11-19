@@ -1,4 +1,4 @@
-//! [`OneHotEncoder`], [`OrdinalEncoder`] and [`LabelEncoder`].
+//! [`OneHotEncoder`], [`OrdinalEncoder`], [`LabelEncoder`] and [`CountEncoder`].
 
 use indexmap::IndexMap;
 use polars::prelude::{
@@ -17,14 +17,16 @@ use crate::{
 /// numeric codes as numbers.
 fn learn_counts(dataset: &Dataset, column: &str) -> Result<Vec<(String, u64)>, PreprocessError> {
     match dataset.try_categorical_stats(column) {
-        Ok(stats) => {
+        // A near-unique column keeps only its most frequent categories in the stats: those
+        // are read from the rows below.
+        Ok(stats) if stats.categories.len() == stats.unique_count => {
             let mut counts: Vec<(String, u64)> = stats.categories.clone();
             counts.sort_unstable();
             Ok(counts)
         }
         // ponytail: numeric codes have no cached categories, so this is one pass over the
         // column; cache the distinct values if a bench says so.
-        Err(DatasetError::ColumnNotCategorical { .. }) => {
+        Ok(_) | Err(DatasetError::ColumnNotCategorical { .. }) => {
             let frame: DataFrame = dataset
                 .dataframe
                 .clone()
@@ -704,6 +706,100 @@ impl Transform for LabelEncoder {
                 (name.clone(), coded)
             })
             .collect())
+    }
+}
+
+/// Replaces each category by its number of rows in the training data, "count encoding" or
+/// "frequency encoding": the `df[c].map(df[c].value_counts())` of many Kaggle solutions, and
+/// `category_encoders`' `CountEncoder`. A tree then splits rare from common categories, and a
+/// column with thousands of categories stays one column.
+///
+/// `fit` reads the counts from the cached stats, so it makes no pass over the data (a column
+/// with more distinct values than the stats keep is counted in one query). `normalize(true)`
+/// gives the share of the non-null rows instead of the count, like `value_counts(normalize=True)`.
+/// A category `fit` never saw counts 0 (pandas gives NaN); a null stays null.
+///
+/// ```
+/// use rusmlai::prelude::*;
+/// let ds = Dataset::new(df!("city" => [Some("a"), Some("b"), Some("a"), None, Some("a")]).unwrap(), "");
+/// let mut counts = CountEncoder::new();
+/// let out = counts.fit_transform(&ds);
+/// assert_eq!(counts.counts_["city"], [("a".to_string(), 3.0), ("b".to_string(), 1.0)]);
+/// let column: Vec<f64> = out.to_list("city"); // to_list gives a null as NaN
+/// assert_eq!(column[..3], [3.0, 1.0, 3.0]);
+/// assert!(column[3].is_nan() && column[4] == 3.0);
+/// let new = Dataset::new(df!("city" => ["b", "z"]).unwrap(), "");
+/// assert_eq!(CountEncoder::new().normalize(true).fit(&ds).transform(&new).to_list("city"), [0.25, 0.0]);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// ds = pd.DataFrame({"city": ["a", "b", "a", None, "a"]})
+/// counts = ds["city"].value_counts()
+/// assert counts.to_dict() == {"a": 3, "b": 1}
+/// out = ds["city"].map(counts)
+/// assert out.tolist()[:3] == [3, 1, 3] and pd.isna(out[3])
+/// new = pd.Series(["b", "z"])
+/// share = ds["city"].value_counts(normalize=True)
+/// assert new.map(share).fillna(0.0).tolist() == [0.25, 0.0]
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct CountEncoder {
+    normalize: bool,
+    /// Each column's categories with their count (or share), most frequent first, learned by
+    /// `fit`.
+    pub counts_: IndexMap<String, Vec<(String, f64)>>,
+}
+
+impl CountEncoder {
+    /// Counts, not shares.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `true` gives the share of the non-null rows. Default `false`.
+    pub fn normalize(mut self, normalize: bool) -> Self {
+        self.normalize = normalize;
+        self
+    }
+
+    /// [`Transform::fit`] that returns the encoder, for chaining.
+    #[track_caller]
+    pub fn fit(mut self, dataset: &Dataset) -> Self {
+        Transform::fit(&mut self, dataset);
+        self
+    }
+}
+
+impl Transform for CountEncoder {
+    fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
+        self.counts_.clear();
+        for name in dataset.columns() {
+            let mut counts: Vec<(String, u64)> = learn_counts(dataset, &name)?;
+            counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let rows: f64 = counts.iter().map(|(_, c)| *c as f64).sum();
+            let scale: f64 = if self.normalize { rows } else { 1.0 };
+            let values: Vec<(String, f64)> = counts.into_iter().map(|(n, c)| (n, c as f64 / scale)).collect();
+            self.counts_.insert(name, values);
+        }
+        Ok(())
+    }
+
+    fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
+        inputs
+            .iter()
+            .map(|(name, expr)| {
+                let counts: &Vec<(String, f64)> = self.counts_.get(name).ok_or_else(|| PreprocessError::NotFitted {
+                    transformer: "CountEncoder",
+                    column: name.clone(),
+                })?;
+                let names: Vec<String> = counts.iter().map(|(n, _)| n.clone()).collect();
+                let values: Vec<f64> = counts.iter().map(|(_, c)| *c).collect();
+                Ok((name.clone(), lookup(expr.clone().cast(DataType::String), &names, values, Some(0.0))))
+            })
+            .collect()
     }
 }
 

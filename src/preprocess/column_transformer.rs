@@ -55,10 +55,7 @@ use crate::{
 ///     "num__age", "num__cgpa", "cat__batch_B13", "cat__batch_B14", "cat__batch_B15",
 /// ]
 /// ```
-// ponytail: not Clone, because the steps are `Box<dyn Transform>`, so a `Pipeline` can't be copied.
-// Before `cross_val_score`, add a `clone_box` supertrait with a blanket impl for every
-// `Transform + Clone` (the dyn-clone trick, no crate), then derive Clone here (decided 2026-11-11).
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ColumnTransformer {
     adds: Vec<Add>,
     passthrough: bool,
@@ -66,7 +63,7 @@ pub struct ColumnTransformer {
     input_columns: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Add {
     name: String,
     columns: Vec<String>,

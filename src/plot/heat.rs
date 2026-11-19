@@ -7,7 +7,7 @@ use crate::{
     dataset::Dataset,
     display::{Figure, escape},
     error::OrFatal,
-    metadata::dataset::stats::NumericStats,
+    metadata::dataset::{role::ColumnRole, stats::NumericStats},
     plot::{
         VALUE,
         chart::{Body, Texts},
@@ -284,8 +284,11 @@ impl Dataset {
     /// The Pearson correlation of every pair of numeric columns. (seaborn: `heatmap(df.corr())`)
     ///
     /// Like pandas, each pair uses the rows where both columns have values. The color range is
-    /// fixed at -1 to 1. Text columns are skipped. To pick columns, call it on a
-    /// [`Dataset::select`]. The matrix is cached next to the CSV.
+    /// fixed at -1 to 1. Text columns and identifiers (an `id` column, see [`ColumnRole`]) are
+    /// skipped. To pick columns, call it on a [`Dataset::select`]. The matrix is cached next to
+    /// the CSV.
+    ///
+    /// [`ColumnRole`]: crate::metadata::dataset::role::ColumnRole
     ///
     /// Options: `.title`, `.subtitle`, `.xlabel`, `.ylabel`, `.theme`, `.size`, `.cmap` and
     /// `.values`.
@@ -379,6 +382,7 @@ impl Dataset {
             .columns()
             .into_iter()
             .filter(|name| self.try_numeric_stats(name).is_ok())
+            .filter(|name| self.try_role(name).is_ok_and(|role| role != ColumnRole::Identifier))
             .collect();
         if columns.is_empty() {
             return Err(PlotError::EmptyResult("the numeric columns".to_string()));

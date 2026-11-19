@@ -2,7 +2,7 @@
 
 A Rust library for tabular machine learning, with the names you know from pandas, scikit-learn and seaborn. Tables run on [Polars](https://docs.pola.rs/). The same code works in a `.rs` program and in a Jupyter notebook through the [evcxr](https://github.com/evcxr/evcxr) kernel.
 
-rusmlai is young, but it works end to end today: load a CSV, look at it, draw 18 kinds of chart, preprocess, split, train linear and logistic models, score them, and compare every run in a training journal. On a 630,000-row Kaggle file the linear models train 9× to 26× faster than scikit-learn, and logistic regression 1.3× to 5.6× faster, with the same coefficients. Trees come next.
+rusmlai is young, but it works end to end today: load a CSV, look at it, draw 18 kinds of chart, preprocess, split, train linear and logistic models, score them, and compare every run in a training journal. On a 630,000-row Kaggle file the linear models train 9× to 26× faster than scikit-learn, and logistic regression 1.3× to 5.6× faster, with the same coefficients. Decision trees train 3.5× to 33× faster, forests and bags 2.7× to 5.4×, AdaBoost 24× to 41× and a grid search 17×. Histogram gradient boosting trains 1.17× to 1.86× faster. The scores are scikit-learn's.
 
 ## Install
 
@@ -111,7 +111,8 @@ fn main() {
 ```
 
 - Transformers: `StandardScaler`, `MinMaxScaler`, `MaxAbsScaler`, `RobustScaler`, `SimpleImputer`, `OneHotEncoder`, `OrdinalEncoder` and `LabelEncoder`, with scikit-learn's settings. They learn from the cached stats, so a fit makes no pass over the data.
-- Models: `LinearRegression` (Ridge, Lasso and ElasticNet are its `alpha` and `l1_ratio` settings), `LogisticRegression` (two or more classes) and `DummyRegressor`. They give scikit-learn's coefficients.
+- Models: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `LogisticRegression` (two or more classes) and `DummyRegressor`. They give scikit-learn's coefficients. `DecisionTreeClassifier` and `DecisionTreeRegressor` grow scikit-learn's tree when each feature has at most 255 distinct values (more values go into 255 buckets), and take missing values as they are. `RandomForestClassifier` and `RandomForestRegressor` grow many of those trees on all cores, and `BaggingClassifier` and `BaggingRegressor` average copies of any model. `GradientBoostingClassifier` and `GradientBoostingRegressor` are scikit-learn's histogram gradient boosting, tree for tree: early stopping, its five regression losses (squared and absolute error, quantile, Poisson, gamma), class weights, and text columns as categorical features with no encoding; plus LightGBM's `subsample`, `l1_regularization` and `min_split_gain`. `AdaBoostClassifier` is SAMME on decision trees. The tree and forest classifiers take `class_weight`, and every tree model takes `max_leaf_nodes`. Their scores agree with scikit-learn's as two of its own seeds agree.
+- Model selection: `GridSearchCV` (scikit-learn's folds, `cv_results_`, `best_params_`, nested names such as `estimator__max_depth`) and `cross_val_score`. The fits run in parallel, and the candidates of a fold share its bins.
 - A fit with the same settings on the same data loads the earlier result from the cache instead of training again. Every fit and score goes into `metadata/{stem}.journal.html`, an offline page with each run's settings, scores and loss curve. `model.load_run(&train, "r03")` brings a run back.
 - Errors name the fix: `feature 'course' is str, not a number: encode it with OneHotEncoder or OrdinalEncoder in the ColumnTransformer`.
 
@@ -122,6 +123,17 @@ Fit times on the same 630,000-row file, against scikit-learn 1.9:
 | `LinearRegression` | 48.9 ms | 544.5 ms | 20.6 ms | 528.5 ms |
 | `LogisticRegression` (scikit-learn: `newton-cholesky`) | 175.0 ms | 398.8 ms | 84.5 ms | 476.8 ms |
 | `Pipeline`: scale, one-hot, linear | 228.1 ms | 1083.7 ms | 103.9 ms | 1069.5 ms |
+| `DecisionTreeClassifier`, full depth (180,000 nodes on both sides) | 411.1 ms | 2612.0 ms | 146.8 ms | 2609.7 ms |
+| `DecisionTreeRegressor`, full depth (1.2 million nodes on both sides) | 897.3 ms | 3156.4 ms | 298.7 ms | 3159.2 ms |
+| `DecisionTreeRegressor`, `max_depth=8` | 122.0 ms | 1287.9 ms | 47.8 ms | 1289.9 ms |
+| `RandomForestClassifier`, 10 full trees (1.67 million nodes on both sides) | 2.00 s | 5.41 s | 0.75 s | 2.56 s |
+| `RandomForestRegressor`, 10 full trees (7.7 million nodes on both sides) | 5.48 s | 20.85 s | 1.76 s | 7.71 s |
+| `BaggingClassifier` of 10 full trees | 2.82 s | 14.98 s | 1.24 s | 6.70 s |
+| `GradientBoostingRegressor`, 100 rounds of 31 leaves (scikit-learn: `HistGradientBoostingRegressor`) | 3.05 s | 4.47 s | 1.81 s | 2.13 s |
+| the same with the 7 text columns as categories | 3.05 s | 5.69 s | 1.78 s | 2.84 s |
+| `GradientBoostingClassifier`, 100 rounds of 31 leaves | 5.33 s | 6.99 s | 2.68 s | 3.15 s |
+| `AdaBoostClassifier`, 50 stumps | 1.58 s | 38.46 s | 0.94 s | 38.45 s |
+| `GridSearchCV`, 6 trees × 5 folds and the refit | 2.61 s | 44.75 s | 1.19 s | 20.14 s |
 
 ## Conventions
 
@@ -131,12 +143,11 @@ Fit times on the same 630,000-row file, against scikit-learn 1.9:
 
 ## Roadmap
 
-Done: data loading, stats, charts, the transformers, `ColumnTransformer`, `Pipeline`, `train_test_split`, linear and logistic regression, the model cache and the journal. Next:
+Done: data loading, stats, charts, the transformers, `ColumnTransformer`, `Pipeline`, `train_test_split`, linear and logistic regression, decision trees, random forests, bagging, AdaBoost, histogram gradient boosting, `GridSearchCV`, `cross_val_score`, the model cache and the journal. Next:
 
-1. Data operations that pandas users reach for: saving a dataset (`to_csv`), filtering and sorting rows, and cross validation. Until then, `ds.dataframe()` is the Polars table, and `Dataset::new` makes a dataset of a changed copy.
-2. About 20 more models:
-   - decision trees, random forests, bagging, AdaBoost and histogram gradient boosting (next);
-   - kNN, Naive Bayes, linear SVM, an MLP;
+1. Data operations that pandas users reach for: saving a dataset (`to_csv`), and filtering and sorting rows. Until then, `ds.dataframe()` is the Polars table, and `Dataset::new` makes a dataset of a changed copy.
+2. About 15 more models:
+   - kNN and Naive Bayes (next), linear SVM, an MLP;
    - k-means, DBSCAN and agglomerative clustering;
    - PCA, SVD, LDA and feature selection;
    - FP-growth and Apriori association rules.

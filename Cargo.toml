@@ -160,3 +160,7 @@ harness = false
 [[bench]]
 name = "models"
 harness = false
+
+[[bench]]
+name = "extras"
+harness = false

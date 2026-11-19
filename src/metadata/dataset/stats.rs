@@ -57,9 +57,15 @@ pub struct NumericStats {
     #[serde(deserialize_with = "nan_if_null")]
     /// The 75% quantile.
     pub quantile_75: f64,
+    /// Distinct non-null values, for an integer column only: what tells a row number or an
+    /// id from a count ([`ColumnRole`](super::role::ColumnRole)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_count: Option<usize>,
 }
 
-/// Stats of a text, boolean or other non-numeric column, with nulls skipped.
+/// Stats of a text, boolean or other non-numeric column, with nulls skipped. A column with a
+/// distinct value in nearly every row (an id, a name) keeps only its 1,000 most frequent
+/// categories, so a 630,000-name column does not fill the cache: `unique_count` stays exact.
 ///
 /// ```
 /// use rusmlai::prelude::*;
@@ -114,6 +120,9 @@ pub enum ColumnStats {
     Categorical(CategoricalStats),
 }
 
+/// Categories a near-unique text column keeps (charts show at most 30, and cache at most 1,000).
+const KEPT_CATEGORIES: usize = 1000;
+
 fn nan_if_null<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
     Ok(Option::<f64>::deserialize(d)?.unwrap_or(f64::NAN))
 }
@@ -145,6 +154,10 @@ impl ColumnStats {
                     x.clone().min().alias(format!("{i}:min")),
                     x.max().alias(format!("{i}:max")),
                 ]);
+                if column.dtype().is_integer() {
+                    let distinct: Expr = col(name).drop_nulls().n_unique().cast(DataType::Float64);
+                    aggregates.push(distinct.alias(format!("{i}:unique")));
+                }
             } else {
                 let counts: LazyFrame = lazy
                     .clone()
@@ -201,6 +214,10 @@ impl ColumnStats {
                         max: unwrap_f64(&aggregated, &format!("{i}:max"))?,
                         quantile_25: q25,
                         quantile_75: q75,
+                        unique_count: match column.dtype().is_integer() {
+                            true => Some(unwrap_f64(&aggregated, &format!("{i}:unique"))? as usize),
+                            false => None,
+                        },
                     }))
                 } else {
                     CategoricalStats::categorical(&counts.next().unwrap(), column.name().as_str())
@@ -283,14 +300,18 @@ impl CategoricalStats {
             .filter_map(|(label, c)| Some((label?.to_string(), c?)))
             .collect();
         categories.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-
+        let unique_count: usize = categories.len();
+        let values: u64 = categories.iter().map(|(_, count)| count).sum();
+        let mode: String = categories.first().map(|(s, _)| s.clone()).unwrap_or_default();
+        let entropy: f64 = CategoricalStats::entropy(categories.iter().map(|&(_, count)| count as f64));
+        // A value in nearly every row: an id or a name. Keep the most frequent only.
+        if unique_count > KEPT_CATEGORIES && unique_count as f64 >= 0.95 * values as f64 {
+            categories.truncate(KEPT_CATEGORIES);
+        }
         Ok(CategoricalStats {
-            unique_count: categories.len(),
-            mode: categories
-                .first()
-                .map(|(s, _)| s.clone())
-                .unwrap_or_default(),
-            entropy: CategoricalStats::entropy(categories.iter().map(|&(_, count)| count as f64)),
+            unique_count,
+            mode,
+            entropy,
             categories,
         })
     }

@@ -169,7 +169,15 @@ impl Model for DummyRegressor {
         Ok(())
     }
 
-    fn try_load(&mut self, learned: Value, target: &str) -> Result<(), ModelError> {
+    fn try_evaluate(&self, dataset: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError> {
+        crate::models::evaluate_regressor(self, dataset, target, scoring)
+    }
+
+    fn try_predict_method(&self, dataset: &Dataset, method: &str) -> Result<Dataset, ModelError> {
+        crate::models::predict_regressor(self, dataset, method)
+    }
+
+    fn try_load(&mut self, learned: Value, _: &[u8], target: &str) -> Result<(), ModelError> {
         #[derive(serde::Deserialize)]
         struct Learned {
             constant_: Option<f64>,

@@ -19,6 +19,7 @@ use crate::{
 
 pub mod dto;
 pub mod info;
+pub mod role;
 pub mod stats;
 
 /// The [`ColumnInfo`] of every column, in column order.
@@ -118,12 +119,13 @@ impl DatasetCache {
                     name.clone(),
                     (height - info.null_count).to_string(),
                     format!("{:?}", info.dtype),
+                    info.role().as_str().to_string(),
                 ]
             })
             .collect();
         TableView::new(
             &format!("Dataset: {height} rows x {width} columns"),
-            &["#", "columns", "non-null count", "dtypes"].map(String::from),
+            &["#", "columns", "non-null count", "dtypes", "role"].map(String::from),
             &rows,
         )
     }

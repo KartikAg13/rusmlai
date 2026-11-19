@@ -19,7 +19,7 @@ use crate::{
         constants::{DATASET_CACHE, PLOTS_CACHE},
         dataset::{
             DatasetCache,
-            dto::{ColumnInfoDTO, DatasetCacheDTO},
+            dto::{DatasetCacheDTO, STATS_VERSION},
             info::ColumnInfo,
             stats::ColumnStats,
         },
@@ -197,7 +197,8 @@ impl Metadata {
         let columns: Option<IndexMap<String, Arc<ColumnInfo>>> = fs::read(&columns_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<DatasetCacheDTO>(&bytes).ok())
-            .filter(|dto| dto.fingerprint == fingerprint && dto.columns.len() == dataframe.width())
+            .filter(|dto| dto.version == STATS_VERSION && dto.fingerprint == fingerprint)
+            .filter(|dto| dto.columns.len() == dataframe.width())
             .map(|dto| {
                 dto.columns
                     .into_iter()
@@ -214,15 +215,7 @@ impl Metadata {
             },
             None => {
                 let m: Metadata = Self::try_new(dataframe, path)?;
-                let dto: DatasetCacheDTO = DatasetCacheDTO {
-                    fingerprint,
-                    columns: m
-                        .dataset_cache
-                        .columns
-                        .iter()
-                        .map(|(n, i)| (n.clone(), ColumnInfoDTO::from(i.as_ref())))
-                        .collect(),
-                };
+                let dto: DatasetCacheDTO = DatasetCacheDTO::new(fingerprint, &m.dataset_cache.columns);
                 let written: io::Result<()> = serde_json::to_vec_pretty(&dto)
                     .map_err(io::Error::from)
                     .and_then(|json| write_cache(&columns_path, &json));

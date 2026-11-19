@@ -245,7 +245,7 @@ impl LogisticRegression {
 
 /// The probability of class 1 at score `z`, and ln(1 + eᶻ), from one exponential and without
 /// overflow.
-fn logistic(z: f64) -> (f64, f64) {
+pub(crate) fn logistic(z: f64) -> (f64, f64) {
     let e: f64 = (-z.abs()).exp();
     let p: f64 = if z >= 0.0 {
         1.0 / (1.0 + e)
@@ -256,7 +256,7 @@ fn logistic(z: f64) -> (f64, f64) {
 }
 
 /// The softmax of `z` into `out`, and ln Σ eᶻ.
-fn softmax(z: &[f64], out: &mut [f64]) -> f64 {
+pub(crate) fn softmax(z: &[f64], out: &mut [f64]) -> f64 {
     let top: f64 = z.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let mut sum: f64 = 0.0;
     for (o, zk) in out.iter_mut().zip(z) {
@@ -592,7 +592,19 @@ impl Model for LogisticRegression {
         Ok(())
     }
 
-    fn try_load(&mut self, learned: Value, target: &str) -> Result<(), ModelError> {
+    fn try_evaluate(&self, dataset: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError> {
+        crate::models::evaluate_classifier(self, dataset, target, scoring)
+    }
+
+    fn try_predict_method(&self, dataset: &Dataset, method: &str) -> Result<Dataset, ModelError> {
+        crate::models::predict_classifier(self, dataset, method)
+    }
+
+    fn is_classifier(&self) -> bool {
+        true
+    }
+
+    fn try_load(&mut self, learned: Value, _: &[u8], target: &str) -> Result<(), ModelError> {
         let l: Learned = serde_json::from_value(learned)?;
         let outputs: usize = if l.classes_.len() == 2 {
             1
@@ -948,7 +960,7 @@ mod tests {
             "loss_curve_": [],
             "dtype": serde_json::to_value(DataType::String).unwrap(),
         });
-        let err: String = model.try_load(learned, "y").unwrap_err().to_string();
+        let err: String = model.try_load(learned, &[], "y").unwrap_err().to_string();
         assert!(err.contains("2 classes, 2 coefficient rows"), "{err}");
         assert!(model.coef_.is_empty());
     }

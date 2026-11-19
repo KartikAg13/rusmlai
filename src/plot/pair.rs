@@ -4,6 +4,7 @@ use polars::prelude::DataFrame;
 
 use crate::{
     dataset::Dataset,
+    metadata::dataset::role::ColumnRole,
     display::{Figure, escape},
     error::OrFatal,
     plot::{
@@ -41,12 +42,12 @@ impl Dataset {
     ///
     /// # Examples
     ///
-    /// Every numeric column (id, age and cgpa):
+    /// Every numeric column but the id (age and cgpa):
     /// ```
     /// use rusmlai::prelude::*;
     ///
     /// let ds = read_csv("tests/fixtures/data/students.csv");
-    /// ds.pairplot(&[], ""); // saves metadata/plots/Pairs 3 numeric columns.png
+    /// ds.pairplot(&[], ""); // saves metadata/plots/Pairs 2 numeric columns.png (age, cgpa: id is left out)
     /// ```
     ///
     /// Age and CGPA colored by `passed`, with every option:
@@ -125,9 +126,11 @@ impl Dataset {
         }
         let numeric: Vec<String> = if columns.is_empty() {
             let is_numeric = |c: &String| self.try_numeric_stats(c).is_ok();
+            // An id against every other column draws noise.
+            let identifier = |c: &String| self.try_role(c).is_ok_and(|role| role == ColumnRole::Identifier);
             self.columns()
                 .into_iter()
-                .filter(|c| is_numeric(c) && Some(c) != hue.as_ref())
+                .filter(|c| is_numeric(c) && !identifier(c) && Some(c) != hue.as_ref())
                 .collect()
         } else {
             for column in columns {

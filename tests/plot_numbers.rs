@@ -157,7 +157,8 @@ fn heatmap_counts_add_up_to_the_rows_and_corrplot_matches_polars() {
         panic!("expected a Matrix");
     };
     assert!(matches!(spec, PlotSpec::Corrplot { .. }));
-    assert_eq!(x_labels, ["id", "age", "cgpa"]);
+    // The id column is an identifier: corrplot leaves it out.
+    assert_eq!(x_labels, ["age", "cgpa"]);
     // pandas: df[["age", "cgpa"]].corr() drops the rows where either is null.
     let both: DataFrame = ds
         .dataframe()
@@ -178,9 +179,9 @@ fn heatmap_counts_add_up_to_the_rows_and_corrplot_matches_polars() {
     let r: f64 = sum(&|i| (a[i] - ma) * (b[i] - mb))
         / (sum(&|i| (a[i] - ma).powi(2)) * sum(&|i| (b[i] - mb).powi(2))).sqrt();
     assert_eq!(a.len(), 10);
-    assert!(close(grid[1][2], r), "{} vs {r}", grid[1][2]);
-    assert_eq!(grid[1][2], grid[2][1]);
-    assert!(close(grid[0][0], 1.0) && close(grid[2][2], 1.0));
+    assert!(close(grid[0][1], r), "{} vs {r}", grid[0][1]);
+    assert_eq!(grid[0][1], grid[1][0]);
+    assert!(close(grid[0][0], 1.0) && close(grid[1][1], 1.0));
 }
 
 proptest! {

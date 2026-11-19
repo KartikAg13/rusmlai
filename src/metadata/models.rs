@@ -4,6 +4,10 @@
 //! it saw. The same fit again loads the learned values instead of training, and the journal
 //! (`Dataset::journal`) draws every record. The file has no fingerprint line: when the CSV
 //! changes, old records stay for the journal, and new fits just never match them.
+//!
+//! The file is the index: what a run learned is in files of its own,
+//! `{csv dir}/metadata/models/{id}.json` and, for a tree model, its nodes as bytes in
+//! `{id}.bin` ([`Model::write_weights`]). A lookup or the journal reads the index only.
 
 use std::{
     fs::{self, OpenOptions},
@@ -25,7 +29,7 @@ use crate::{
     metadata::{
         constants::MODELS_CACHE,
         journal,
-        utils::{cache_path, no_symlink, print_saved},
+        utils::{cache_path, no_symlink, print_saved, write_cache},
     },
     models::{Model, ModelError},
 };
@@ -47,11 +51,12 @@ pub struct FitRecord {
     pub rows: usize,
     /// The hash of the data it trained on, in hex.
     pub data: String,
-    /// What it learned (`coef_`, `intercept_`, ...).
-    pub learned: Value,
     /// The training loss per round, for models that train in rounds.
     #[serde(deserialize_with = "nan_curve")]
     pub loss_curve: Option<Vec<f64>>,
+    /// The loss per round on the rows a model held out to stop early.
+    #[serde(default, deserialize_with = "nan_curve")]
+    pub validation_curve: Option<Vec<f64>>,
     /// How long the training took.
     pub fit_seconds: f64,
     /// When, in seconds since 1970.
@@ -153,8 +158,62 @@ impl ModelCache {
             .unwrap_or_default()
     }
 
-    /// The fit with this id, if one trained before. Only a line that holds the id is parsed, so
-    /// a lookup reads the file but does not decode what every other run learned.
+    /// Where the run `id` keeps what it learned (`coef_`, `intercept_`, a tree's nodes, ...):
+    /// `{csv dir}/metadata/models/{id}.json`.
+    pub fn learned_path(&self, id: &str) -> PathBuf {
+        self.path.with_file_name("models").join(format!("{id}.json"))
+    }
+
+    /// Where the run `id` keeps the bytes of [`Model::write_weights`]:
+    /// `{csv dir}/metadata/models/{id}.bin`. Only a tree model has this file.
+    pub fn weights_path(&self, id: &str) -> PathBuf {
+        self.learned_path(id).with_extension("bin")
+    }
+
+    /// What the run `id` learned, and its weights (empty without a weights file); `None` when
+    /// the JSON file is missing or broken. An id is 16 hex digits: anything else (a tampered
+    /// index line) is not a file name.
+    fn learned(&self, id: &str) -> Option<(Value, Vec<u8>)> {
+        if id.len() != 16 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let learned: Value = serde_json::from_slice(&fs::read(self.learned_path(id)).ok()?).ok()?;
+        Some((learned, fs::read(self.weights_path(id)).unwrap_or_default()))
+    }
+
+    /// Writes what `model`, the run `id`, learned: the JSON file, and the weights file when
+    /// the model writes weights. A failure is only a warning, like [`Self::append`].
+    fn save_learned<R: Model + ?Sized>(&self, id: &str, model: &R) {
+        let path: PathBuf = self.learned_path(id);
+        let written: io::Result<()> = serde_json::to_vec(&model.learned())
+            .map_err(io::Error::from)
+            .and_then(|bytes| write_cache(&path, &bytes));
+        match written {
+            Ok(()) => print_saved(&path),
+            Err(e) => return warn(format_args!("could not write {}: {e}", path.display())),
+        }
+        let path: PathBuf = self.weights_path(id);
+        let mut out: Limited = Limited {
+            file: None,
+            path: &path,
+            left: MAX_WEIGHTS,
+        };
+        let written: io::Result<()> = model.write_weights(&mut out).and_then(|()| out.flush());
+        match (written, out.file.is_some()) {
+            (Ok(()), true) => print_saved(&path),
+            (Ok(()), false) => {}
+            (Err(e), _) => {
+                drop(out);
+                let _ = fs::remove_file(&path);
+                warn(format_args!(
+                    "{} was not kept in the model cache, so the same fit will train again: {e}",
+                    model.name()
+                ));
+            }
+        }
+    }
+
+    /// The fit with this id, if one trained before. Only a line that holds the id is parsed.
     fn find(&self, id: &str) -> Option<FitRecord> {
         let text: String = fs::read_to_string(&self.path).ok()?;
         text.lines()
@@ -195,6 +254,45 @@ impl ModelCache {
         if let Err(e) = journal::write(self) {
             warn(format_args!("the journal was not updated: {e}"));
         }
+    }
+}
+
+/// The most bytes of weights the cache keeps for one run: 256 MB. A forest of full trees can
+/// be gigabytes, and every fit with another setting would add as much next to the CSV.
+const MAX_WEIGHTS: u64 = 256 << 20;
+
+/// The weights file of a run, made at the first byte (most models write none) and refusing
+/// more than `left` bytes.
+struct Limited<'a> {
+    file: Option<io::BufWriter<fs::File>>,
+    path: &'a Path,
+    left: u64,
+}
+
+impl Write for Limited<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() as u64 > self.left {
+            return Err(io::Error::other(format!(
+                "its weights are more than {} MB (fewer or smaller trees fit: n_estimators, \
+                 max_depth, min_samples_leaf)",
+                MAX_WEIGHTS >> 20
+            )));
+        }
+        self.left -= bytes.len() as u64;
+        if self.file.is_none() {
+            let file: fs::File =
+                no_symlink(OpenOptions::new().write(true).create(true).truncate(true))
+                    .open(self.path)?;
+            self.file = Some(io::BufWriter::new(file));
+        }
+        match &mut self.file {
+            Some(file) => file.write_all(bytes).map(|()| bytes.len()),
+            None => Ok(0),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.as_mut().map_or(Ok(()), |file| file.flush())
     }
 }
 
@@ -318,6 +416,8 @@ pub(crate) fn fit<R: Model + ?Sized>(
     dataset: &Dataset,
     target: &str,
 ) -> Result<(), ModelError> {
+    let reduced: Option<Dataset> = crate::models::trainable(dataset, target)?;
+    let dataset: &Dataset = reduced.as_ref().unwrap_or(dataset);
     let Some(cache) = ModelCache::of(dataset) else {
         model.set_run(None);
         return model.try_train(dataset, target);
@@ -338,8 +438,9 @@ pub(crate) fn fit<R: Model + ?Sized>(
         String::new()
     };
     let id: String = run_id(name, &params, (target, &dtype), &features, &data, &start);
-    if let Some(record) = cache.find(&id)
-        && model.try_load(record.learned, target).is_ok()
+    if cache.find(&id).is_some()
+        && let Some((learned, weights)) = cache.learned(&id)
+        && model.try_load(learned, &weights, target).is_ok()
     {
         println!("[rusmlai] {name} loaded from {}", cache.path.display());
         model.set_run(Some(CachedRun { id, cache }));
@@ -348,6 +449,8 @@ pub(crate) fn fit<R: Model + ?Sized>(
     let start: Instant = Instant::now();
     model.try_train(dataset, target)?;
     let fit_seconds: f64 = start.elapsed().as_secs_f64();
+    // The weights first: an index line without them would be a run that can't be loaded.
+    cache.save_learned(&id, model);
     cache.append(&Entry::Fit(FitRecord {
         id: id.clone(),
         model: name.into(),
@@ -356,8 +459,8 @@ pub(crate) fn fit<R: Model + ?Sized>(
         features,
         rows: dataset.height(),
         data,
-        learned: model.learned(),
         loss_curve: model.loss_curve(),
+        validation_curve: model.validation_curve(),
         fit_seconds,
         time: now(),
     }));
@@ -410,7 +513,7 @@ pub(crate) fn load_run<R: Model + ?Sized>(
     };
     if record.model != model.name() {
         return Err(mismatch(format!(
-            "it is a {}, not a {}",
+            "it is a run of {}, not of {}",
             record.model,
             model.name()
         )));
@@ -426,9 +529,15 @@ pub(crate) fn load_run<R: Model + ?Sized>(
             "it trained on columns this dataset doesn't have: {missing:?}"
         )));
     }
-    model.try_set_params(record.params)?;
-    model.try_load(record.learned, &record.target)?;
     let cache: ModelCache = ModelCache::of(dataset).ok_or(ModelError::NoCache)?;
+    let (learned, weights): (Value, Vec<u8>) = cache.learned(&record.id).ok_or_else(|| {
+        mismatch(format!(
+            "its weights file {} is missing or broken",
+            cache.learned_path(&record.id).display()
+        ))
+    })?;
+    model.try_set_params(record.params)?;
+    model.try_load(learned, &weights, &record.target)?;
     model.set_run(Some(CachedRun {
         id: record.id,
         cache,
@@ -468,7 +577,7 @@ mod tests {
     use super::*;
     use crate::{
         dataset::read_csv,
-        models::{Classifier, LinearRegression, LogisticRegression, Regressor},
+        models::{Classifier, ElasticNet, Lasso, LinearRegression, LogisticRegression, Regressor},
         pipeline::Pipeline,
         preprocess::{ColumnTransformer, StandardScaler},
         steps,
@@ -514,13 +623,20 @@ mod tests {
         fn learned(&self) -> Value {
             json!({ "learned": self.learned })
         }
-        fn try_load(&mut self, learned: Value, _: &str) -> Result<(), ModelError> {
+        fn try_load(&mut self, learned: Value, _: &[u8], _: &str) -> Result<(), ModelError> {
             self.learned = learned["learned"].as_f64().unwrap_or_default();
             Ok(())
         }
         fn try_set_params(&mut self, params: Value) -> Result<(), ModelError> {
             self.setting = params["setting"].as_u64().unwrap_or_default() as u32;
             Ok(())
+        }
+        fn try_evaluate(&self, ds: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError> {
+            crate::models::evaluate_regressor(self, ds, target, scoring)
+        }
+
+        fn try_predict_method(&self, ds: &Dataset, method: &str) -> Result<Dataset, ModelError> {
+            crate::models::predict_regressor(self, ds, method)
         }
         fn run(&self) -> Option<&CachedRun> {
             self.run.as_ref()
@@ -575,12 +691,12 @@ mod tests {
     fn a_real_model_round_trips_and_a_broken_line_is_skipped() {
         let path: PathBuf = csv("round");
         let ds: Dataset = read_csv(&path);
-        let mut trained: LinearRegression = LinearRegression::new().alpha(0.1).l1_ratio(0.5);
+        let mut trained: ElasticNet = ElasticNet::new().alpha(0.1);
         trained.fit(&ds, "cgpa");
         let cache: ModelCache = ModelCache::of(&ds).unwrap();
         let mut file = OpenOptions::new().append(true).open(&cache.path).unwrap();
         file.write_all(b"{\"kind\": \"fit\", \"cut").unwrap();
-        let mut loaded: LinearRegression = LinearRegression::new().alpha(0.1).l1_ratio(0.5);
+        let mut loaded: ElasticNet = ElasticNet::new().alpha(0.1);
         loaded.fit(&ds, "cgpa");
         assert_eq!(loaded.coef_, trained.coef_);
         assert_eq!(loaded.intercept_, trained.intercept_);
@@ -589,11 +705,25 @@ mod tests {
         assert_eq!(cache.entries().len(), 1);
         drop(file);
 
+        // What a run learned is a file of its own, not part of the index line.
+        let id: String = trained.run().unwrap().id.clone();
+        assert!(cache.learned_path(&id).ends_with(format!("metadata/models/{id}.json")));
+        assert!(!fs::read_to_string(&cache.path).unwrap().contains("coef_"));
+        // Without that file the fit trains again, and is then a second line.
+        fs::remove_file(cache.learned_path(&id)).unwrap();
+        assert!(loaded.try_load_run(&ds, "r01").unwrap_err().to_string().contains("weights file"));
+        loaded.fit(&ds, "cgpa");
+        assert_eq!((cache.entries().len(), &loaded.coef_), (2, &trained.coef_));
+        fs::write(&cache.path, fs::read_to_string(&cache.path).unwrap().lines().next().unwrap()).unwrap();
+
         // Back to an older run: its settings and weights, whatever the model was built with.
         let mut plain: LinearRegression = LinearRegression::new();
         plain.fit(&ds, "cgpa");
-        let mut back: LinearRegression = LinearRegression::new();
+        let mut back: ElasticNet = ElasticNet::new().alpha(5.0);
         back.load_run(&ds, "r01");
+        assert_eq!(back.params()["alpha"], 0.1, "the run's settings come back too");
+        let kind: String = LinearRegression::new().try_load_run(&ds, "r01").unwrap_err().to_string();
+        assert!(kind.contains("it is a run of ElasticNet, not of LinearRegression"), "{kind}");
         assert_eq!(
             (back.coef_.clone(), back.n_iter_),
             (trained.coef_.clone(), trained.n_iter_)
@@ -604,7 +734,7 @@ mod tests {
         let mut dummy: Counting = Counting::default();
         let wrong: String = dummy.try_load_run(&ds, "r01").unwrap_err().to_string();
         assert!(
-            wrong.contains("it is a LinearRegression, not a Counting"),
+            wrong.contains("it is a run of ElasticNet, not of Counting"),
             "{wrong}"
         );
 
@@ -688,6 +818,38 @@ mod tests {
     }
 
     #[test]
+    fn a_tree_round_trips_through_its_own_file() {
+        use crate::models::{DecisionTreeClassifier, DecisionTreeRegressor};
+        let ds: Dataset = read_csv(csv("tree"));
+        let mut trained: DecisionTreeRegressor = DecisionTreeRegressor::new();
+        trained.fit(&ds, "cgpa");
+        let mut loaded: DecisionTreeRegressor = DecisionTreeRegressor::new();
+        loaded.fit(&ds, "cgpa");
+        let cache: ModelCache = ModelCache::of(&ds).unwrap();
+        assert_eq!(fits(cache.entries()).len(), 1, "loaded, not trained");
+        assert_eq!(loaded.tree_, trained.tree_);
+        assert_eq!(loaded.predict(&ds), trained.predict(&ds));
+        // The nodes are bytes in the run's own file: 16 of header, then 28 per node.
+        let id: &str = &trained.run().unwrap().id;
+        let bytes: u64 = fs::metadata(cache.weights_path(id)).unwrap().len();
+        assert_eq!(bytes, 16 + 28 * trained.tree_.node_count() as u64);
+        assert!(fs::read_to_string(cache.learned_path(id)).unwrap().contains("feature_importances_"));
+        // A linear model writes no weights file.
+        let mut linear: LinearRegression = LinearRegression::new();
+        linear.fit(&ds, "cgpa");
+        assert!(!cache.weights_path(&linear.run().unwrap().id).exists());
+
+        let mut shallow: DecisionTreeRegressor = DecisionTreeRegressor::new().max_depth(1);
+        shallow.fit(&ds, "cgpa"); // another setting: r03, after the linear model
+        let mut back: DecisionTreeRegressor = DecisionTreeRegressor::new();
+        back.load_run(&ds, "r03");
+        assert_eq!((back.get_depth(), &back.tree_), (1, &shallow.tree_));
+        let mut other: DecisionTreeClassifier = DecisionTreeClassifier::new();
+        let wrong: String = other.try_load_run(&ds, "r03").unwrap_err().to_string();
+        assert!(wrong.contains("it is a run of DecisionTreeRegressor"), "{wrong}");
+    }
+
+    #[test]
     fn a_pipeline_loads_its_model_from_the_cache() {
         let ds: Dataset = read_csv(csv("pipeline"));
         let fit = || {
@@ -732,15 +894,14 @@ mod tests {
         let ds: Dataset = read_csv(csv("warm"));
         // Two rounds at a time: the second warm fit starts where the first stopped.
         let lasso = || {
-            LinearRegression::new()
+            Lasso::new()
                 .alpha(0.01)
-                .l1_ratio(1.0)
                 .tol(0.0)
                 .max_iter(2)
                 .warm_start(true)
         };
         let cache: ModelCache = ModelCache::of(&ds).unwrap();
-        let mut warm: LinearRegression = lasso();
+        let mut warm: Lasso = lasso();
         warm.fit(&ds, "cgpa");
         let first: Vec<f64> = warm.coef_.clone();
         warm.fit(&ds, "cgpa");
@@ -749,7 +910,7 @@ mod tests {
             2,
             "the second warm fit trained on"
         );
-        let mut cold: LinearRegression = lasso();
+        let mut cold: Lasso = lasso();
         cold.fit(&ds, "cgpa");
         assert_eq!(
             cold.coef_, first,
@@ -808,8 +969,8 @@ mod tests {
             features: Vec::new(),
             rows: 1,
             data: "d".into(),
-            learned: json!({}),
             loss_curve: Some(vec![f64::NAN, 1.0]),
+            validation_curve: None,
             fit_seconds: 0.0,
             time: 0,
         });

@@ -6,15 +6,35 @@ use indexmap::IndexMap;
 use polars::datatypes::DataType;
 use serde::{Deserialize, Serialize};
 
-use crate::metadata::dataset::{info::ColumnInfo, stats::ColumnStats};
+use crate::metadata::dataset::{info::ColumnInfo, role::ColumnRole, stats::ColumnStats};
+
+/// The layout of the `{stem}.json` file. A file of another version is stale and computed again:
+/// version 1 (2026-11-18) adds the column roles and the distinct count of integer columns.
+pub const STATS_VERSION: u32 = 1;
 
 /// The `{stem}.json` file.
 #[derive(Serialize, Deserialize)]
 pub struct DatasetCacheDTO {
+    /// [`STATS_VERSION`] when the file was written; 0 in a file from before versions.
+    #[serde(default)]
+    pub version: u32,
     /// The CSV's `(size, mtime)` when the file was written; a mismatch makes the file stale.
     pub fingerprint: (u64, u64),
     /// One entry per column, in column order.
     pub columns: IndexMap<String, ColumnInfoDTO>,
+}
+
+impl DatasetCacheDTO {
+    /// The file for a CSV of `fingerprint` whose columns are `columns`, at this version.
+    pub fn new(fingerprint: (u64, u64), columns: &IndexMap<String, std::sync::Arc<ColumnInfo>>) -> Self {
+        Self {
+            version: STATS_VERSION,
+            fingerprint,
+            columns: (columns.iter())
+                .map(|(name, info)| (name.clone(), ColumnInfoDTO::from(info.as_ref())))
+                .collect(),
+        }
+    }
 }
 
 /// [`ColumnInfo`] as stored on disk.
@@ -26,6 +46,9 @@ pub struct ColumnInfoDTO {
     pub null_count: usize,
     /// `None` when the stats were not computed.
     pub stats: Option<ColumnStats>,
+    /// What the column is for; `None` when not known yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<ColumnRole>,
 }
 
 impl From<ColumnInfoDTO> for ColumnInfo {
@@ -34,6 +57,8 @@ impl From<ColumnInfoDTO> for ColumnInfo {
             dtype: dto.dtype,
             null_count: dto.null_count,
             stats: dto.stats.map_or_else(OnceLock::new, OnceLock::from),
+            role: dto.role.map_or_else(OnceLock::new, OnceLock::from),
+            bins: Default::default(),
         }
     }
 }

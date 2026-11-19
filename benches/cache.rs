@@ -10,7 +10,7 @@ use rusmlai::{
     metadata::{
         Metadata,
         constants::{DATASET_CACHE, PLOTS_CACHE},
-        dataset::dto::{ColumnInfoDTO, DatasetCacheDTO},
+        dataset::dto::DatasetCacheDTO,
         utils::{append_jsonl, cache_path, file_fingerprint, read_jsonl, write_jsonl},
     },
     plot::{result::PlotResult, spec::PlotSpec},
@@ -38,15 +38,7 @@ fn files(c: &mut Criterion) {
     let meta: Metadata = Metadata::load(&df, &csv);
     let fingerprint: (u64, u64) = file_fingerprint(&csv).unwrap();
     let columns_path: PathBuf = cache_path(&csv, DATASET_CACHE);
-    let dto: DatasetCacheDTO = DatasetCacheDTO {
-        fingerprint,
-        columns: meta
-            .dataset_cache
-            .columns
-            .iter()
-            .map(|(n, i)| (n.clone(), ColumnInfoDTO::from(i.as_ref())))
-            .collect(),
-    };
+    let dto: DatasetCacheDTO = DatasetCacheDTO::new(fingerprint, &meta.dataset_cache.columns);
 
     let mut g = c.benchmark_group("cache");
     g.bench_function("file_fingerprint", |b| {

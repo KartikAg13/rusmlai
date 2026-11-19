@@ -88,12 +88,17 @@ fn text(value: &Value) -> String {
     }
 }
 
-/// The left third of a card: the training loss per round. A run with no curve
+/// The left third of a card: the training loss per round, and the loss on the rows a model
+/// held out to stop early, when it did. A run with no curve
 /// of two or more rounds (an exact solve, a baseline) shows its train and test r2 instead.
 /// The charts are built from the numbers as they are: no `Dataset` and no Polars query, which
 /// cost 0.5 ms per card for a few rows.
 fn chart(run: &Run) -> String {
-    let lines: Vec<(&str, Vec<(f64, f64)>)> = [("train", &run.fit.loss_curve)]
+    let curves = [
+        ("train", &run.fit.loss_curve),
+        ("validation", &run.fit.validation_curve),
+    ];
+    let lines: Vec<(&str, Vec<(f64, f64)>)> = curves
         .into_iter()
         .map(|(name, curve)| {
             let line: Vec<(f64, f64)> = (curve.iter().flatten().enumerate())
@@ -351,8 +356,8 @@ impl Dataset {
     /// let ds = read_csv("tests/fixtures/data/students.csv").select(&["age", "cgpa"]);
     /// let ds = SimpleImputer::new().fit_transform(&ds);
     /// let (train, test) = train_test_split(&ds, 0.25, 42, "");
-    /// for alpha in [0.0, 0.1, 1.0] {
-    ///     let mut model = LinearRegression::new().alpha(alpha);
+    /// for alpha in [0.1, 1.0, 10.0] {
+    ///     let mut model = Ridge::new().alpha(alpha);
     ///     model.fit(&train, "cgpa");
     ///     model.score(&test, "cgpa");
     /// }
@@ -408,7 +413,7 @@ mod tests {
     use crate::{
         dataset::read_csv,
         models::{
-            Classifier, DummyRegressor, LinearRegression, LogisticRegression, Model, Regressor,
+            Classifier, DummyRegressor, Lasso, LogisticRegression, Model, Regressor,
         },
     };
 
@@ -443,7 +448,7 @@ mod tests {
         let (all_train, all_test) = crate::dataset::split::train_test_split(&ds, 0.25, 42, "");
         let (train, test) = (all_train.drop(&["size"]), all_test.drop(&["size"]));
         for alpha in [0.0, 0.5] {
-            let mut model: LinearRegression = LinearRegression::new().alpha(alpha).l1_ratio(1.0);
+            let mut model: Lasso = Lasso::new().alpha(alpha);
             model.fit(&train, "y");
             model.score(&train, "y");
             model.score(&test, "y");

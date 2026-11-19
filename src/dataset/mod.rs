@@ -2,14 +2,17 @@
 //! Column selection, shape, the pandas-style printouts (`head`, `info`, `describe`) and
 //! information gain live here. Charts are in [`crate::plot`].
 
-use std::path::Path;
+use std::{fs::File, path::Path, sync::Arc};
 
 use polars::{
     datatypes::DataType,
     frame::{DataFrame, column::Column},
     io::{
-        SerReader,
-        csv::read::{CsvParseOptions, CsvReadOptions},
+        SerReader, SerWriter,
+        csv::{
+            read::{CsvParseOptions, CsvReadOptions},
+            write::CsvWriter,
+        },
     },
     lazy::{
         dsl::{DslPlan, Engine, Expr, len, lit, when},
@@ -24,11 +27,16 @@ use crate::{
     error::OrFatal,
     metadata::{
         Metadata,
+        cache_on,
+        constants::{DATASET_CACHE, PLOTS_CACHE},
         dataset::{
+            dto::DatasetCacheDTO,
             info::ColumnInfo,
+            role::ColumnRole,
             stats::{CategoricalStats, ColumnStats, NumericStats},
         },
-        utils::unwrap_f64,
+        plot::PlotCache,
+        utils::{cache_path, file_fingerprint, print_saved, unwrap_f64, write_cache, write_jsonl},
     },
 };
 
@@ -295,6 +303,180 @@ impl Dataset {
         }
     }
 
+    /// What `column` is for ([`ColumnRole`]): `fit` leaves out identifiers and constants, with
+    /// a warning that names them. `read_csv` decides it from the stats; computes the column's
+    /// stats first when they are missing.
+    ///
+    /// ```
+    /// use rusmlai::prelude::*;
+    /// let ds = read_csv("tests/fixtures/data/students.csv");
+    /// assert_eq!(ds.role("id"), ColumnRole::Identifier);
+    /// assert_eq!(ds.role("age"), ColumnRole::Feature);
+    /// // The two sides of a split keep the roles of the whole table.
+    /// let (train, _) = train_test_split(&ds, 0.25, 42, "");
+    /// assert_eq!(train.role("id"), ColumnRole::Identifier);
+    /// ```
+    ///
+    /// Python has no column roles: you drop such columns yourself, `ds.drop(columns=["id"])`.
+    #[track_caller]
+    pub fn role(&self, column: &str) -> ColumnRole {
+        self.try_role(column).or_fatal()
+    }
+
+    /// [`Dataset::role`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// [`DatasetError::ColumnNotFound`] when there is no such column.
+    pub fn try_role(&self, column: &str) -> Result<ColumnRole, DatasetError> {
+        let info: &ColumnInfo = self.try_column_info(column)?;
+        if info.role.get().is_none() && info.stats.get().is_none() {
+            info.ensure_stats(self.dataframe.column(column)?)?;
+        }
+        Ok(info.role())
+    }
+
+    /// Sets what `column` is for, in place of the role `read_csv` found. Only this dataset
+    /// changes (its splits and `to_csv` keep it); the table it came from keeps its own.
+    ///
+    /// ```
+    /// use rusmlai::prelude::*;
+    /// let mut ds = read_csv("tests/fixtures/data/students.csv").select(&["id", "age", "cgpa"]);
+    /// ds.set_role("id", ColumnRole::Feature); // learn from the id after all
+    /// assert_eq!(ds.role("id"), ColumnRole::Feature);
+    /// ds.set_role("age", ColumnRole::Identifier); // and leave age out of every fit
+    /// assert_eq!(ds.role("age"), ColumnRole::Identifier);
+    /// assert_eq!(read_csv("tests/fixtures/data/students.csv").role("id"), ColumnRole::Identifier);
+    /// ```
+    ///
+    /// Python has no column roles: you choose the feature columns yourself, `ds[["id", "cgpa"]]`.
+    #[track_caller]
+    pub fn set_role(&mut self, column: &str, role: ColumnRole) {
+        self.try_set_role(column, role).or_fatal()
+    }
+
+    /// [`Dataset::set_role`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// [`DatasetError::ColumnNotFound`] when there is no such column.
+    pub fn try_set_role(&mut self, column: &str, role: ColumnRole) -> Result<(), DatasetError> {
+        let info: ColumnInfo = self.try_column_info(column)?.with_role(Some(role));
+        // `insert` on a key that is there keeps its place in the column order.
+        self.metadata.dataset_cache.columns.insert(column.to_string(), Arc::new(info));
+        Ok(())
+    }
+
+    /// Writes the table to a CSV file at `path` (tabs for a `.tsv`) and makes that file this
+    /// dataset's: its stats and an empty chart cache are written next to it, in `metadata/`,
+    /// so the next `read_csv` of it computes nothing. From then on its charts and models are
+    /// cached next to the new file. Roles set with [`Dataset::set_role`] are kept.
+    /// (pandas: `df.to_csv(path, index=False)`)
+    ///
+    /// ```
+    /// use rusmlai::prelude::*;
+    /// let dir = std::env::temp_dir().join("rusmlai-doc-to-csv");
+    /// std::fs::create_dir_all(&dir).unwrap();
+    /// let mut ds = read_csv("tests/fixtures/data/students.csv").drop(&["name"]);
+    /// let path = dir.join("students-clean.csv");
+    /// ds.to_csv(&path);
+    /// assert!(dir.join("metadata/students-clean.json").is_file());
+    /// let back = read_csv(&path); // reads the stats back: nothing to compute
+    /// assert_eq!(back.shape(), ds.shape());
+    /// assert_eq!(back.try_numeric_stats("cgpa").unwrap().median, 7.4);
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import os
+    /// import tempfile
+    /// import pandas as pd
+    /// ds = pd.read_csv("tests/fixtures/data/students.csv").drop(columns=["name"])
+    /// path = os.path.join(tempfile.gettempdir(), "rusmlai-doc-to-csv", "students-clean.csv")
+    /// os.makedirs(os.path.dirname(path), exist_ok=True)
+    /// ds.to_csv(path, index=False)
+    /// back = pd.read_csv(path)
+    /// assert back.shape == ds.shape
+    /// assert back["cgpa"].median() == 7.4
+    /// ```
+    #[track_caller]
+    pub fn to_csv(&mut self, path: impl AsRef<Path>) {
+        self.try_to_csv(path).or_fatal()
+    }
+
+    /// [`Dataset::to_csv`] that returns an error instead of panicking. A cache file that
+    /// can't be written is only a warning.
+    ///
+    /// # Errors
+    ///
+    /// [`DatasetError::Write`] when the CSV can't be written, [`DatasetError::Polars`] when
+    /// Polars fails.
+    pub fn try_to_csv(&mut self, path: impl AsRef<Path>) -> Result<(), DatasetError> {
+        let path: &Path = path.as_ref();
+        let failed = |e: &dyn std::fmt::Display| DatasetError::Write {
+            path: path.display().to_string(),
+            reason: e.to_string(),
+        };
+        self.try_fill_stats()?;
+        let tab: bool = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("tsv"));
+        // Polars writes no date or time type to CSV: they go out as ISO text, like pandas.
+        let mut frame: DataFrame = self.dataframe.clone();
+        for name in self.columns() {
+            if frame.column(&name)?.dtype().is_temporal() {
+                let text: Column = frame.column(&name)?.cast(&DataType::String)?;
+                frame.with_column(text)?;
+            }
+        }
+        let mut file: File = File::create(path).map_err(|e| failed(&e))?;
+        CsvWriter::new(&mut file)
+            .include_header(true)
+            .with_separator(if tab { b'\t' } else { b',' })
+            .finish(&mut frame)?;
+        file.sync_all().map_err(|e| failed(&e))?;
+        drop(file);
+        self.metadata.filepath = Some(path.as_os_str().to_os_string());
+        self.metadata.plot_cache = PlotCache::default();
+        if !cache_on() {
+            return Ok(());
+        }
+        // What `read_csv` will make of each column: one it reads back as another type (a
+        // date, Polars categories) keeps no stats there, and gets them on first use.
+        let read_back: DataFrame = CsvReadOptions::default()
+            .with_n_rows(Some(1))
+            .with_parse_options(CsvParseOptions::default().with_separator(if tab { b'\t' } else { b',' }))
+            .try_into_reader_with_file_path(Some(path.to_path_buf()))?
+            .finish()?;
+        let columns = (self.metadata.dataset_cache.columns.iter())
+            .map(|(name, info)| {
+                let dtype: Option<&DataType> = read_back.column(name).ok().map(|c| c.dtype());
+                let kept: Arc<ColumnInfo> = match dtype {
+                    Some(dtype) if dtype != &info.dtype => Arc::new(ColumnInfo {
+                        dtype: dtype.clone(),
+                        stats: Default::default(),
+                        ..info.with_role(info.role.get().copied())
+                    }),
+                    _ => Arc::clone(info),
+                };
+                (name.clone(), kept)
+            })
+            .collect();
+        let fingerprint: (u64, u64) = file_fingerprint(path).map_err(|e| failed(&e))?;
+        let stats_path = cache_path(path, DATASET_CACHE);
+        let json: Vec<u8> = serde_json::to_vec_pretty(&DatasetCacheDTO::new(fingerprint, &columns))
+            .map_err(|e| failed(&e))?;
+        match write_cache(&stats_path, &json) {
+            Ok(()) => print_saved(&stats_path),
+            Err(e) => crate::error::warn(format_args!("could not write {}: {e}", stats_path.display())),
+        }
+        let plots_path = cache_path(path, PLOTS_CACHE);
+        match write_jsonl::<()>(&plots_path, fingerprint, &[]) {
+            Ok(()) => self.metadata.plot_cache.file = Some(plots_path),
+            Err(e) => crate::error::warn(format_args!("could not write {}: {e}", plots_path.display())),
+        }
+        Ok(())
+    }
+
     /// Mean, median, std, variance, min, max and quartiles of a number column.
     /// (pandas: `df[col].describe()`)
     ///
@@ -459,8 +641,7 @@ impl Dataset {
         let frame: DataFrame = DataFrame::new(self.dataframe.height(), missing)?;
         let stats: Vec<ColumnStats> = ColumnStats::compute_stats(&frame)?;
         for (column, stats) in frame.columns().iter().zip(stats) {
-            let info: &ColumnInfo = self.try_column_info(column.name().as_str())?;
-            let _ = info.stats.set(stats); // already set: another thread was faster
+            self.try_column_info(column.name().as_str())?.fill(column, stats);
         }
         Ok(())
     }
@@ -1185,8 +1366,8 @@ pub fn read_csv(path: impl AsRef<Path>) -> Dataset {
 ///
 /// # Errors
 ///
-/// - [`DatasetError::FileNotFound`] when there is no file at `path`. The message includes
-///   the working directory, because relative paths start there.
+/// - [`DatasetError::FileNotFound`] when there is no file at `path`. The message gives the
+///   absolute path that was looked up and the working directory, because relative paths start there.
 /// - [`DatasetError::Polars`] when Polars cannot parse the file.
 ///
 /// A cache file that cannot be written is only a warning on stderr.
@@ -1218,17 +1399,27 @@ pub fn read_csv(path: impl AsRef<Path>) -> Dataset {
 /// assert_eq!(ds.try_column_info("temp")?.null_count, 2);
 /// # Ok::<(), DatasetError>(())
 /// ```
-/// `Ok` if `path` is a file, else [`DatasetError::FileNotFound`] with the working directory,
-/// because a relative path starts there.
+/// `Ok` if `path` is a file, else [`DatasetError::FileNotFound`] with the absolute path that
+/// was looked up (`..` folded away) and the working directory, because a relative path starts there.
 pub(crate) fn existing(path: &Path) -> Result<(), DatasetError> {
     if path.is_file() {
         return Ok(());
     }
-    let cwd: String =
-        std::env::current_dir().map_or_else(|_| "unknown".to_string(), |p| p.display().to_string());
+    let cwd: std::path::PathBuf = std::env::current_dir().unwrap_or_default();
+    let mut absolute: std::path::PathBuf = std::path::PathBuf::new();
+    for part in cwd.join(path).components() {
+        match part {
+            std::path::Component::ParentDir => {
+                absolute.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => absolute.push(other),
+        }
+    }
     Err(DatasetError::FileNotFound {
         path: path.display().to_string(),
-        cwd,
+        absolute: absolute.display().to_string(),
+        cwd: cwd.display().to_string(),
     })
 }
 
@@ -1377,10 +1568,14 @@ mod tests {
             ds.try_drop(&["x", "s"]),
             Err(DatasetError::EmptySelect)
         ));
-        assert!(matches!(
-            try_read_csv("no/such.csv"),
-            Err(DatasetError::FileNotFound { .. })
-        ));
+        let missing: DatasetError = try_read_csv("a/../no/such.csv").unwrap_err();
+        let cwd: std::path::PathBuf = std::env::current_dir().unwrap();
+        assert!(
+            missing
+                .to_string()
+                .contains(&cwd.join("no/such.csv").display().to_string()),
+            "{missing}"
+        );
     }
 
     #[test]

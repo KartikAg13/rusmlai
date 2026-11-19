@@ -18,23 +18,27 @@ use crate::{
     },
 };
 
+pub mod binning;
 pub mod column_transformer;
 pub mod encoder;
 pub mod error;
 pub mod imputer;
 pub mod scaler;
+pub mod target_encoder;
 
+pub use binning::{KBinsDiscretizer, QuantileTransformer};
 pub use column_transformer::ColumnTransformer;
-pub use encoder::{LabelEncoder, OneHotEncoder, OrdinalEncoder};
+pub use encoder::{CountEncoder, LabelEncoder, OneHotEncoder, OrdinalEncoder};
 pub use error::PreprocessError;
 pub use imputer::SimpleImputer;
 pub use scaler::{MaxAbsScaler, MinMaxScaler, RobustScaler, StandardScaler};
+pub use target_encoder::TargetEncoder;
 
 /// Output column name to the expression that computes it.
 pub type Exprs = IndexMap<String, Expr>;
 
 /// A step that learns from a dataset and then rewrites it, like a scikit-learn transformer.
-pub trait Transform: Debug {
+pub trait Transform: Debug + CloneTransform + Send + Sync {
     /// Learns from every column of `dataset`, normally by reading its cached stats.
     fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError>;
 
@@ -94,6 +98,27 @@ macro_rules! steps {
     ($($step:expr),* $(,)?) => {
         vec![$(Box::new($step) as Box<dyn $crate::preprocess::Transform>),*]
     };
+}
+
+/// Copies a boxed step, so that a `ColumnTransformer` and a `Pipeline` can be copied: a search
+/// fits a copy for each candidate, like scikit-learn's `clone`. Every `Transform + Clone` has
+/// it; nothing else needs to.
+#[doc(hidden)]
+pub trait CloneTransform {
+    /// A copy of the step, boxed.
+    fn clone_box(&self) -> Box<dyn Transform>;
+}
+
+impl<T: Transform + Clone + 'static> CloneTransform for T {
+    fn clone_box(&self) -> Box<dyn Transform> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn Transform> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 /// `value` if it is one of `allowed`, else an error that lists them.

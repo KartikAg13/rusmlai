@@ -258,9 +258,9 @@ fn sum(values: &[f64]) -> f64 {
     lanes.iter().sum::<f64>() + rest.iter().sum::<f64>()
 }
 
-/// `name` as `Float64` in one chunk: a number column with no nulls. A column that is already
-/// that is Polars' own memory, not a copy.
-fn numeric(dataset: &Dataset, name: &str) -> Result<Series, ModelError> {
+/// `name` as `Float64` in one chunk: a number or boolean column, nulls kept. A column that is
+/// already that is Polars' own memory, not a copy.
+pub(crate) fn floats(dataset: &Dataset, name: &str) -> Result<Series, ModelError> {
     let source = dataset.column(name)?;
     let dtype: &DataType = source.dtype();
     if !(dtype.is_primitive_numeric() || dtype.is_bool()) {
@@ -269,17 +269,22 @@ fn numeric(dataset: &Dataset, name: &str) -> Result<Series, ModelError> {
             dtype: dtype.to_string(),
         });
     }
-    let nulls: usize = source.null_count();
+    Ok(source
+        .as_materialized_series()
+        .cast(&DataType::Float64)?
+        .rechunk())
+}
+
+/// [`floats`] with no nulls.
+fn numeric(dataset: &Dataset, name: &str) -> Result<Series, ModelError> {
+    let nulls: usize = dataset.column(name)?.null_count();
     if nulls > 0 {
         return Err(ModelError::FeatureNulls {
             column: name.into(),
             nulls,
         });
     }
-    Ok(source
-        .as_materialized_series()
-        .cast(&DataType::Float64)?
-        .rechunk())
+    floats(dataset, name)
 }
 
 /// An error when a value of `series` (the column `name`) is NaN or infinite.

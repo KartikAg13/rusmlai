@@ -455,7 +455,7 @@ impl Transform for RobustScaler {
 /// The `p` quantile of the standard normal distribution (scipy's `norm.ppf`), for `0 < p < 1`;
 /// ±inf at 0 and 1. Acklam's approximation (relative error 1.15e-9), then one Halley step on
 /// libm's `erfc`, which brings it to about 1e-15.
-fn normal_ppf(p: f64) -> f64 {
+pub(crate) fn normal_ppf(p: f64) -> f64 {
     if p <= 0.0 {
         return f64::NEG_INFINITY;
     }
