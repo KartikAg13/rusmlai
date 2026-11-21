@@ -43,6 +43,10 @@ impl Clone for Box<dyn AnyModel> {
 }
 
 impl Model for Box<dyn AnyModel> {
+    fn target(&self) -> Option<&str> {
+        (**self).target()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         (**self).try_train(dataset, target)
     }
@@ -352,6 +356,10 @@ macro_rules! stacking_model {
         }
 
         impl Model for $name {
+            fn target(&self) -> Option<&str> {
+                self.stack.target.as_deref()
+            }
+
             /// Every model's out-of-fold predictions and its copy on all the rows, then the
             /// final model on the out-of-fold columns.
             fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {

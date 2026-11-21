@@ -82,7 +82,7 @@ fn nonzero(scale: f64) -> f64 {
 /// scale = (2.0 / 3.0) ** 0.5
 /// assert out["x"].tolist() == [-1.0 / scale, 0.0, 1.0 / scale]
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StandardScaler {
     with_mean: bool,
     with_std: bool,
@@ -164,7 +164,7 @@ impl Transform for StandardScaler {
 /// out = MinMaxScaler(feature_range=(-1.0, 1.0)).set_output(transform="pandas").fit_transform(ds)
 /// assert out["x"].tolist() == [-1.0, 0.0, 1.0]
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MinMaxScaler {
     range: (f64, f64),
     clip: bool,
@@ -262,7 +262,7 @@ impl Transform for MinMaxScaler {
 /// out = MaxAbsScaler().set_output(transform="pandas").fit_transform(ds)
 /// assert out["x"].tolist() == [-1.0, 0.0, 0.5]
 /// ```
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MaxAbsScaler {
     /// Column to its largest absolute value, learned by `fit`.
     pub max_abs_: IndexMap<String, f64>,
@@ -320,7 +320,7 @@ impl Transform for MaxAbsScaler {
 /// out = RobustScaler().set_output(transform="pandas").fit_transform(ds)
 /// assert out["x"].tolist() == [-1.0, -0.5, 0.0, 0.5, 48.5]
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct RobustScaler {
     with_centering: bool,
     with_scaling: bool,

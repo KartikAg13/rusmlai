@@ -141,11 +141,12 @@ impl Library for LgbmParams {
             n_iter_no_change: 10,
             tol: 0.0,
             base_score: (!self.boost_from_average).then_some(0.0),
+            symmetric: None,
         }
     }
 
     fn max_bins(&self) -> usize {
-        self.max_bin.min(255)
+        self.max_bin
     }
 
     fn min_data_in_bin(&self) -> usize {
@@ -348,10 +349,11 @@ macro_rules! lgbm_settings {
                 self
             }
 
-            /// The most buckets per feature, 2 to 255. Default 255.
+            /// The most buckets per feature, 2 to 65,535. Default 255. More buckets split a
+            /// feature of many values more finely, at the cost of larger histograms.
             #[track_caller]
             pub fn max_bin(mut self, max_bin: usize) -> Self {
-                check((2..=255).contains(&max_bin), "max_bin", max_bin, "2 to 255");
+                check((2..=65_535).contains(&max_bin), "max_bin", max_bin, "2 to 65,535");
                 self.params.max_bin = max_bin;
                 self
             }
@@ -614,6 +616,45 @@ impl LGBMClassifier {
         self
     }
 }
+
+/// `save_model` / `try_save_model` on a LightGBM-named model.
+macro_rules! lgbm_export {
+    ($model:ident, $classes:expr) => {
+        impl $model {
+            /// Writes the fitted model as LightGBM's own text model, which Python reads with
+            /// `lightgbm.Booster(model_file=path)` and which predicts what this model
+            /// predicts. (lightgbm: `model.booster_.save_model("model.txt")`) Not yet: a
+            /// model with categorical features. Panics with the error's message at your line.
+            #[track_caller]
+            pub fn save_model(&self, path: impl AsRef<std::path::Path>) {
+                crate::error::OrFatal::or_fatal(self.try_save_model(path))
+            }
+
+            /// [`Self::save_model`] that returns the error.
+            pub fn try_save_model(&self, path: impl AsRef<std::path::Path>) -> Result<(), ModelError> {
+                if self.target.is_none() {
+                    return Err(ModelError::NotFitted { model: stringify!($model) });
+                }
+                let classes: usize = $classes(self);
+                let objective: String = match self.params.objective(classes > 0, classes) {
+                    "binary" => "binary sigmoid:1".into(),
+                    "multiclass" => format!("multiclass num_class:{classes}"),
+                    other => other.into(),
+                };
+                let model = crate::models::export::LgbmModel {
+                    trees: &self.estimators_,
+                    baseline: &self.baseline,
+                    names: &self.feature_names_in_,
+                    objective,
+                };
+                crate::models::export::lightgbm_text(&model, path.as_ref())
+            }
+        }
+    };
+}
+
+lgbm_export!(LGBMRegressor, |_: &LGBMRegressor| 0);
+lgbm_export!(LGBMClassifier, |m: &LGBMClassifier| m.classes_.len());
 
 #[cfg(test)]
 mod tests {

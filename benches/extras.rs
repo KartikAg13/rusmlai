@@ -111,6 +111,24 @@ fn extras(c: &mut Criterion) {
     g.bench_function("fit_transform/TargetEncoder", |b| {
         b.iter(|| black_box(TargetEncoder::new().target_type("continuous").fit_transform(&text, "exam_score")))
     });
+    // A TargetEncoder inside a Pipeline: cross-fitted encodings of the training rows, then a
+    // Ridge on them and the numbers.
+    let pipe = || {
+        let prep = ColumnTransformer::new()
+            .add("te", &TEXT, steps![TargetEncoder::new().target_type("continuous")])
+            .remainder("passthrough");
+        Pipeline::new(prep, Ridge::new())
+    };
+    let mut fitted = pipe();
+    fitted.fit(&s6e1, "exam_score");
+    eprintln!("Pipeline(TargetEncoder, Ridge): train r2 {:.6}", fitted.score(&s6e1, "exam_score"));
+    g.bench_function("fit/Pipeline(TargetEncoder,Ridge)", |b| {
+        b.iter(|| {
+            let mut model = pipe();
+            model.try_train(&s6e1, "exam_score").unwrap();
+            black_box(model)
+        })
+    });
     g.bench_function("fit_transform/KBinsDiscretizer", |b| {
         b.iter(|| black_box(KBinsDiscretizer::new().fit_transform(&numbers)))
     });

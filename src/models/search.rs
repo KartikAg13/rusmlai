@@ -470,6 +470,10 @@ fn param_column(name: &str, values: Vec<&Value>) -> Column {
 }
 
 impl<M: Model + Clone + Send + Sync> Model for GridSearchCV<M> {
+    fn target(&self) -> Option<&str> {
+        self.best_estimator_.as_ref().and_then(Model::target)
+    }
+
     /// Runs the search, then (with `refit`) trains the best combination on every row.
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         self.cv.check()?;

@@ -1,5 +1,5 @@
 //! The histogram tree engine that every tree model shares: [`Bins`] (each feature in at most
-//! 255 buckets, stored as `u8`), [`Target`] (what a node's rows are summed into) and [`grow`]
+//! `max_bins` buckets, 255 by default, stored as `u16`), [`Target`] (what a node's rows are summed into) and [`grow`]
 //! (one [`Tree`] from the bins).
 //!
 //! A feature with at most `max_bins` distinct values gets one bucket per value, so its splits
@@ -194,10 +194,14 @@ fn text(dataset: &Dataset, name: &str) -> Result<Series, ModelError> {
     Ok(source.as_materialized_series().cast(&DataType::String)?)
 }
 
+/// A row's bucket: two bytes, so a feature can have up to 65,535 buckets (`max_bins`); the
+/// default 255 keeps every histogram as small as one byte would.
+pub(crate) type Code = u16;
+
 /// One feature in buckets.
 pub(crate) struct Binned {
     /// The bucket of each row; a missing value has the code after the last bucket.
-    pub(crate) codes: Vec<u8>,
+    pub(crate) codes: Vec<Code>,
     /// The smallest and the largest value in each bucket.
     edges: Vec<(f64, f64)>,
     missing: bool,
@@ -209,38 +213,38 @@ pub(crate) struct Binned {
 /// `max_bins` categories, with how many there are.
 fn bin_text(series: &Series, max_bins: usize) -> Result<Binned, usize> {
     let values = series.str().expect("text() makes String columns");
-    let mut places: HashMap<&str, u8> = HashMap::new();
+    let mut places: HashMap<&str, Code> = HashMap::new();
     let mut names: Vec<&str> = Vec::new();
-    let mut codes: Vec<u8> = Vec::with_capacity(values.len());
+    let mut codes: Vec<Code> = Vec::with_capacity(values.len());
     let mut missing: bool = false;
     for value in values.iter() {
         let Some(value) = value else {
             missing = true;
-            codes.push(u8::MAX);
+            codes.push(Code::MAX);
             continue;
         };
-        let place: u8 = match places.get(value) {
+        let place: Code = match places.get(value) {
             Some(place) => *place,
             None => {
                 if names.len() == max_bins {
                     let more: usize = values.iter().flatten().collect::<std::collections::HashSet<_>>().len();
                     return Err(more);
                 }
-                places.insert(value, names.len() as u8);
+                places.insert(value, names.len() as Code);
                 names.push(value);
-                (names.len() - 1) as u8
+                (names.len() - 1) as Code
             }
         };
         codes.push(place);
     }
     let mut order: Vec<usize> = (0..names.len()).collect();
     order.sort_unstable_by(|a, b| names[*a].cmp(names[*b]));
-    let mut rank: [u8; 256] = [0; 256];
+    let mut rank: Vec<Code> = vec![0; names.len()];
     for (r, place) in order.iter().enumerate() {
-        rank[*place] = r as u8;
+        rank[*place] = r as Code;
     }
-    rank[u8::MAX as usize] = names.len() as u8;
-    codes.iter_mut().for_each(|code| *code = rank[*code as usize]);
+    let last: Code = names.len() as Code;
+    codes.iter_mut().for_each(|code| *code = if *code == Code::MAX { last } else { rank[*code as usize] });
     Ok(Binned {
         codes,
         edges: (0..names.len()).map(|i| (i as f64, i as f64)).collect(),
@@ -257,15 +261,17 @@ fn bin(values: &[f64], max_bins: usize) -> Option<Binned> {
     // One pass gives each value the place of its first appearance among the distinct values,
     // through a small hash table (a binary search per value took three times as long). It
     // stops at the first distinct value too many.
-    const SLOTS: usize = 512;
+    // At least twice as many slots as distinct values, a power of two: 512 for 255 buckets.
+    let slots: usize = (2 * max_bins + 2).next_power_of_two().max(512);
+    let shift: u32 = 64 - slots.trailing_zeros();
     const EMPTY: u64 = u64::MAX; // a NaN, and no NaN is a key
-    const MISSING: u8 = u8::MAX; // max_bins is at most 255, so no place is 255
-    let mut keys: [u64; SLOTS] = [EMPTY; SLOTS];
-    let mut places: [u8; SLOTS] = [0; SLOTS];
+    const MISSING: Code = Code::MAX; // max_bins is below 65,535, so no place is this
+    let mut keys: Vec<u64> = vec![EMPTY; slots];
+    let mut places: Vec<Code> = vec![0; slots];
     let mut distinct: Vec<f64> = Vec::with_capacity(max_bins);
-    let mut codes: Vec<u8> = Vec::with_capacity(values.len());
+    let mut codes: Vec<Code> = Vec::with_capacity(values.len());
     let mut exact: bool = true;
-    let (mut last, mut place): (u64, u8) = (EMPTY, 0);
+    let (mut last, mut place): (u64, Code) = (EMPTY, 0);
     'values: for &value in values {
         if value.is_nan() {
             codes.push(MISSING);
@@ -274,7 +280,7 @@ fn bin(values: &[f64], max_bins: usize) -> Option<Binned> {
         let bits: u64 = (value + 0.0).to_bits(); // -0.0 is 0.0
         if bits != last {
             let hash: u64 = (bits ^ (bits >> 29)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-            let mut slot: usize = (hash >> 55) as usize;
+            let mut slot: usize = (hash >> shift) as usize;
             loop {
                 if keys[slot] == bits {
                     place = places[slot];
@@ -285,12 +291,12 @@ fn bin(values: &[f64], max_bins: usize) -> Option<Binned> {
                         exact = false;
                         break 'values;
                     }
-                    place = distinct.len() as u8;
+                    place = distinct.len() as Code;
                     (keys[slot], places[slot]) = (bits, place);
                     distinct.push(value);
                     break;
                 }
-                slot = (slot + 1) % SLOTS;
+                slot = (slot + 1) % slots;
             }
             last = bits;
         }
@@ -300,15 +306,14 @@ fn bin(values: &[f64], max_bins: usize) -> Option<Binned> {
         // Each distinct value is a bucket of its own: the places become ranks.
         let mut order: Vec<usize> = (0..distinct.len()).collect();
         order.sort_unstable_by(|a, b| distinct[*a].total_cmp(&distinct[*b]));
-        let mut rank: [u8; 256] = [0; 256];
+        let mut rank: Vec<Code> = vec![0; distinct.len()];
         for (r, place) in order.iter().enumerate() {
-            rank[*place] = r as u8;
+            rank[*place] = r as Code;
         }
-        rank[MISSING as usize] = distinct.len() as u8;
         let mut missing: bool = false;
         for code in &mut codes {
             missing |= *code == MISSING;
-            *code = rank[*code as usize];
+            *code = if *code == MISSING { distinct.len() as Code } else { rank[*code as usize] };
         }
         let edges: Vec<(f64, f64)> = order.iter().map(|p| (distinct[*p], distinct[*p])).collect();
         return Some(Binned {
@@ -335,17 +340,17 @@ fn bin(values: &[f64], max_bins: usize) -> Option<Binned> {
     let bins: usize = tops.len() + 1;
     let mut edges: Vec<(f64, f64)> = vec![(f64::INFINITY, f64::NEG_INFINITY); bins];
     let mut missing: bool = false;
-    let codes: Vec<u8> = values
+    let codes: Vec<Code> = values
         .iter()
         .map(|&value| {
             if value.is_nan() {
                 missing = true;
-                return bins as u8;
+                return bins as Code;
             }
             let at: usize = tops.partition_point(|top| *top < value);
             let edge: &mut (f64, f64) = &mut edges[at];
             *edge = (edge.0.min(value), edge.1.max(value));
-            at as u8
+            at as Code
         })
         .collect();
     Some(Binned {
@@ -415,8 +420,9 @@ impl Bins {
                     let cache = &dataset.try_column_info(name)?.bins;
                     let binned: Arc<Binned> = match cache.get(max_bins, rows) {
                         Some(binned) => binned,
+                        // A category split is a set of 256 bits: at most 255 categories.
                         None if text && is_categorical => {
-                            let binned: Binned = bin_text(&self::text(dataset, name)?, max_bins)
+                            let binned: Binned = bin_text(&self::text(dataset, name)?, max_bins.min(255))
                                 .map_err(too_many)?;
                             cache.set(max_bins, binned)
                         }
@@ -430,8 +436,8 @@ impl Bins {
                     // Numbers as categories: a bucket per distinct value, or there are more
                     // values than buckets.
                     let exact: bool = binned.edges.iter().all(|(low, high)| low == high);
-                    if is_categorical && !(exact && binned.edges.len() <= max_bins) {
-                        return Err(too_many(binned.edges.len().max(max_bins + 1)));
+                    if is_categorical && !(exact && binned.edges.len() <= max_bins.min(255)) {
+                        return Err(too_many(binned.edges.len().max(max_bins.min(255) + 1)));
                     }
                     Ok(binned)
                 })
@@ -468,11 +474,11 @@ impl Bins {
             }
             let mut counts: Vec<usize> = vec![0; n + 1];
             b.codes.iter().for_each(|code| counts[*code as usize] += 1);
-            let mut group: Vec<u8> = vec![0; n + 1];
+            let mut group: Vec<Code> = vec![0; n + 1];
             let mut edges: Vec<(f64, f64)> = Vec::new();
             let (mut low, mut run): (f64, usize) = (b.edges[0].0, 0);
             for i in 0..n {
-                group[i] = edges.len() as u8;
+                group[i] = edges.len() as Code;
                 run += counts[i];
                 if i + 1 < n && run >= min_rows {
                     edges.push((low, b.edges[i].1));
@@ -483,8 +489,8 @@ impl Bins {
             if edges.len() == n {
                 continue;
             }
-            group[n] = edges.len() as u8; // the missing values' code
-            let codes: Vec<u8> = b.codes.iter().map(|code| group[*code as usize]).collect();
+            group[n] = edges.len() as Code; // the missing values' code
+            let codes: Vec<Code> = b.codes.iter().map(|code| group[*code as usize]).collect();
             self.features[f] = Arc::new(Binned { codes, edges, missing: b.missing, categories: None });
         }
         let mut offsets: Vec<usize> = vec![0];
@@ -495,6 +501,14 @@ impl Bins {
         self.widest = offsets.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
         self.offsets = offsets;
         self
+    }
+
+    /// Feature `f`'s bucket of each row (a missing value's code is the bucket count), the
+    /// smallest and largest value of each bucket, and whether any value is missing: what a
+    /// tree grown outside this engine reads (CatBoost's symmetric trees, `models/catboost.rs`).
+    pub(crate) fn binned(&self, f: usize) -> (&[Code], &[(f64, f64)], bool) {
+        let b: &Binned = &self.features[f];
+        (&b.codes, &b.edges, b.missing)
     }
 
     /// The categories of feature `f`, when it is categorical.
@@ -510,7 +524,7 @@ impl Bins {
     /// a missing value. What a tree walks on for a categorical feature.
     pub(crate) fn codes(&self, f: usize) -> Vec<f64> {
         let binned: &Binned = &self.features[f];
-        let missing: u8 = binned.edges.len() as u8;
+        let missing: Code = binned.edges.len() as Code;
         binned.codes.iter().map(|code| if *code == missing { f64::NAN } else { f64::from(*code) }).collect()
     }
 }
@@ -1155,7 +1169,7 @@ impl Grower<'_> {
         h: &mut [f64],
         mut mark: impl FnMut(usize),
     ) {
-        let codes: &[u8] = &self.bins.features[f].codes;
+        let codes: &[Code] = &self.bins.features[f].codes;
         // Every row in order (the root): no row index to follow.
         let whole: bool = self.is_whole(rows);
         match (self.target, self.weights.is_some()) {
@@ -1328,7 +1342,7 @@ impl Grower<'_> {
         let Target::Gradients { g, h, .. } = self.target else {
             unreachable!("fill_gradients is for boosting");
         };
-        let codes: Vec<&[u8]> = (first..first + hists.len())
+        let codes: Vec<&[Code]> = (first..first + hists.len())
             .map(|f| self.bins.features[f].codes.as_slice())
             .collect();
         let w: usize = self.width;
@@ -1747,16 +1761,16 @@ impl Grower<'_> {
     /// Moves the rows that go left to the front of `rows`, in order, and returns how many.
     /// A large node does it in blocks, one task each, then joins the blocks' parts in order.
     fn partition(&self, rows: &mut [u32], spare: &mut [u32], best: &Best) -> usize {
-        let codes: &[u8] = &self.bins.features[best.feature].codes;
+        let codes: &[Code] = &self.bins.features[best.feature].codes;
         match best.set {
             Some(set) => {
-                let in_set = move |code: u8| set[code as usize >> 6] >> (code & 63) & 1 == 1;
+                let in_set = move |code: Code| set[code as usize >> 6] >> (code & 63) & 1 == 1;
                 partition_by(codes, rows, spare, in_set)
             }
             None => {
-                let missing: u8 = self.bins.features[best.feature].edges.len() as u8;
-                let (cut, missing_left): (u8, bool) = (best.cut as u8, best.missing_left);
-                let below = move |code: u8| (code <= cut) | ((code == missing) & missing_left);
+                let missing: Code = self.bins.features[best.feature].edges.len() as Code;
+                let (cut, missing_left): (Code, bool) = (best.cut as Code, best.missing_left);
+                let below = move |code: Code| (code <= cut) | ((code == missing) & missing_left);
                 partition_by(codes, rows, spare, below)
             }
         }
@@ -2150,10 +2164,10 @@ impl Grower<'_> {
 /// gives how many. A large node does it in blocks, one task each, then joins the blocks'
 /// parts in order.
 fn partition_by(
-    codes: &[u8],
+    codes: &[Code],
     rows: &mut [u32],
     spare: &mut [u32],
-    goes_left: impl Fn(u8) -> bool + Sync,
+    goes_left: impl Fn(Code) -> bool + Sync,
 ) -> usize {
     // No branch: each row is written to both sides and one counter moves. The left rows end
     // at the front of `rows`, the right ones at the front of `spare`.
@@ -2197,17 +2211,17 @@ fn partition_by(
 /// the features whose buckets are `codes`, all in one pass ([`Grower::fill_gradients`]). Two
 /// sums are the rows and Σg (every hessian 1); three add Σh.
 fn add_group(
-    codes: &[&[u8]],
+    codes: &[&[Code]],
     hists: &mut [Vec<f64>],
     w: usize,
     rows: impl Iterator<Item = (usize, f32, f32)>,
 ) {
     fn run<const N: usize, const W: usize>(
-        codes: &[&[u8]],
+        codes: &[&[Code]],
         hists: &mut [Vec<f64>],
         rows: impl Iterator<Item = (usize, f32, f32)>,
     ) {
-        let codes: [&[u8]; N] = codes.try_into().expect("N features");
+        let codes: [&[Code]; N] = codes.try_into().expect("N features");
         let mut each = hists.iter_mut();
         let hists: [&mut [f64]; N] =
             std::array::from_fn(|_| each.next().expect("N histograms").as_mut_slice());

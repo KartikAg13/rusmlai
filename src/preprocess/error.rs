@@ -31,7 +31,8 @@ pub enum PreprocessError {
     /// A [`ColumnTransformer::add`](crate::preprocess::ColumnTransformer::add) names a column
     /// that is neither an input column nor the output of an earlier add.
     #[error(
-        "add '{add}' reads column '{column}', which is not an input column or an earlier add's output. Available: {available}"
+        "add '{add}' reads column '{column}', which is not an input column or an earlier add's output.{} Available: {available}",
+        crate::utils::did_you_mean(.column, .available)
     )]
     UnknownColumn {
         /// The add's name.
@@ -52,6 +53,19 @@ pub enum PreprocessError {
         /// What it takes.
         expected: String,
     },
+
+    /// A step that learns from the target was fitted without one.
+    #[error(
+        "{step} learns from the target: use it in a Pipeline, which passes the target, or call its own fit(dataset, target)"
+    )]
+    NeedsTarget {
+        /// The step's name.
+        step: &'static str,
+    },
+
+    /// A step that learns from the target failed (its own error, as text).
+    #[error("{0}")]
+    Step(String),
 
     /// `transform` got data without a column that `fit` saw.
     #[error("transform needs column '{column}', which fit saw but this dataset doesn't have")]

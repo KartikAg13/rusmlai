@@ -69,6 +69,8 @@ pub(crate) struct Plan {
     /// Where every score starts, instead of the constant with the lowest loss: XGBoost's
     /// `base_score` through the link, 0 for LightGBM's `boost_from_average=False`.
     pub base_score: Option<f64>,
+    /// `Some`: CatBoost's symmetric trees instead of the engine's (`models/catboost.rs`).
+    pub symmetric: Option<crate::models::catboost::Symmetric>,
 }
 
 impl Plan {
@@ -92,6 +94,10 @@ impl Plan {
 pub(crate) trait Library: Clone + std::fmt::Debug + PartialEq + Serialize + DeserializeOwned + Send + Sync {
     /// The rounds and the trees, for `rows` rows.
     fn plan(&self, rows: usize) -> Plan;
+    /// A classifier's plan, for `rows` rows of `classes` classes.
+    fn classifier_plan(&self, rows: usize, _classes: usize) -> Plan {
+        self.plan(rows)
+    }
     /// The most buckets per feature.
     fn max_bins(&self) -> usize;
     /// The fewest rows of a bucket of neighbouring values (LightGBM's `min_data_in_bin`).
@@ -227,6 +233,7 @@ impl Library for Params {
             n_iter_no_change: self.n_iter_no_change,
             tol: self.tol,
             base_score: None,
+            symmetric: None,
         }
     }
 
@@ -314,7 +321,7 @@ pub(crate) enum Loss<'a> {
 
 impl Loss<'_> {
     /// The scores per row, and so the trees per round.
-    fn outputs(&self) -> usize {
+    pub(crate) fn outputs(&self) -> usize {
         match self {
             Loss::Classes(_, classes, _) => *classes,
             _ => 1,
@@ -375,7 +382,7 @@ impl Loss<'_> {
     /// like scikit-learn's `fit_intercept_only`. The (weighted) mean, the median or a
     /// quantile, the log of the mean, the log-odds of class 1, or the logs of the class
     /// shares around their mean.
-    fn baseline(&self, rows: &[u32], weights: Option<&[f64]>, rules: Rules) -> Vec<f64> {
+    pub(crate) fn baseline(&self, rows: &[u32], weights: Option<&[f64]>, rules: Rules) -> Vec<f64> {
         let weight = |row: u32| weights.map_or(1.0, |w| w[row as usize]);
         let total: f64 = rows.iter().map(|row| weight(*row)).sum();
         let mean = |y: &[f64]| rows.iter().map(|r| weight(*r) * y[*r as usize]).sum::<f64>() / total;
@@ -715,7 +722,7 @@ fn hold_out(loss: &Loss, rows: usize, p: &Plan) -> Vec<bool> {
 }
 
 /// A seed from `seed` and the place of a tree among the trees.
-fn mixed(seed: u64, place: u64) -> u64 {
+pub(crate) fn mixed(seed: u64, place: u64) -> u64 {
     Rng::new(seed ^ place.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15)).next_u64()
 }
 
@@ -787,6 +794,9 @@ fn boost(
     p: &Plan,
     weights: Option<&[f64]>,
 ) -> Result<Boosted, ModelError> {
+    if let Some(symmetric) = &p.symmetric {
+        return Ok(crate::models::catboost::boost_symmetric(bins, loss, p, symmetric, weights));
+    }
     let (n, k, features): (usize, usize, usize) = (dataset.height(), loss.outputs(), bins.names.len());
     let mut held: Vec<bool> = match p.early_stopping {
         true => hold_out(loss, n, p),
@@ -1093,7 +1103,8 @@ pub(crate) fn fit_classifier<L: Library>(
         None => widened(weights),
     };
     let loss: Loss = p.classification(&y, classes.len())?;
-    let boosted: Boosted = boost(dataset, &bins, &loss, &p.plan(dataset.height()), weights.as_deref())?;
+    let plan: Plan = p.classifier_plan(dataset.height(), classes.len());
+    let boosted: Boosted = boost(dataset, &bins, &loss, &plan, weights.as_deref())?;
     let dtype: Option<DataType> = Some(dataset.column(target)?.dtype().clone());
     Ok(Fitted { boosted, names: bins.names, categories, classes, dtype })
 }
@@ -1295,6 +1306,10 @@ macro_rules! boosted_model {
         }
 
         impl Model for $name {
+            fn target(&self) -> Option<&str> {
+                self.target.as_deref()
+            }
+
             boosted_model!(@model false);
 
             fn try_evaluate(&self, dataset: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError> {
@@ -1377,6 +1392,10 @@ macro_rules! boosted_model {
         }
 
         impl Model for $name {
+            fn target(&self) -> Option<&str> {
+                self.target.as_deref()
+            }
+
             boosted_model!(@model true);
 
             fn try_evaluate(&self, dataset: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError> {

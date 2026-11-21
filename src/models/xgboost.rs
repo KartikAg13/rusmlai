@@ -130,12 +130,13 @@ impl Library for XgbParams {
             n_iter_no_change: 10,
             tol: 0.0,
             base_score: self.base_margin(),
+            symmetric: None,
         }
     }
 
     fn max_bins(&self) -> usize {
-        // One bucket of the 256 holds the missing values.
-        self.max_bin.min(255)
+        // One bucket holds the missing values.
+        self.max_bin - 1
     }
 
     fn categorical(&self, dataset: &Dataset, target: &str) -> Result<Vec<String>, ModelError> {
@@ -333,11 +334,11 @@ macro_rules! xgb_settings {
                 self
             }
 
-            /// The most buckets per feature, 2 to 256. Default 256; rusmlai keeps one of
+            /// The most buckets per feature, 2 to 65,536. Default 256; rusmlai keeps one of
             /// them for the missing values, so 256 gives 255 buckets of values.
             #[track_caller]
             pub fn max_bin(mut self, max_bin: usize) -> Self {
-                check((2..=256).contains(&max_bin), "max_bin", max_bin, "2 to 256");
+                check((2..=65_536).contains(&max_bin), "max_bin", max_bin, "2 to 65,536");
                 self.params.max_bin = max_bin;
                 self
             }
@@ -551,6 +552,40 @@ impl XGBClassifier {
         self
     }
 }
+
+/// `save_model` / `try_save_model` on an XGBoost-named model.
+macro_rules! xgb_export {
+    ($model:ident) => {
+        impl $model {
+            /// Writes the fitted model as XGBoost's own JSON model, which Python reads with
+            /// `xgboost.XGBRegressor().load_model(path)` (or `XGBClassifier`, or
+            /// `xgboost.Booster(model_file=path)`) and which predicts what this model
+            /// predicts. (xgboost: `model.save_model("model.json")`) Not yet: a model with
+            /// categorical features. Panics with the error's message at your line.
+            #[track_caller]
+            pub fn save_model(&self, path: impl AsRef<std::path::Path>) {
+                crate::error::OrFatal::or_fatal(self.try_save_model(path))
+            }
+
+            /// [`Self::save_model`] that returns the error.
+            pub fn try_save_model(&self, path: impl AsRef<std::path::Path>) -> Result<(), ModelError> {
+                if self.target.is_none() {
+                    return Err(ModelError::NotFitted { model: stringify!($model) });
+                }
+                let model = crate::models::export::XgbModel {
+                    trees: &self.estimators_,
+                    baseline: &self.baseline,
+                    names: &self.feature_names_in_,
+                    objective: &self.params.objective,
+                };
+                crate::models::export::xgboost_json(&model, path.as_ref())
+            }
+        }
+    };
+}
+
+xgb_export!(XGBRegressor);
+xgb_export!(XGBClassifier);
 
 #[cfg(test)]
 pub(crate) mod tests {

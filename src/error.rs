@@ -1,4 +1,7 @@
-use std::fmt::Display;
+use std::{
+    fmt::Display,
+    sync::{Mutex, PoisonError},
+};
 
 /// Turns the `try_*` result into the panicking public API.
 pub trait OrFatal<T> {
@@ -17,9 +20,53 @@ impl<T, E: Display> OrFatal<T> for Result<T, E> {
     }
 }
 
-/// Non-fatal problems (a cache file that couldn't be written, ...) go to stderr.
+/// The warnings of this run so far, in order, each once.
+static WARNINGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// The setting `set_warnings` and `RUSMLAI_WARNINGS` share.
+const WARNINGS_VAR: &str = "RUSMLAI_WARNINGS";
+
+/// A non-fatal problem or a choice rusmlai made for you (columns left out of a fit, a
+/// category `fit` never saw, a cache file that couldn't be written): printed to stderr once
+/// per run, however often it happens, unless `set_warnings(false)`. [`take_warnings`] reads
+/// them either way.
 pub(crate) fn warn(msg: impl Display) {
-    eprintln!("[rusmlai warning] {msg}");
+    let msg: String = msg.to_string();
+    let mut seen = WARNINGS.lock().unwrap_or_else(PoisonError::into_inner);
+    if seen.contains(&msg) {
+        return;
+    }
+    let quiet: bool = crate::utils::setting(WARNINGS_VAR)
+        .is_some_and(|v| ["off", "0", "false"].contains(&v.to_ascii_lowercase().as_str()));
+    if !quiet {
+        eprintln!("[rusmlai warning] {msg}");
+    }
+    seen.push(msg);
+}
+
+/// `false` stops printing rusmlai's warnings (a notebook keeps it for every later cell);
+/// `true`, the default, prints each warning once per run. The environment variable
+/// `RUSMLAI_WARNINGS=off` does the same. [`take_warnings`] still collects them.
+///
+/// ```
+/// use rusmlai::prelude::*;
+/// set_warnings(false);
+/// let ds = Dataset::new(df!("x" => [1.0, 1.0, 1.0], "y" => [0.0, 1.0, 2.0]).unwrap(), "");
+/// let _ = KBinsDiscretizer::new().strategy("uniform").fit_transform(&ds.select(&["x"]));
+/// assert!(take_warnings().iter().any(|w| w.contains("constant")));
+/// set_warnings(true);
+/// ```
+///
+/// Python: `warnings.filterwarnings("ignore")`, and `warnings.catch_warnings(record=True)` to
+/// read them.
+pub fn set_warnings(on: bool) {
+    crate::utils::set_setting(WARNINGS_VAR, if on { "on" } else { "off" });
+}
+
+/// Every warning since the last call (each once), and forgets them, so the next repeat
+/// prints again. For tests and notebooks that want to check what rusmlai decided.
+pub fn take_warnings() -> Vec<String> {
+    std::mem::take(&mut *WARNINGS.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
 #[cfg(test)]

@@ -320,7 +320,7 @@ pub fn try_log_loss(y_true: &Series, y_proba: &Dataset) -> Result<f64, ModelErro
 /// The positive class of a binary `y_true`: the given label, or with `""` the greater of the
 /// two labels (numbers as numbers, text by name, `true` over `false`), as scikit-learn's
 /// `roc_auc_score` picks it. Returns the mask of positive rows.
-fn positive(y_true: &Series, pos_label: &str) -> Result<Vec<bool>, ModelError> {
+pub(crate) fn positive(y_true: &Series, pos_label: &str) -> Result<Vec<bool>, ModelError> {
     let labels: Series = y_true.unique()?.sort(Default::default())?;
     let label: Series = if pos_label.is_empty() {
         match labels.len() {

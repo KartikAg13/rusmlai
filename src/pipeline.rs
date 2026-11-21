@@ -79,13 +79,26 @@ impl<M> Pipeline<M> {
     }
 }
 
+/// An empty pipeline of a default model: what [`Model::load`] fills from a file.
+impl<M: Default> Default for Pipeline<M> {
+    fn default() -> Self {
+        Self::new(ColumnTransformer::new(), M::default())
+    }
+}
+
 impl<M: Model> Pipeline<M> {
     /// Fits the preprocessing on every column but the target, and gives the model's input: the
     /// features and the target.
     fn fit_prep(&mut self, dataset: &Dataset, target: &str) -> Result<Dataset, ModelError> {
         // The target never goes into the preprocessing, so `&[]` never selects it.
         let x: Dataset = dataset.try_drop(&[target])?;
-        let features: Dataset = self.prep.try_fit_transform(&x)?;
+        let y: Series = dataset.column(target)?.as_materialized_series().clone();
+        // A step that learns from the target (`TargetEncoder`) gives its own output for these
+        // rows; every other step's is `transform`'s.
+        let features: Dataset = match self.prep.try_fit_with_target(&x, &y)? {
+            Some(features) => features,
+            None => self.prep.try_transform(&x)?,
+        };
         Ok(features.try_with_column(dataset, target)?)
     }
 
@@ -97,6 +110,20 @@ impl<M: Model> Pipeline<M> {
 }
 
 impl<M: Model> Model for Pipeline<M> {
+    fn target(&self) -> Option<&str> {
+        self.model.target()
+    }
+
+    /// The fitted preprocessing, every step with its settings and learned values.
+    fn prep_state(&self) -> Result<Option<Value>, ModelError> {
+        Ok(Some(serde_json::to_value(&self.prep)?))
+    }
+
+    fn try_restore_prep(&mut self, state: Value) -> Result<(), ModelError> {
+        self.prep = serde_json::from_value(state)?;
+        Ok(())
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         let input: Dataset = self.fit_prep(dataset, target)?;
         self.model.try_train(&input, target)

@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use indexmap::IndexMap;
-use polars::prelude::Expr;
+use polars::prelude::{Column, DataFrame, Expr, Series};
 
 use crate::utils::col;
 use crate::{
@@ -55,7 +55,7 @@ use crate::{
 ///     "num__age", "num__cgpa", "cat__batch_B13", "cat__batch_B14", "cat__batch_B15",
 /// ]
 /// ```
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ColumnTransformer {
     adds: Vec<Add>,
     passthrough: bool,
@@ -63,7 +63,7 @@ pub struct ColumnTransformer {
     input_columns: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct Add {
     name: String,
     columns: Vec<String>,
@@ -167,10 +167,14 @@ impl ColumnTransformer {
     }
 }
 
-impl Transform for ColumnTransformer {
-    fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
+impl ColumnTransformer {
+    /// Fits every add in order, each step with the target `y` when there is one. Gives the
+    /// training rows' output of each add whose last step made its own (cross fitting), with
+    /// the add's output names.
+    fn fit_adds(&mut self, dataset: &Dataset, y: Option<&Series>) -> Result<Vec<(Vec<String>, Dataset)>, PreprocessError> {
         let inputs: Exprs = identity(dataset);
         let mut produced: Exprs = IndexMap::new();
+        let mut own: Vec<(Vec<String>, Dataset)> = Vec::new();
         for add in &mut self.adds {
             let x: Exprs = reads(add, &inputs, &produced)?;
             let mut data: Dataset = if x.keys().any(|name| produced.contains_key(name)) {
@@ -181,21 +185,61 @@ impl Transform for ColumnTransformer {
                 dataset.try_select(&x.keys().map(String::as_str).collect::<Vec<&str>>())?
             };
             let last: usize = add.steps.len().saturating_sub(1);
+            let mut trained: Option<Dataset> = None;
             for (i, step) in add.steps.iter_mut().enumerate() {
                 // Columns the step before changed have no stats yet: one pass for all of them,
                 // not one pass per column as each `try_*_stats` call would make.
                 data.try_fill_stats()?;
-                step.try_fit(&data)?;
+                match y {
+                    Some(y) => trained = step.try_fit_with_target(&data, y)?,
+                    None => step.try_fit(&data)?,
+                }
+                if trained.is_some() && i < last {
+                    return Err(PreprocessError::InvalidOption {
+                        option: "add",
+                        value: add.name.clone(),
+                        expected: "a step that learns from the target (TargetEncoder) as the last step of its add".into(),
+                    });
+                }
                 if i < last {
                     // The next step learns from this step's output.
                     data = step.try_transform(&data)?;
                 }
             }
-            produced.extend(run(add, x, self.plain_names)?);
+            let outputs: Exprs = run(add, x, self.plain_names)?;
+            if let Some(trained) = trained {
+                own.push((outputs.keys().cloned().collect(), trained));
+            }
+            produced.extend(outputs);
         }
         self.input_columns = dataset.columns();
         self.plan(&inputs)?; // names that clash fail here, not at transform
-        Ok(())
+        Ok(own)
+    }
+}
+
+impl Transform for ColumnTransformer {
+    fn try_fit(&mut self, dataset: &Dataset) -> Result<(), PreprocessError> {
+        self.fit_adds(dataset, None).map(|_| ())
+    }
+
+    /// Fits every step with the target, and gives the training rows' output when a step made
+    /// its own (a `TargetEncoder`'s cross-fitted encodings in place of `transform`'s).
+    fn try_fit_with_target(&mut self, dataset: &Dataset, y: &Series) -> Result<Option<Dataset>, PreprocessError> {
+        let own: Vec<(Vec<String>, Dataset)> = self.fit_adds(dataset, Some(y))?;
+        if own.is_empty() {
+            return Ok(None);
+        }
+        let mut frame: DataFrame = self.try_transform(dataset)?.dataframe().clone();
+        for (names, trained) in own {
+            for (name, column) in names.iter().zip(trained.dataframe().columns()) {
+                if frame.column(name).is_ok() {
+                    let column: Column = column.clone().with_name(name.as_str().into());
+                    frame.with_column(column)?;
+                }
+            }
+        }
+        Ok(Some(Dataset::new(frame, "")))
     }
 
     fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {

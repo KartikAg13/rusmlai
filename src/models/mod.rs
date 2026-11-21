@@ -6,15 +6,20 @@ use std::fmt::Debug;
 pub mod adaboost;
 pub mod bagging;
 pub mod boosting;
+pub mod catboost;
 pub(crate) mod design;
 pub mod dummy;
+pub(crate) mod export;
 pub mod folds;
 pub mod forest;
+pub mod hill;
 pub(crate) mod hist;
 pub mod search;
 pub mod stacking;
+pub mod summary;
 pub mod lightgbm;
 pub mod linear;
+pub mod persist;
 pub mod logistic;
 pub mod tree;
 pub mod xgboost;
@@ -22,10 +27,13 @@ pub mod xgboost;
 pub use adaboost::AdaBoostClassifier;
 pub use bagging::{BaggingClassifier, BaggingRegressor};
 pub use search::{GridSearchCV, cross_val_score, try_cross_val_score};
+pub use summary::OlsSummary;
 pub use stacking::{AnyModel, StackingClassifier, StackingRegressor};
 pub use boosting::{GradientBoostingClassifier, GradientBoostingRegressor};
+pub use catboost::{CatBoostClassifier, CatBoostRegressor};
 pub use dummy::DummyRegressor;
 pub use folds::{Cv, KFold, StratifiedKFold, cross_val_predict, try_cross_val_predict};
+pub use hill::HillClimbing;
 pub use forest::{ExtraTreesClassifier, ExtraTreesRegressor, RandomForestClassifier, RandomForestRegressor};
 pub use lightgbm::{LGBMClassifier, LGBMRegressor};
 pub use linear::{ElasticNet, Lasso, LinearRegression, Ridge, RidgeCV};
@@ -395,6 +403,86 @@ pub trait Model: Debug {
     #[track_caller]
     fn fit(&mut self, dataset: &Dataset, target: &str) {
         self.try_fit(dataset, target).or_fatal()
+    }
+
+    /// The target column `fit` saw; `None` before `fit`.
+    fn target(&self) -> Option<&str> {
+        None
+    }
+
+    /// What a saved file holds besides the model: a `Pipeline`'s fitted preprocessing.
+    fn prep_state(&self) -> Result<Option<Value>, ModelError> {
+        Ok(None)
+    }
+
+    /// Puts back what [`Model::prep_state`] gave.
+    fn try_restore_prep(&mut self, _state: Value) -> Result<(), ModelError> {
+        Ok(())
+    }
+
+    /// Saves the fitted model to one file at `path`: its settings, what it learned and its
+    /// target, and for a `Pipeline` its fitted preprocessing. Read it back with
+    /// [`Model::load`]. The file holds numbers and names, never code. Panics with the error's
+    /// message at your line: not fitted, or the file can't be written.
+    ///
+    /// ```
+    /// use rusmlai::prelude::*;
+    /// let ds = Dataset::new(df!("x" => [1.0, 2.0, 3.0, 4.0], "y" => [2.0, 4.1, 5.9, 8.0]).unwrap(), "");
+    /// let mut model = LinearRegression::new();
+    /// model.fit(&ds, "y");
+    /// let path = std::env::temp_dir().join("rusmlai-doc-linear.model");
+    /// model.save(&path);
+    /// let loaded = LinearRegression::load(&path);
+    /// assert_eq!(loaded.coef_, model.coef_);
+    /// assert_eq!(loaded.predict(&ds), model.predict(&ds));
+    /// ```
+    ///
+    /// Python:
+    ///
+    /// ```python
+    /// import os, tempfile
+    /// import joblib
+    /// import pandas as pd
+    /// from sklearn.linear_model import LinearRegression
+    /// ds = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0], "y": [2.0, 4.1, 5.9, 8.0]})
+    /// model = LinearRegression().fit(ds[["x"]], ds["y"])
+    /// path = os.path.join(tempfile.gettempdir(), "rusmlai-doc-linear.joblib")
+    /// joblib.dump(model, path)
+    /// loaded = joblib.load(path)  # a pickle: it can run code, so load only your own files
+    /// assert (loaded.coef_ == model.coef_).all()
+    /// ```
+    #[track_caller]
+    fn save(&self, path: impl AsRef<std::path::Path>)
+    where
+        Self: Sized,
+    {
+        persist::try_save(self, path.as_ref()).or_fatal()
+    }
+
+    /// [`Model::save`] that returns the error.
+    fn try_save(&self, path: impl AsRef<std::path::Path>) -> Result<(), ModelError>
+    where
+        Self: Sized,
+    {
+        persist::try_save(self, path.as_ref())
+    }
+
+    /// The model that [`Model::save`] wrote to `path`, as it was. Panics with the error's
+    /// message at your line: no such file, not a saved model, or a model of another kind.
+    #[track_caller]
+    fn load(path: impl AsRef<std::path::Path>) -> Self
+    where
+        Self: Sized + Default,
+    {
+        persist::try_load(path.as_ref()).or_fatal()
+    }
+
+    /// [`Model::load`] that returns the error.
+    fn try_load_from(path: impl AsRef<std::path::Path>) -> Result<Self, ModelError>
+    where
+        Self: Sized + Default,
+    {
+        persist::try_load(path.as_ref())
     }
 }
 

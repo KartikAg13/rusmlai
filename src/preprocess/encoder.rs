@@ -60,7 +60,7 @@ fn learn_categories(dataset: &Dataset, column: &str) -> Result<Vec<String>, Prep
 
 /// The settings that group rare categories, shared by [`OneHotEncoder`] and
 /// [`OrdinalEncoder`], as scikit-learn's `_identify_infrequent`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 struct Rare {
     /// A count (1 or more) or a share of the rows (below 1) under which a category is rare.
     min_frequency: Option<f64>,
@@ -180,7 +180,7 @@ fn check_rare(min_frequency: Option<f64>, max_categories: Option<usize>) {
 
 /// `text` mapped from `old[i]` to `new[i]`. A value not in `old` gets `default`, or fails the
 /// query when there is none. A null stays null.
-fn lookup(text: Expr, old: &[String], new: Vec<f64>, default: Option<f64>) -> Expr {
+pub(crate) fn lookup(text: Expr, old: &[String], new: Vec<f64>, default: Option<f64>) -> Expr {
     let old: Series = Series::new("".into(), old);
     let new: Series = Series::new("".into(), new);
     let mapped: Expr = text.clone().replace_strict(
@@ -235,7 +235,7 @@ fn lookup(text: Expr, old: &[String], new: Vec<f64>, default: Option<f64>) -> Ex
 /// enc = OneHotEncoder(sparse_output=False, drop="first").fit(ds)
 /// assert enc.get_feature_names_out().tolist() == ["c_b", "code_10"]
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OneHotEncoder {
     order: Vec<Vec<String>>,
     handle_unknown: String,
@@ -446,7 +446,7 @@ impl Transform for OneHotEncoder {
 /// enc = OrdinalEncoder(categories=[["poor", "average", "good"]])
 /// assert enc.fit_transform(ds).ravel().tolist() == [2.0, 0.0, 1.0]
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct OrdinalEncoder {
     order: Vec<Vec<String>>,
     handle_unknown: String,
@@ -613,7 +613,7 @@ impl Transform for OrdinalEncoder {
 /// assert codes.tolist() == [1, 0, 1]
 /// assert encoder.inverse_transform(codes).tolist() == ["yes", "no", "yes"]
 /// ```
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LabelEncoder {
     /// The sorted classes, learned by `fit`: class `i` has code `i`.
     pub classes_: Vec<String>,
@@ -745,7 +745,7 @@ impl Transform for LabelEncoder {
 /// share = ds["city"].value_counts(normalize=True)
 /// assert new.map(share).fillna(0.0).tolist() == [0.25, 0.0]
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct CountEncoder {
     normalize: bool,
     /// Each column's categories with their count (or share), most frequent first, learned by

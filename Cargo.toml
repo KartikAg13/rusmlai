@@ -64,7 +64,8 @@ features = ["derive", "std"]
 [dependencies.serde_json]
 version = "1.0.150"
 default-features = false
-features = ["std"]
+# float_roundtrip: a saved or cached f64 reads back to the same bits.
+features = ["std", "float_roundtrip"]
 
 [dependencies.thiserror]
 version = "2.0.18"
@@ -163,4 +164,20 @@ harness = false
 
 [[bench]]
 name = "extras"
+harness = false
+
+[[bench]]
+name = "catboost"
+harness = false
+
+[[bench]]
+name = "hill"
+harness = false
+
+[[bench]]
+name = "clean"
+harness = false
+
+[[bench]]
+name = "persist"
 harness = false

@@ -333,19 +333,72 @@ impl Tree {
                         continue;
                     }
                     let x: f64 = columns[node.feature()][row + k];
-                    let left: bool = if x.is_nan() {
-                        node.split & 1 == 1
-                    } else if SETS && node.split & CATEGORICAL != 0 {
-                        let (set, code): (&Left, usize) = (&self.sets[node.threshold as usize], x as usize);
-                        code < 256 && set[code >> 6] >> (code & 63) & 1 == 1
-                    } else {
-                        x <= node.threshold
-                    };
-                    *at = if left { *at + 1 } else { node.right };
+                    *at = if self.goes_left::<SETS>(node, x) { *at + 1 } else { node.right };
                     walking = true;
                 }
             }
         }
+    }
+
+    /// Whether a row whose feature is `x` goes left at `node`.
+    #[inline(always)]
+    fn goes_left<const SETS: bool>(&self, node: Node, x: f64) -> bool {
+        if x.is_nan() {
+            node.split & 1 == 1
+        } else if SETS && node.split & CATEGORICAL != 0 {
+            let (set, code): (&Left, usize) = (&self.sets[node.threshold as usize], x as usize);
+            code < 256 && set[code >> 6] >> (code & 63) & 1 == 1
+        } else {
+            x <= node.threshold
+        }
+    }
+
+    /// A symmetric tree's shape (every node of a level splits alike, as CatBoost grows them):
+    /// the split of each level from the root, and for each leaf number (bit `l` set: right at
+    /// level `l`) the leaf's node. `None` for any other tree.
+    pub(crate) fn symmetric(&self) -> Option<(Vec<Node>, Vec<u32>)> {
+        let mut levels: Vec<Node> = Vec::new();
+        while self.nodes.get(levels.len())?.split != LEAF {
+            levels.push(self.nodes[levels.len()]);
+            if levels.len() > 20 {
+                return None;
+            }
+        }
+        let leaf_of: Vec<u32> = (0..1usize << levels.len())
+            .map(|bits| {
+                let mut at: usize = 0;
+                for (l, level) in levels.iter().enumerate() {
+                    let node: Node = self.nodes[at];
+                    if node.split != level.split || node.threshold.to_bits() != level.threshold.to_bits() {
+                        return None;
+                    }
+                    at = if bits >> l & 1 == 1 { node.right as usize } else { at + 1 };
+                }
+                (self.nodes[at].split == LEAF).then_some(at as u32)
+            })
+            .collect::<Option<_>>()?;
+        Some((levels, leaf_of))
+    }
+
+    /// [`Tree::walk`] of a symmetric tree of shape `(levels, leaf_of)` ([`Tree::symmetric`]):
+    /// one pass over the rows per level, each adding the side the rows take as one bit.
+    pub(crate) fn walk_symmetric(&self, (levels, leaf_of): &(Vec<Node>, Vec<u32>), columns: &[&[f64]], first: usize, leaves: &mut [u32]) {
+        leaves.fill(0);
+        for (l, node) in levels.iter().enumerate() {
+            let x: &[f64] = &columns[node.feature()][first..first + leaves.len()];
+            match node.is_categorical() {
+                true => leaves.iter_mut().zip(x).for_each(|(bits, x)| *bits |= u32::from(!self.goes_left::<true>(*node, *x)) << l),
+                false => {
+                    // Branch-free: NaN fails `x <= t`, so it goes right unless missing values go left.
+                    let (t, nan_left): (f64, bool) = (node.threshold, node.split & 1 == 1);
+                    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+                    for (bits, x) in leaves.iter_mut().zip(x) {
+                        *bits |= u32::from(!(*x <= t) & !(nan_left & x.is_nan())) << l;
+                    }
+                }
+            }
+        }
+        leaves.iter_mut().for_each(|bits| *bits = leaf_of[*bits as usize]);
     }
 }
 
@@ -388,6 +441,7 @@ pub(crate) fn sum_leaves_on(
     let mut out: Vec<f64> = vec![0.0; rows * width];
     let nodes: usize = trees.iter().map(Tree::node_count).sum();
     let together: usize = if nodes * 16 <= CACHED { trees.len().max(1) } else { 1 };
+    let shapes: Vec<Option<(Vec<Node>, Vec<u32>)>> = trees.iter().map(Tree::symmetric).collect();
     for (g, group) in trees.chunks(together).enumerate() {
         THREAD_POOL.install(|| {
             out.par_chunks_mut(CHUNK * width)
@@ -397,7 +451,10 @@ pub(crate) fn sum_leaves_on(
                     |leaves, (k, part)| {
                         let leaves: &mut [u32] = &mut leaves[..part.len() / width];
                         for (t, tree) in group.iter().enumerate() {
-                            tree.walk(columns, k * CHUNK, leaves);
+                            match &shapes[g * together + t] {
+                                Some(shape) => tree.walk_symmetric(shape, columns, k * CHUNK, leaves),
+                                None => tree.walk(columns, k * CHUNK, leaves),
+                            }
                             let outputs: usize = tree.outputs();
                             for (leaf, cell) in leaves.iter().zip(part.chunks_mut(width)) {
                                 let value: &[f64] = &tree.value[*leaf as usize * outputs..][..outputs];
@@ -862,13 +919,15 @@ macro_rules! tree_settings {
                 self
             }
 
-            /// The most buckets per feature, 2 to 255. Default 255. A feature with at most
+            /// The most buckets per feature, 2 to 65,535. Default 255. A feature with at most
             /// this many distinct values is split exactly, like scikit-learn's tree; one with
             /// more is split between quantile buckets, like `HistGradientBoosting*`
-            /// (`max_bins`). scikit-learn's trees and forests have no such setting.
+            /// (`max_bins`). scikit-learn's trees and forests have no such setting: set it to
+            /// at least a feature's distinct values to split that feature as they do, at the
+            /// cost of larger histograms. A text feature has at most 255 categories.
             #[track_caller]
             pub fn max_bins(mut self, max_bins: usize) -> Self {
-                check((2..=255).contains(&max_bins), "max_bins", max_bins, "2 to 255");
+                check((2..=65_535).contains(&max_bins), "max_bins", max_bins, "2 to 65,535");
                 self.$($params).+.max_bins = max_bins;
                 self
             }
@@ -1109,6 +1168,10 @@ impl DecisionTreeClassifier {
 }
 
 impl Model for DecisionTreeClassifier {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         self.train(dataset, target, None)
     }
@@ -1342,6 +1405,10 @@ impl DecisionTreeRegressor {
 }
 
 impl Model for DecisionTreeRegressor {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         self.train(dataset, target, None)
     }
@@ -1704,6 +1771,12 @@ pub(crate) mod tests {
         let mut coarse: DecisionTreeRegressor = DecisionTreeRegressor::new().max_bins(4);
         coarse.fit(&ds, "y");
         assert!(coarse.score(&ds, "y") < full.score(&ds, "y"));
+        // A bucket per value: scikit-learn's exact threshold, and a perfect fit.
+        let mut exact: DecisionTreeRegressor = DecisionTreeRegressor::new().max_bins(2000);
+        exact.fit(&ds, "y");
+        assert_eq!(exact.tree_.threshold()[0], 1234.5);
+        assert_eq!(exact.score(&ds, "y"), 1.0);
+        assert_eq!(exact.get_n_leaves(), 2);
     }
 
     #[test]
@@ -1737,9 +1810,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "max_bins = 256 is not valid")]
+    #[should_panic(expected = "max_bins = 65536 is not valid")]
     fn a_bad_setting_panics_at_the_setter() {
-        let _ = DecisionTreeRegressor::new().max_bins(256);
+        let _ = DecisionTreeRegressor::new().max_bins(65_536);
     }
 
     #[test]

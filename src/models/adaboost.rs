@@ -219,6 +219,10 @@ impl AdaBoostClassifier {
 }
 
 impl Model for AdaBoostClassifier {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         let (p, tree) = (&self.params, &self.estimator.params);
         let (classes, task): (Vec<String>, Target) =

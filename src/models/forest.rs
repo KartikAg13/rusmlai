@@ -177,7 +177,9 @@ fn grow_forest(
         Some((class_weight, y)) => class_weight.of_classes(classes, y, None)?,
         None => Vec::new(),
     };
-    let grown: Vec<Grown> = THREAD_POOL.install(|| {
+    // Each task keeps only its tree and importances: the rows the tree grew on (a list as
+    // long as its sample) go as soon as it is grown, not after the last tree.
+    let grown: Vec<(Tree, Vec<f64>)> = THREAD_POOL.install(|| {
         (0..p.n_estimators)
             .into_par_iter()
             .map(|t| {
@@ -191,17 +193,18 @@ fn grow_forest(
                     _ => drawn,
                 };
                 let growth = p.tree.growth(features, p.seeds(t).1);
-                Ok(grow(bins, target, &growth, weights.as_deref(), None))
+                let Grown { tree, importances, .. } = grow(bins, target, &growth, weights.as_deref(), None);
+                Ok((tree, importances))
             })
             .collect::<Result<_, ModelError>>()
     })?;
     let mut importances: Vec<f64> = vec![0.0; features];
     let mut trees: Vec<Tree> = Vec::with_capacity(grown.len());
-    for g in grown {
-        for (sum, share) in importances.iter_mut().zip(&g.importances) {
+    for (tree, shares) in grown {
+        for (sum, share) in importances.iter_mut().zip(&shares) {
             *sum += share;
         }
-        trees.push(g.tree);
+        trees.push(tree);
     }
     let sum: f64 = importances.iter().sum();
     if sum > 0.0 {
@@ -382,6 +385,10 @@ impl $name {
 }
 
 impl Model for $name {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         let p: &Params = &self.params;
         let (classes, task): (Vec<String>, Target) =
@@ -611,6 +618,10 @@ impl $name {
 }
 
 impl Model for $name {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         let p: &Params = &self.params;
         let task: Target = number_target(dataset, target)?;

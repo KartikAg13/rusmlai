@@ -11,7 +11,9 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor, StackingClassifier
-from sklearn.linear_model import LogisticRegression, RidgeCV
+from sklearn.compose import ColumnTransformer
+from sklearn.linear_model import LogisticRegression, Ridge, RidgeCV
+from sklearn.pipeline import Pipeline
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score, roc_curve
 from sklearn.model_selection import KFold, StratifiedKFold, cross_val_predict
 from sklearn.preprocessing import (
@@ -74,6 +76,13 @@ def main() -> None:
         file=sys.stderr,
     )
 
+    def pipe() -> Pipeline:
+        prep = ColumnTransformer([("te", TargetEncoder(target_type="continuous", random_state=42), TEXT)], remainder="passthrough")
+        return Pipeline([("prep", prep), ("model", Ridge())])
+
+    x1 = s6e1.drop(columns=["exam_score"])
+    print(f"Pipeline(TargetEncoder, Ridge): train r2 {pipe().fit(x1, y1).score(x1, y1):.6f}", file=sys.stderr)
+
     def count_encode() -> pd.DataFrame:
         return pd.DataFrame({c: s6e1[c].map(s6e1[c].value_counts()) for c in TEXT})
 
@@ -90,6 +99,7 @@ def main() -> None:
         "fit/RidgeCV": lambda jobs: RidgeCV().fit(design, y1),
         "fit/StackingClassifier": lambda jobs: stack(jobs).fit(x2, y2),
         "fit_transform/TargetEncoder": lambda jobs: TargetEncoder(target_type="continuous", random_state=42).fit_transform(s6e1[TEXT], y1),
+        "fit/Pipeline(TargetEncoder,Ridge)": lambda jobs: pipe().fit(x1, y1),
         "fit_transform/KBinsDiscretizer": lambda jobs: KBinsDiscretizer(random_state=42).fit_transform(s6e1[NUMERIC]),
         "fit_transform/QuantileTransformer": lambda jobs: QuantileTransformer(random_state=42).fit_transform(s6e1[NUMERIC]),
         "fit_transform/CountEncoder": lambda jobs: count_encode(),

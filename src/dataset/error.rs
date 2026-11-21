@@ -13,7 +13,10 @@ pub enum DatasetError {
         cwd: String,
     },
 
-    #[error("column '{requested}' not found in dataset. Available columns: {available}")]
+    #[error(
+        "column '{requested}' not found in dataset.{} Available columns: {available}",
+        crate::utils::did_you_mean(.requested, .available)
+    )]
     ColumnNotFound {
         requested: String,
         available: String,
@@ -42,6 +45,14 @@ pub enum DatasetError {
 
     #[error("could not write {path}: {reason}")]
     Write { path: String, reason: String },
+
+    /// An option got a value it doesn't take.
+    #[error("{option} = '{value}' is not valid; use {expected}")]
+    InvalidOption {
+        option: &'static str,
+        value: String,
+        expected: &'static str,
+    },
 
     #[error(transparent)]
     Metadata(#[from] MetadataError),

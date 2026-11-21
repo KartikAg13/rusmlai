@@ -2054,7 +2054,10 @@ fn known(option: &'static str, name: &str, categories: &[String]) -> Result<(), 
         list += &format!(" and {} more", categories.len() - 20);
     }
     if categories.len() >= MAX_GROUPS {
-        list += &format!(". Charts keep only the first {MAX_GROUPS} categories");
+        list += &format!(
+            ". Charts keep only the first {MAX_GROUPS} categories: keep the rows of the ones you \
+             want first, with Dataset::query"
+        );
     }
     Err(invalid(
         option,

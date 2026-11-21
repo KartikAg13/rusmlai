@@ -119,6 +119,10 @@ impl DummyRegressor {
 }
 
 impl Model for DummyRegressor {
+    fn target(&self) -> Option<&str> {
+        (!self.target.is_empty()).then_some(self.target.as_str())
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         let stats = numeric_target(dataset, target)?;
         let value: f64 = match self.strategy.as_str() {

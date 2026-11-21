@@ -126,7 +126,7 @@ fn float_field(_: &Schema, field: &Field) -> polars::prelude::PolarsResult<Field
 /// ordinal = KBinsDiscretizer(n_bins=3, strategy="uniform", encode="ordinal").fit_transform(ds)
 /// assert ordinal[:, 0].tolist() == [0.0, 0.0, 0.0, 1.0, 2.0]
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct KBinsDiscretizer {
     n_bins: usize,
     encode: String,
@@ -414,7 +414,7 @@ impl Transform for KBinsDiscretizer {
 /// new = pd.DataFrame({"a": [2.5, 52.0, 500.0]})
 /// assert q.transform(new)[:, 0].tolist() == [0.375, 0.875, 1.0]
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QuantileTransformer {
     n_quantiles: usize,
     output_distribution: String,

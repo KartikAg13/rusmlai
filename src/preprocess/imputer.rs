@@ -67,14 +67,17 @@ use crate::{
 /// out = SimpleImputer(strategy="constant").set_output(transform="pandas").fit_transform(ds)
 /// assert out["c"][1] == "missing_value"
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SimpleImputer {
     strategy: String,
+    #[serde(with = "crate::preprocess::literal::option")]
     fill_value: Option<Expr>,
+    #[serde(with = "crate::preprocess::literal::option")]
     missing_values: Option<Expr>,
     add_indicator: bool,
     keep_empty_features: bool,
     /// Column to its fill value, learned by `fit` (scikit-learn's `statistics_`).
+    #[serde(with = "crate::preprocess::literal::map")]
     pub statistics_: IndexMap<String, Expr>,
     /// The columns that get a `missingindicator_{column}` column, learned by `fit` with
     /// `add_indicator(true)` (scikit-learn's `indicator_.features_`).

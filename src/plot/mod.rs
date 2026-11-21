@@ -43,8 +43,8 @@ use crate::{
     },
 };
 
-// ponytail: categories past 1,000 are cut before caching, even ones .order names (the error
-// says so). `.order` comes after the query, so the fix is filtering the rows first (#36).
+// Categories past 1,000 are cut before caching, even ones .order names; the error points to
+// `Dataset::query`, which keeps the rows of the wanted categories first.
 pub(crate) const MAX_GROUPS: usize = 1000; // categories kept in the cache, so a huge column can't fill the file
 pub(crate) const SAMPLE: usize = 2500; // points that strip, scatter and regplot draw by default
 pub(crate) const MAX_SAMPLE: usize = 50_000; // points kept from the data, the most .sample(n) draws

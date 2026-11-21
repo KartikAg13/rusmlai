@@ -69,6 +69,7 @@ pub mod prelude {
     pub use crate::{
         dataset::{
             Dataset,
+            clean::Scalar,
             error::DatasetError,
             read::{
                 read_excel, read_parquet, read_sql, try_read_excel, try_read_parquet, try_read_sql,
@@ -78,6 +79,7 @@ pub mod prelude {
             try_read_csv,
         },
         display::{Figure, TableView},
+        error::{set_warnings, take_warnings},
         metadata::{dataset::role::ColumnRole, models::ModelCache, set_cache},
         metrics::{
             accuracy_score, balanced_accuracy_score, log_loss, mean_absolute_error,
@@ -88,7 +90,7 @@ pub mod prelude {
             DecisionTreeRegressor, DummyRegressor, ExtraTreesClassifier, ExtraTreesRegressor,
             GradientBoostingClassifier,
             GradientBoostingRegressor,
-            ElasticNet, GridSearchCV, LGBMClassifier, LGBMRegressor, Lasso, LinearRegression,
+            ElasticNet, CatBoostClassifier, CatBoostRegressor, GridSearchCV, HillClimbing, OlsSummary, LGBMClassifier, LGBMRegressor, Lasso, LinearRegression,
             LogisticRegression, Model, ModelError, Ridge, RidgeCV,
             RandomForestClassifier, RandomForestRegressor, Regressor, StackingClassifier,
             StackingRegressor, XGBClassifier, XGBRegressor,

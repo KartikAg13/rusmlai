@@ -323,6 +323,10 @@ impl<M: Classifier + Clone + Send + Sync> BaggingClassifier<M> {
 }
 
 impl<M: Classifier + Clone + Send + Sync> Model for BaggingClassifier<M> {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         let (classes, _): (Vec<String>, Series) = label_target(dataset, target)?;
         self.estimators_ = train(&self.estimator, dataset, target, &self.params)?;
@@ -471,6 +475,10 @@ impl<M: Regressor + Clone + Send + Sync> BaggingRegressor<M> {
 }
 
 impl<M: Regressor + Clone + Send + Sync> Model for BaggingRegressor<M> {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         self.estimators_ = train(&self.estimator, dataset, target, &self.params)?;
         self.target = Some(target.into());

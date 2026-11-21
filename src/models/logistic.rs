@@ -507,6 +507,10 @@ fn newton(
 }
 
 impl Model for LogisticRegression {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         let (classes, codes): (Vec<String>, Series) = label_target(dataset, target)?;
         let matrix: DesignMatrix = DesignMatrix::try_with_target(dataset, target, codes, 0.0)?;

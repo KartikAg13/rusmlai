@@ -6,9 +6,12 @@ use polars::prelude::{Column, DataFrame, DataType, IdxSize, NamedFrom, PlHashMap
 use polars_core::runtime::THREAD_POOL;
 use rayon::prelude::*;
 
+use polars::prelude::{DataType as Dtype, Expr, IntoColumn, lit, when};
+
 use crate::{
     dataset::Dataset,
     error::OrFatal,
+    preprocess::{Exprs, PreprocessError, Transform, encoder::lookup},
     models::{
         ModelError, check,
         folds::{KFold, StratifiedKFold},
@@ -37,11 +40,16 @@ use crate::{
 /// It encodes the text and boolean columns, or the ones given to [`columns`](Self::columns);
 /// the other columns, the target among them, pass through unchanged.
 ///
-/// Not yet: a step of a `ColumnTransformer` or `Pipeline` (they fit without the target); a
-/// `categories` list of your own; `cv` as a splitter.
+/// In a [`ColumnTransformer`](crate::preprocess::ColumnTransformer) inside a
+/// [`Pipeline`](crate::pipeline::Pipeline), it is a step like the others: the pipeline passes
+/// it the target, its training rows get the cross-fitted encodings and new rows `transform`'s,
+/// as in scikit-learn. It must be the last step of its add, because the steps after it would
+/// learn from the training rows' encodings.
+///
+/// Not yet: a `categories` list of your own; `cv` as a splitter.
 ///
 /// ```
-/// use rusmlai::prelude::*;
+/// use rusmlai::{prelude::*, steps};
 /// let ds = Dataset::new(
 ///     df!(
 ///         "city" => ["a", "a", "a", "b", "b", "c", "c", "c", "c", "a"],
@@ -59,6 +67,13 @@ use crate::{
 ///
 /// let crossed = TargetEncoder::new().target_type("continuous").cv(2).fit_transform(&ds, "y");
 /// assert_eq!(crossed.columns(), ["city", "y"]);
+///
+/// // In a pipeline: the training rows get cross-fitted encodings, new rows fit's.
+/// let prep = ColumnTransformer::new()
+///     .add("te", &["city"], steps![TargetEncoder::new().target_type("continuous").cv(2)]);
+/// let mut pipe = Pipeline::new(prep, LinearRegression::new());
+/// pipe.fit(&ds, "y");
+/// assert_eq!(pipe.predict(&new).len(), 2);
 /// ```
 ///
 /// Python:
@@ -66,6 +81,9 @@ use crate::{
 /// ```python
 /// import numpy as np
 /// import pandas as pd
+/// from sklearn.compose import ColumnTransformer
+/// from sklearn.linear_model import LinearRegression
+/// from sklearn.pipeline import Pipeline
 /// from sklearn.preprocessing import TargetEncoder
 /// ds = pd.DataFrame({
 ///     "city": ["a", "a", "a", "b", "b", "c", "c", "c", "c", "a"],
@@ -77,8 +95,12 @@ use crate::{
 /// assert np.allclose(encoder.transform(new)[:, 0], [11.0, 5.4])
 /// crossed = TargetEncoder(target_type="continuous", cv=2, random_state=42).fit_transform(ds[["city"]], ds["y"])
 /// assert crossed.shape == (10, 1)
+///
+/// prep = ColumnTransformer([("te", TargetEncoder(target_type="continuous", cv=2, random_state=42), ["city"])])
+/// pipe = Pipeline([("prep", prep), ("model", LinearRegression())]).fit(ds[["city"]], ds["y"])
+/// assert len(pipe.predict(new)) == 2
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TargetEncoder {
     target_type: String,
     smooth: Option<f64>,
@@ -375,6 +397,58 @@ impl TargetEncoder {
     }
 }
 
+/// The name the target takes next to the features while a pipeline fits the encoder.
+const TARGET: &str = "__rusmlai_target__";
+
+/// A step of a `ColumnTransformer`: it fits only with the target, which a `Pipeline` passes.
+impl Transform for TargetEncoder {
+    fn try_fit(&mut self, _dataset: &Dataset) -> Result<(), PreprocessError> {
+        Err(PreprocessError::NeedsTarget { step: "TargetEncoder" })
+    }
+
+    /// Fits on every row, and gives the cross-fitted encodings of the training rows.
+    fn try_fit_with_target(&mut self, dataset: &Dataset, y: &Series) -> Result<Option<Dataset>, PreprocessError> {
+        let mut frame: DataFrame = dataset.dataframe().clone();
+        frame.with_column(y.clone().with_name(TARGET.into()).into_column())?;
+        let encoded: Dataset = TargetEncoder::try_fit_transform(self, &Dataset::new(frame, ""), TARGET)
+            .map_err(|e| PreprocessError::Step(e.to_string()))?;
+        Ok(Some(encoded.try_drop(&[TARGET])?))
+    }
+
+    /// Each encoded column as a lookup of its categories (an unknown one: the mean of all
+    /// rows; a missing value: its own encoding, if `fit` saw one); the others unchanged.
+    fn exprs(&self, inputs: &Exprs) -> Result<Exprs, PreprocessError> {
+        if self.encodings_.is_empty() {
+            let column: String = inputs.keys().next().cloned().unwrap_or_default();
+            return Err(PreprocessError::NotFitted { transformer: "TargetEncoder", column });
+        }
+        if let Some(column) = self.feature_names_in_.iter().find(|name| !inputs.contains_key(*name)) {
+            return Err(PreprocessError::MissingColumn { column: column.clone() });
+        }
+        let mut out: Exprs = Exprs::new();
+        for (name, expr) in inputs {
+            let Some(per_class) = self.encodings_.get(name) else {
+                out.insert(name.clone(), expr.clone());
+                continue;
+            };
+            let categories: &[Option<String>] = &self.categories_[name];
+            // The categories are sorted with a missing value last.
+            let known: Vec<String> = categories.iter().flatten().cloned().collect();
+            let text: Expr = expr.clone().cast(Dtype::String);
+            for (i, (encoding, mean)) in per_class.iter().zip(&self.target_mean_).enumerate() {
+                let missing: f64 = encoding.get(known.len()).copied().unwrap_or(*mean);
+                let mapped: Expr = lookup(text.clone(), &known, encoding[..known.len()].to_vec(), Some(*mean));
+                let named: String = match per_class.len() {
+                    1 => name.clone(),
+                    _ => format!("{name}_{}", self.classes_[i]),
+                };
+                out.insert(named, when(text.clone().is_null()).then(lit(missing)).otherwise(mapped));
+            }
+        }
+        Ok(out)
+    }
+}
+
 /// The mean of `y` over `rows`.
 fn mean(y: &[f64], rows: &[u32]) -> f64 {
     rows.iter().map(|r| y[*r as usize]).sum::<f64>() / rows.len() as f64
@@ -531,5 +605,50 @@ mod tests {
         close(&out.to_list("city"), &[0.0, 0.44666666666666666, 0.40413047041468614]);
         close(&out.to_list("tier"), &[0.4269271623372987, 0.4532453805464398, 0.44666666666666666]);
         assert!(TargetEncoder::new().try_transform(&new).is_err());
+    }
+
+    /// Against `analysis/2026-11-20/target-pipeline/parity.py`: the coefficients come from the
+    /// cross-fitted encodings of the training rows, the predictions of new rows from `fit`'s.
+    #[test]
+    fn a_pipeline_passes_the_target_and_matches_scikit_learn() {
+        use crate::{models::{LinearRegression, Model, Regressor}, pipeline::Pipeline, preprocess::ColumnTransformer, steps};
+        let n: usize = 60;
+        let city: Vec<&str> = (0..n).map(|i| ["a", "b", "c", "d"][i * 7 % 4]).collect();
+        let shop: Vec<&str> = (0..n).map(|i| ["x", "y", "z"][i * 5 % 3]).collect();
+        let hours: Vec<f64> = (0..n).map(|i| (i * 13 % 17) as f64).collect();
+        let y: Vec<f64> = (0..n)
+            .map(|i| {
+                let c: f64 = match city[i] { "a" => 3.0, "b" => -2.0, "c" => 1.0, _ => 0.5 };
+                hours[i] * 0.5 + c + (i * 11 % 7) as f64 * 0.3 + if shop[i] == "y" { 1.5 } else { 0.0 }
+            })
+            .collect();
+        let ds = Dataset::new(polars::df!("city" => city, "shop" => shop, "hours" => hours, "y" => y).unwrap(), "");
+        let prep = ColumnTransformer::new()
+            .add("te", &["city", "shop"], steps![TargetEncoder::new().target_type("continuous")])
+            .remainder("passthrough");
+        let mut pipe = Pipeline::new(prep, LinearRegression::new());
+        pipe.fit(&ds, "y");
+        let close = |got: &[f64], want: &[f64]| got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-9);
+        let coef: Vec<f64> = pipe.model.coef_.clone();
+        assert!(close(&coef, &[1.1647879279007598, 0.7398228159441206, 0.5762015579359514]), "{coef:?}");
+        assert!((pipe.model.intercept_ - -9.745049009831849).abs() < 1e-9);
+        let train: Vec<f64> = pipe.predict(&ds).f64().unwrap().into_no_null_iter().take(4).collect();
+        assert!(close(&train, &[3.2474099098117044, 8.381789109018158, 8.041315238251858, 1.5771277714674081]), "{train:?}");
+        let new = Dataset::new(polars::df!("city" => ["a", "d", "q"], "shop" => ["z", "y", "x"], "hours" => [1.0, 5.0, 2.0]).unwrap(), "");
+        let predicted: Vec<f64> = pipe.predict(&new).f64().unwrap().into_no_null_iter().collect();
+        assert!(close(&predicted, &[3.8709633658787297, 4.955593602702381, 2.2493783225432473]), "{predicted:?}");
+    }
+
+    #[test]
+    fn without_the_target_or_before_another_step_it_says_why() {
+        use crate::{preprocess::{ColumnTransformer, StandardScaler, Transform}, steps};
+        let ds = Dataset::new(polars::df!("city" => ["a", "b", "a", "b"], "y" => [1.0, 2.0, 3.0, 4.0]).unwrap(), "");
+        let mut alone = ColumnTransformer::new().add("te", &["city"], steps![TargetEncoder::new()]);
+        let error: String = alone.try_fit(&ds).unwrap_err().to_string();
+        assert!(error.contains("learns from the target"), "{error}");
+        let mut before = ColumnTransformer::new().add("te", &["city"], steps![TargetEncoder::new().target_type("continuous").cv(2), StandardScaler::new()]);
+        let y: Series = ds.dataframe().column("y").unwrap().as_materialized_series().clone();
+        let error: String = before.try_fit_with_target(&ds.drop(&["y"]), &y).unwrap_err().to_string();
+        assert!(error.contains("last step of its add"), "{error}");
     }
 }

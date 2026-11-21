@@ -481,6 +481,10 @@ macro_rules! linear_model {
         }
 
         impl Model for $name {
+            fn target(&self) -> Option<&str> {
+                self.target.as_deref()
+            }
+
             fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
                 let last = (self.coef_.as_slice(), self.feature_names_in_.as_slice());
                 let (names, solved, intercept) = fit_linear(&self.params.engine(), dataset, target, last)?;
@@ -707,6 +711,11 @@ linear_model! {
 }
 
 impl LinearRegression {
+    /// Whether the model fits an intercept (for `summary`).
+    pub(crate) fn fits_intercept(&self) -> bool {
+        self.params.fit_intercept
+    }
+
     /// Least squares with an intercept.
     pub fn new() -> Self {
         Self::default()
@@ -1083,6 +1092,10 @@ impl RidgeCV {
 }
 
 impl Model for RidgeCV {
+    fn target(&self) -> Option<&str> {
+        self.ridge.target()
+    }
+
     fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
         let errors: Vec<f64> = gcv_errors(dataset, target, &self.params.alphas, self.params.fit_intercept)?;
         // The first of the lowest, as scikit-learn keeps a score only when it is higher.
