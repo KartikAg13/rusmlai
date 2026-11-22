@@ -422,7 +422,7 @@ pub(crate) fn line_figure(
 /// order, so spikes survive. At the default size the 1,000 runs outnumber the plot's pixel
 /// columns, so this draws the same picture as every point (the M4 idea); LTTB keeps one point
 /// per run and can drop a peak.
-fn thin_line(line: &[(f64, f64)]) -> Vec<(f64, f64)> {
+pub(crate) fn thin_line(line: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let k: usize = line.len().div_ceil(MAX_LINE_POINTS / 2).max(1);
     let mut kept: Vec<(f64, f64)> = Vec::new();
     for run in line.chunks(k) {
@@ -524,6 +524,11 @@ fn least_squares(dataset: &Dataset, x: &str, y: &str) -> Result<Option<(f64, f64
 
 /// Points (scatter, regplot) or lines with markers (line), plus the fit line for regplot.
 /// `rows > 0` marks sampled points: `.sample(n)` draws n of them.
+/// Whether chart `name` draws lines (`plot` and the curves of `plot::model`), not dots.
+pub(crate) fn is_line(name: &str) -> bool {
+    matches!(name, "plot" | "RocCurveDisplay" | "PrecisionRecallDisplay" | "CalibrationDisplay")
+}
+
 pub(crate) fn render_xy(
     name: &str,
     texts: &Texts,
@@ -576,7 +581,7 @@ pub(crate) fn render_xy(
     let l: Layout = layout(style, subtitle, 1, 0.0, &items);
     // Lines use the data range like seaborn; points keep the old axis from 0.
     let (y_lo, y_hi): (f64, f64) = match (name, style.ylim) {
-        ("plot", None) => extent(
+        (name, None) if is_line(name) => extent(
             shown()
                 .map(|p| p.1)
                 .chain(style.hlines.iter().map(|line| line.0)),
@@ -589,7 +594,7 @@ pub(crate) fn render_xy(
     let mut out: String = svg::card(&theme, &texts.title(style), subtitle, l.width, l.height);
     scale.draw(&mut out, &theme, l.left, l.width - l.right);
     xscale.draw(&mut out, &theme, scale.bottom() + 22.0);
-    if name == "plot" {
+    if is_line(name) {
         for (j, color) in color_of.iter().enumerate() {
             let Some(color) = color else { continue };
             let d: String = points
@@ -609,7 +614,7 @@ pub(crate) fn render_xy(
     // A line chart draws the line only, like seaborn's lineplot; each point stays as an
     // invisible hover target (a painted fill of opacity 0 still takes the pointer) that shows
     // while the pointer is on it.
-    let (radius, opacity): (&str, &str) = if name == "plot" {
+    let (radius, opacity): (&str, &str) = if is_line(name) {
         out.push_str("<style>.pt:hover{fill-opacity:1}</style>");
         ("5", "0\" class=\"pt")
     } else {

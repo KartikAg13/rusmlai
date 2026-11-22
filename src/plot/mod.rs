@@ -16,6 +16,7 @@ pub(crate) mod density;
 pub(crate) mod dist;
 pub mod error;
 pub(crate) mod heat;
+pub mod model;
 pub(crate) mod pair;
 pub mod result;
 pub mod spec;

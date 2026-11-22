@@ -1,5 +1,5 @@
 //! The histogram tree engine that every tree model shares: [`Bins`] (each feature in at most
-//! `max_bins` buckets, 255 by default, stored as `u16`), [`Target`] (what a node's rows are summed into) and [`grow`]
+//! `max_bins` buckets, 255 by default, stored as `u8`, or `u16` above 255), [`Target`] (what a node's rows are summed into) and [`grow`]
 //! (one [`Tree`] from the bins).
 //!
 //! A feature with at most `max_bins` distinct values gets one bucket per value, so its splits
@@ -194,14 +194,64 @@ fn text(dataset: &Dataset, name: &str) -> Result<Series, ModelError> {
     Ok(source.as_materialized_series().cast(&DataType::String)?)
 }
 
-/// A row's bucket: two bytes, so a feature can have up to 65,535 buckets (`max_bins`); the
-/// default 255 keeps every histogram as small as one byte would.
+/// A row's bucket while a feature is binned: two bytes, so a feature can have up to 65,535
+/// buckets (`max_bins`). [`Codes`] stores them in one byte when `max_bins` is at most 255.
 pub(crate) type Code = u16;
+
+/// What a hot loop reads a bucket from: `u8` or `u16`.
+pub(crate) trait Bucket: Copy + Into<usize> + Send + Sync {}
+impl Bucket for u8 {}
+impl Bucket for u16 {}
+
+/// The buckets of a feature's rows. One byte each when `max_bins` is at most 255 (every code,
+/// the missing one too, is then at most 255), else two: a fit reads half the bytes, 4% to 15%
+/// fewer cycles (2026-11-21). Every feature of one [`Bins`] has the same `max_bins`, so the
+/// same width.
+pub(crate) enum Codes {
+    Narrow(Vec<u8>),
+    Wide(Vec<u16>),
+}
+
+/// Runs `$body` with `$c` bound to the codes as a slice of their own width.
+macro_rules! by_width {
+    ($codes:expr, |$c:ident| $body:expr) => {
+        match $codes {
+            Codes::Narrow($c) => $body,
+            Codes::Wide($c) => $body,
+        }
+    };
+}
+
+impl Codes {
+    fn new(codes: Vec<Code>, max_bins: usize) -> Self {
+        match max_bins <= 255 {
+            true => Codes::Narrow(codes.into_iter().map(|code| code as u8).collect()),
+            false => Codes::Wide(codes),
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        by_width!(self, |c| c.len())
+    }
+
+    /// The bucket of row `i`.
+    pub(crate) fn get(&self, i: usize) -> usize {
+        by_width!(self, |c| c[i].into())
+    }
+
+    /// Every code as two bytes, for code outside the hot loops (CatBoost's columns).
+    pub(crate) fn wide(&self) -> std::borrow::Cow<'_, [Code]> {
+        match self {
+            Codes::Narrow(c) => c.iter().map(|code| Code::from(*code)).collect(),
+            Codes::Wide(c) => std::borrow::Cow::Borrowed(c),
+        }
+    }
+}
 
 /// One feature in buckets.
 pub(crate) struct Binned {
     /// The bucket of each row; a missing value has the code after the last bucket.
-    pub(crate) codes: Vec<Code>,
+    pub(crate) codes: Codes,
     /// The smallest and the largest value in each bucket.
     edges: Vec<(f64, f64)>,
     missing: bool,
@@ -212,6 +262,7 @@ pub(crate) struct Binned {
 /// A text column in buckets, one per category in sorted order; `None` for more than
 /// `max_bins` categories, with how many there are.
 fn bin_text(series: &Series, max_bins: usize) -> Result<Binned, usize> {
+    let most: usize = max_bins.min(255); // a category split is a set of 256 bits
     let values = series.str().expect("text() makes String columns");
     let mut places: HashMap<&str, Code> = HashMap::new();
     let mut names: Vec<&str> = Vec::new();
@@ -226,7 +277,7 @@ fn bin_text(series: &Series, max_bins: usize) -> Result<Binned, usize> {
         let place: Code = match places.get(value) {
             Some(place) => *place,
             None => {
-                if names.len() == max_bins {
+                if names.len() == most {
                     let more: usize = values.iter().flatten().collect::<std::collections::HashSet<_>>().len();
                     return Err(more);
                 }
@@ -246,7 +297,7 @@ fn bin_text(series: &Series, max_bins: usize) -> Result<Binned, usize> {
     let last: Code = names.len() as Code;
     codes.iter_mut().for_each(|code| *code = if *code == Code::MAX { last } else { rank[*code as usize] });
     Ok(Binned {
-        codes,
+        codes: Codes::new(codes, max_bins),
         edges: (0..names.len()).map(|i| (i as f64, i as f64)).collect(),
         missing,
         categories: Some(order.iter().map(|place| names[*place].to_string()).collect()),
@@ -317,7 +368,7 @@ fn bin(values: &[f64], max_bins: usize) -> Option<Binned> {
         }
         let edges: Vec<(f64, f64)> = order.iter().map(|p| (distinct[*p], distinct[*p])).collect();
         return Some(Binned {
-            codes,
+            codes: Codes::new(codes, max_bins),
             edges,
             missing,
             categories: None,
@@ -354,7 +405,7 @@ fn bin(values: &[f64], max_bins: usize) -> Option<Binned> {
         })
         .collect();
     Some(Binned {
-        codes,
+        codes: Codes::new(codes, max_bins),
         edges,
         missing,
         categories: None,
@@ -422,7 +473,7 @@ impl Bins {
                         Some(binned) => binned,
                         // A category split is a set of 256 bits: at most 255 categories.
                         None if text && is_categorical => {
-                            let binned: Binned = bin_text(&self::text(dataset, name)?, max_bins.min(255))
+                            let binned: Binned = bin_text(&self::text(dataset, name)?, max_bins)
                                 .map_err(too_many)?;
                             cache.set(max_bins, binned)
                         }
@@ -473,7 +524,7 @@ impl Bins {
                 continue;
             }
             let mut counts: Vec<usize> = vec![0; n + 1];
-            b.codes.iter().for_each(|code| counts[*code as usize] += 1);
+            by_width!(&b.codes, |c| c.iter().for_each(|code| counts[usize::from(*code)] += 1));
             let mut group: Vec<Code> = vec![0; n + 1];
             let mut edges: Vec<(f64, f64)> = Vec::new();
             let (mut low, mut run): (f64, usize) = (b.edges[0].0, 0);
@@ -490,7 +541,10 @@ impl Bins {
                 continue;
             }
             group[n] = edges.len() as Code; // the missing values' code
-            let codes: Vec<Code> = b.codes.iter().map(|code| group[*code as usize]).collect();
+            let codes: Codes = match &b.codes {
+                Codes::Narrow(c) => Codes::Narrow(c.iter().map(|code| group[usize::from(*code)] as u8).collect()),
+                Codes::Wide(c) => Codes::Wide(c.iter().map(|code| group[usize::from(*code)]).collect()),
+            };
             self.features[f] = Arc::new(Binned { codes, edges, missing: b.missing, categories: None });
         }
         let mut offsets: Vec<usize> = vec![0];
@@ -506,7 +560,7 @@ impl Bins {
     /// Feature `f`'s bucket of each row (a missing value's code is the bucket count), the
     /// smallest and largest value of each bucket, and whether any value is missing: what a
     /// tree grown outside this engine reads (CatBoost's symmetric trees, `models/catboost.rs`).
-    pub(crate) fn binned(&self, f: usize) -> (&[Code], &[(f64, f64)], bool) {
+    pub(crate) fn binned(&self, f: usize) -> (&Codes, &[(f64, f64)], bool) {
         let b: &Binned = &self.features[f];
         (&b.codes, &b.edges, b.missing)
     }
@@ -524,8 +578,9 @@ impl Bins {
     /// a missing value. What a tree walks on for a categorical feature.
     pub(crate) fn codes(&self, f: usize) -> Vec<f64> {
         let binned: &Binned = &self.features[f];
-        let missing: Code = binned.edges.len() as Code;
-        binned.codes.iter().map(|code| if *code == missing { f64::NAN } else { f64::from(*code) }).collect()
+        let missing: usize = binned.edges.len();
+        let wide: std::borrow::Cow<'_, [Code]> = binned.codes.wide();
+        wide.iter().map(|code| if usize::from(*code) == missing { f64::NAN } else { f64::from(*code) }).collect()
     }
 }
 
@@ -1161,28 +1216,33 @@ impl Grower<'_> {
     /// weights ([`Grower::gather`]), unless every row is in `rows`, in order, and none has a
     /// weight ([`Grower::is_whole`]). `mark` sees each row's bucket.
     #[inline]
-    fn fill(
+    fn fill(&self, f: usize, rows: &[u32], along: &Along, h: &mut [f64], mark: impl FnMut(usize)) {
+        by_width!(&self.bins.features[f].codes, |codes| self.fill_on(codes, rows, along, h, mark))
+    }
+
+    /// [`Grower::fill`] on the codes of one width.
+    #[inline]
+    fn fill_on<C: Bucket>(
         &self,
-        f: usize,
+        codes: &[C],
         rows: &[u32],
         along: &Along,
         h: &mut [f64],
         mut mark: impl FnMut(usize),
     ) {
-        let codes: &[Code] = &self.bins.features[f].codes;
         // Every row in order (the root): no row index to follow.
         let whole: bool = self.is_whole(rows);
         match (self.target, self.weights.is_some()) {
             (Target::Classes { y, classes, .. }, false) if whole => {
                 for (code, class) in codes.iter().zip(y) {
-                    let bin: usize = *code as usize;
+                    let bin: usize = (*code).into();
                     mark(bin);
                     h[bin * classes + *class as usize] += 1.0;
                 }
             }
             (Target::Regression { y }, false) if whole => {
                 for (code, value) in codes.iter().zip(y) {
-                    let bin: usize = *code as usize;
+                    let bin: usize = (*code).into();
                     mark(bin);
                     let cell: &mut [f64] = &mut h[bin * 3..bin * 3 + 3];
                     cell[0] += 1.0;
@@ -1192,14 +1252,14 @@ impl Grower<'_> {
             }
             (Target::Classes { classes, .. }, false) => {
                 for (row, class) in rows.iter().zip(&along.class) {
-                    let bin: usize = codes[*row as usize] as usize;
+                    let bin: usize = codes[*row as usize].into();
                     mark(bin);
                     h[bin * classes + *class as usize] += 1.0;
                 }
             }
             (Target::Regression { .. }, false) => {
                 for (row, value) in rows.iter().zip(&along.value) {
-                    let bin: usize = codes[*row as usize] as usize;
+                    let bin: usize = codes[*row as usize].into();
                     mark(bin);
                     let cell: &mut [f64] = &mut h[bin * 3..bin * 3 + 3];
                     cell[0] += 1.0;
@@ -1210,7 +1270,7 @@ impl Grower<'_> {
             (Target::Classes { classes, .. }, true) => {
                 let targets = along.class.iter().zip(&along.weight);
                 for (row, (class, weight)) in rows.iter().zip(targets) {
-                    let bin: usize = codes[*row as usize] as usize;
+                    let bin: usize = codes[*row as usize].into();
                     mark(bin);
                     let cell: &mut [f64] = &mut h[bin * (classes + 1)..(bin + 1) * (classes + 1)];
                     cell[*class as usize] += f64::from(*weight);
@@ -1220,7 +1280,7 @@ impl Grower<'_> {
             (Target::Regression { .. }, true) => {
                 let targets = along.value.iter().zip(&along.weight);
                 for (row, (value, weight)) in rows.iter().zip(targets) {
-                    let bin: usize = codes[*row as usize] as usize;
+                    let bin: usize = codes[*row as usize].into();
                     mark(bin);
                     let w: f64 = f64::from(*weight);
                     let cell: &mut [f64] = &mut h[bin * 4..bin * 4 + 4];
@@ -1233,7 +1293,7 @@ impl Grower<'_> {
             // Boosting has no row weights. With one hessian for every row, Σh is the rows.
             (Target::Gradients { g, h: hessians, .. }, _) if whole && hessians.is_empty() => {
                 for (code, gradient) in codes.iter().zip(g) {
-                    let bin: usize = *code as usize;
+                    let bin: usize = (*code).into();
                     mark(bin);
                     h[bin * 2] += 1.0;
                     h[bin * 2 + 1] += f64::from(*gradient);
@@ -1241,7 +1301,7 @@ impl Grower<'_> {
             }
             (Target::Gradients { g, h: hessians, .. }, _) if whole => {
                 for (code, (gradient, hessian)) in codes.iter().zip(g.iter().zip(hessians)) {
-                    let bin: usize = *code as usize;
+                    let bin: usize = (*code).into();
                     mark(bin);
                     let cell: &mut [f64] = &mut h[bin * 3..bin * 3 + 3];
                     cell[0] += 1.0;
@@ -1251,7 +1311,7 @@ impl Grower<'_> {
             }
             (Target::Gradients { h: hessians, .. }, _) if hessians.is_empty() => {
                 for (row, gradient) in rows.iter().zip(&along.gradient) {
-                    let bin: usize = codes[*row as usize] as usize;
+                    let bin: usize = codes[*row as usize].into();
                     mark(bin);
                     h[bin * 2] += 1.0;
                     h[bin * 2 + 1] += f64::from(*gradient);
@@ -1260,7 +1320,7 @@ impl Grower<'_> {
             (Target::Gradients { .. }, _) => {
                 let targets = along.gradient.iter().zip(&along.hessian);
                 for (row, (gradient, hessian)) in rows.iter().zip(targets) {
-                    let bin: usize = codes[*row as usize] as usize;
+                    let bin: usize = codes[*row as usize].into();
                     mark(bin);
                     let cell: &mut [f64] = &mut h[bin * 3..bin * 3 + 3];
                     cell[0] += 1.0;
@@ -1342,23 +1402,43 @@ impl Grower<'_> {
         let Target::Gradients { g, h, .. } = self.target else {
             unreachable!("fill_gradients is for boosting");
         };
-        let codes: Vec<&[Code]> = (first..first + hists.len())
-            .map(|f| self.bins.features[f].codes.as_slice())
-            .collect();
+        let features = &self.bins.features[first..first + hists.len()];
+        match &features[0].codes {
+            Codes::Narrow(_) => {
+                let codes: Vec<&[u8]> = features.iter().map(|b| narrow(&b.codes)).collect();
+                self.fill_gradients_on(&codes, rows, along, hists, g, h)
+            }
+            Codes::Wide(_) => {
+                let codes: Vec<&[u16]> = features.iter().map(|b| wide(&b.codes)).collect();
+                self.fill_gradients_on(&codes, rows, along, hists, g, h)
+            }
+        }
+    }
+
+    /// [`Grower::fill_gradients`] on the codes of one width.
+    fn fill_gradients_on<C: Bucket>(
+        &self,
+        codes: &[&[C]],
+        rows: &[u32],
+        along: &Along,
+        hists: &mut [Vec<f64>],
+        g: &[f32],
+        h: &[f32],
+    ) {
         let w: usize = self.width;
         if self.is_whole(rows) {
             let rows = g.iter().enumerate();
             match h.is_empty() {
-                true => add_group(&codes, hists, w, rows.map(|(r, g)| (r, *g, 1.0))),
-                false => add_group(&codes, hists, w, rows.zip(h).map(|((r, g), h)| (r, *g, *h))),
+                true => add_group(codes, hists, w, rows.map(|(r, g)| (r, *g, 1.0))),
+                false => add_group(codes, hists, w, rows.zip(h).map(|((r, g), h)| (r, *g, *h))),
             }
         } else {
             let rows = rows.iter().map(|row| *row as usize).zip(&along.gradient);
             match h.is_empty() {
-                true => add_group(&codes, hists, w, rows.map(|(r, g)| (r, *g, 1.0))),
+                true => add_group(codes, hists, w, rows.map(|(r, g)| (r, *g, 1.0))),
                 false => {
                     let rows = rows.zip(&along.hessian).map(|((r, g), h)| (r, *g, *h));
-                    add_group(&codes, hists, w, rows)
+                    add_group(codes, hists, w, rows)
                 }
             }
         }
@@ -1702,7 +1782,7 @@ impl Grower<'_> {
             let binned: &Binned = &self.bins.features[f];
             let (a, b): (usize, usize) = (*a as usize, *b as usize);
             let (low, cut, next): (usize, usize, usize) =
-                match (binned.codes[a] as usize, binned.codes[b] as usize) {
+                match (binned.codes.get(a), binned.codes.get(b)) {
                     (x, y) if x < y => (a, x, y),
                     (x, y) if x > y => (b, y, x),
                     _ => return,
@@ -1761,17 +1841,17 @@ impl Grower<'_> {
     /// Moves the rows that go left to the front of `rows`, in order, and returns how many.
     /// A large node does it in blocks, one task each, then joins the blocks' parts in order.
     fn partition(&self, rows: &mut [u32], spare: &mut [u32], best: &Best) -> usize {
-        let codes: &[Code] = &self.bins.features[best.feature].codes;
+        let binned: &Binned = &self.bins.features[best.feature];
         match best.set {
             Some(set) => {
-                let in_set = move |code: Code| set[code as usize >> 6] >> (code & 63) & 1 == 1;
-                partition_by(codes, rows, spare, in_set)
+                let in_set = move |code: usize| set[code >> 6] >> (code & 63) & 1 == 1;
+                by_width!(&binned.codes, |codes| partition_by(codes, rows, spare, in_set))
             }
             None => {
-                let missing: Code = self.bins.features[best.feature].edges.len() as Code;
-                let (cut, missing_left): (Code, bool) = (best.cut as Code, best.missing_left);
-                let below = move |code: Code| (code <= cut) | ((code == missing) & missing_left);
-                partition_by(codes, rows, spare, below)
+                let missing: usize = binned.edges.len();
+                let (cut, missing_left): (usize, bool) = (best.cut, best.missing_left);
+                let below = move |code: usize| (code <= cut) | ((code == missing) & missing_left);
+                by_width!(&binned.codes, |codes| partition_by(codes, rows, spare, below))
             }
         }
     }
@@ -2160,14 +2240,30 @@ impl Grower<'_> {
     }
 }
 
+/// The codes of a [`Bins`] whose `max_bins` is at most 255.
+fn narrow(codes: &Codes) -> &[u8] {
+    match codes {
+        Codes::Narrow(c) => c,
+        Codes::Wide(_) => unreachable!("every feature of one Bins has the same width"),
+    }
+}
+
+/// The codes of a [`Bins`] whose `max_bins` is above 255.
+fn wide(codes: &Codes) -> &[u16] {
+    match codes {
+        Codes::Wide(c) => c,
+        Codes::Narrow(_) => unreachable!("every feature of one Bins has the same width"),
+    }
+}
+
 /// Moves the rows of `rows` whose bucket in `codes` goes left to the front, in order, and
 /// gives how many. A large node does it in blocks, one task each, then joins the blocks'
 /// parts in order.
-fn partition_by(
-    codes: &[Code],
+fn partition_by<C: Bucket>(
+    codes: &[C],
     rows: &mut [u32],
     spare: &mut [u32],
-    goes_left: impl Fn(Code) -> bool + Sync,
+    goes_left: impl Fn(usize) -> bool + Sync,
 ) -> usize {
     // No branch: each row is written to both sides and one counter moves. The left rows end
     // at the front of `rows`, the right ones at the front of `spare`.
@@ -2175,7 +2271,7 @@ fn partition_by(
         let (mut left, mut right): (usize, usize) = (0, 0);
         for i in 0..rows.len() {
             let row: u32 = rows[i];
-            let goes_left: bool = goes_left(codes[row as usize]);
+            let goes_left: bool = goes_left(codes[row as usize].into());
             rows[left] = row;
             spare[right] = row;
             left += usize::from(goes_left);
@@ -2210,25 +2306,25 @@ fn partition_by(
 /// Adds `rows` (row, gradient, hessian) to the histograms `hists`, `w` sums per bucket, of
 /// the features whose buckets are `codes`, all in one pass ([`Grower::fill_gradients`]). Two
 /// sums are the rows and Σg (every hessian 1); three add Σh.
-fn add_group(
-    codes: &[&[Code]],
+fn add_group<C: Bucket>(
+    codes: &[&[C]],
     hists: &mut [Vec<f64>],
     w: usize,
     rows: impl Iterator<Item = (usize, f32, f32)>,
 ) {
-    fn run<const N: usize, const W: usize>(
-        codes: &[&[Code]],
+    fn run<C: Bucket, const N: usize, const W: usize>(
+        codes: &[&[C]],
         hists: &mut [Vec<f64>],
         rows: impl Iterator<Item = (usize, f32, f32)>,
     ) {
-        let codes: [&[Code]; N] = codes.try_into().expect("N features");
+        let codes: [&[C]; N] = codes.try_into().expect("N features");
         let mut each = hists.iter_mut();
         let hists: [&mut [f64]; N] =
             std::array::from_fn(|_| each.next().expect("N histograms").as_mut_slice());
         for (row, g, h) in rows {
             let (g, h): (f64, f64) = (f64::from(g), f64::from(h));
             for k in 0..N {
-                let at: usize = codes[k][row] as usize * W;
+                let at: usize = codes[k][row].into() * W;
                 let cell: &mut [f64] = &mut hists[k][at..at + W];
                 cell[0] += 1.0;
                 cell[1] += g;
@@ -2239,14 +2335,14 @@ fn add_group(
         }
     }
     match (codes.len(), w) {
-        (1, 2) => run::<1, 2>(codes, hists, rows),
-        (2, 2) => run::<2, 2>(codes, hists, rows),
-        (3, 2) => run::<3, 2>(codes, hists, rows),
-        (4, 2) => run::<4, 2>(codes, hists, rows),
-        (1, 3) => run::<1, 3>(codes, hists, rows),
-        (2, 3) => run::<2, 3>(codes, hists, rows),
-        (3, 3) => run::<3, 3>(codes, hists, rows),
-        (4, 3) => run::<4, 3>(codes, hists, rows),
+        (1, 2) => run::<C, 1, 2>(codes, hists, rows),
+        (2, 2) => run::<C, 2, 2>(codes, hists, rows),
+        (3, 2) => run::<C, 3, 2>(codes, hists, rows),
+        (4, 2) => run::<C, 4, 2>(codes, hists, rows),
+        (1, 3) => run::<C, 1, 3>(codes, hists, rows),
+        (2, 3) => run::<C, 2, 3>(codes, hists, rows),
+        (3, 3) => run::<C, 3, 3>(codes, hists, rows),
+        (4, 3) => run::<C, 4, 3>(codes, hists, rows),
         _ => unreachable!("a group has 1 to 4 features, a bucket 2 or 3 sums"),
     }
 }
@@ -2341,14 +2437,16 @@ mod tests {
     #[test]
     fn few_values_get_a_bucket_each_and_many_get_quantiles() {
         let exact: Binned = bin(&[3.0, 1.0, f64::NAN, 2.0, 1.0, -0.0, 0.0], 255).unwrap();
-        assert_eq!(exact.codes, [3, 1, 4, 2, 1, 0, 0]);
+        assert_eq!(*exact.codes.wide(), [3, 1, 4, 2, 1, 0, 0]);
+        assert!(matches!(exact.codes, Codes::Narrow(_)));
+        assert!(matches!(bin(&[1.0, 2.0], 256).unwrap().codes, Codes::Wide(_)));
         assert_eq!(exact.edges, [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]);
         assert!(exact.missing);
         // 255 distinct values still get a bucket each, also behind a hash collision.
         let many: Vec<f64> = (0..2000).map(|i| f64::from(i * 7 % 255) * 0.25 - 9.0).collect();
         let binned: Binned = bin(&many, 255).unwrap();
         assert_eq!((binned.edges.len(), binned.missing), (255, false));
-        for (value, code) in many.iter().zip(&binned.codes) {
+        for (value, code) in many.iter().zip(binned.codes.wide().iter()) {
             assert_eq!(binned.edges[*code as usize], (*value, *value));
         }
 
@@ -2359,12 +2457,12 @@ mod tests {
             [(0.0, 250.0), (251.0, 500.0), (501.0, 750.0), (751.0, 999.0)]
         );
         assert_eq!(
-            (wide.codes[250], wide.codes[251], wide.missing),
+            (wide.codes.get(250), wide.codes.get(251), wide.missing),
             (0, 1, false)
         );
         assert!(bin(&[1.0, f64::INFINITY], 255).is_none());
         // Only missing values: no bucket, and nothing to split on.
-        assert_eq!(bin(&[f64::NAN; 3], 255).unwrap().codes, [0; 3]);
+        assert_eq!(*bin(&[f64::NAN; 3], 255).unwrap().codes.wide(), [0; 3]);
     }
 
     /// 20,000 rows of 6 features with 3 to 300 distinct values and some nulls, and a class

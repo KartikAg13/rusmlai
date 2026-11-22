@@ -29,6 +29,7 @@ use crate::{
         },
     },
 };
+use crate::models::{share};
 
 /// The settings of a forest, with scikit-learn's names.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -294,8 +295,7 @@ macro_rules! forest_settings {
             /// Default: as many as there are rows. A count (scikit-learn's int) is not taken.
             #[track_caller]
             pub fn max_samples(mut self, max_samples: f64) -> Self {
-                let ok: bool = max_samples > 0.0 && max_samples <= 1.0;
-                check(ok, "max_samples", max_samples, "a share above 0.0 up to 1.0");
+                share("max_samples", max_samples);
                 self.params.max_samples = Some(max_samples);
                 self
             }

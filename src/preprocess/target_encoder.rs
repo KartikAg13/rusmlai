@@ -18,6 +18,7 @@ use crate::{
         label_target,
     },
 };
+use crate::models::{at_least_zero};
 
 /// Encodes categories by the target, scikit-learn's `TargetEncoder`: each category of a
 /// column becomes the mean of the target over its rows, pulled toward the mean of all rows
@@ -176,7 +177,7 @@ impl TargetEncoder {
     /// Default: scikit-learn's `"auto"`, the empirical Bayes weight.
     #[track_caller]
     pub fn smooth(mut self, smooth: f64) -> Self {
-        check(smooth.is_finite() && smooth >= 0.0, "smooth", smooth, "a finite number of 0 or more");
+        at_least_zero("smooth", smooth);
         self.smooth = Some(smooth);
         self
     }

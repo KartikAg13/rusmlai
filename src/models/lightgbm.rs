@@ -26,6 +26,7 @@ use crate::{
         tree::{ClassWeight, Tree, pick_classes, share_columns},
     },
 };
+use crate::models::{above_zero, at_least_zero, share};
 
 /// LightGBM's settings, with its names and defaults (lightgbm 4.7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -215,18 +216,6 @@ impl Library for LgbmParams {
     }
 }
 
-/// A share above 0 up to 1.
-#[track_caller]
-fn share(name: &'static str, value: f64) {
-    check(value > 0.0 && value <= 1.0, name, value, "a share above 0.0 up to 1.0");
-}
-
-/// A finite number of 0 or more.
-#[track_caller]
-fn at_least_zero(name: &'static str, value: f64) {
-    check(value.is_finite() && value >= 0.0, name, value, "a finite number of 0 or more");
-}
-
 macro_rules! lgbm_settings {
     ($model:ident) => {
         impl $model {
@@ -241,8 +230,7 @@ macro_rules! lgbm_settings {
             /// How much of each tree's step is taken, above 0. Default 0.1.
             #[track_caller]
             pub fn learning_rate(mut self, learning_rate: f64) -> Self {
-                let ok: bool = learning_rate.is_finite() && learning_rate > 0.0;
-                check(ok, "learning_rate", learning_rate, "a finite number above 0");
+                above_zero("learning_rate", learning_rate);
                 self.params.learning_rate = learning_rate;
                 self
             }
@@ -491,7 +479,7 @@ impl LGBMRegressor {
     /// `"quantile"` (the quantile it predicts). Default 0.9.
     #[track_caller]
     pub fn alpha(mut self, alpha: f64) -> Self {
-        check(alpha.is_finite() && alpha > 0.0, "alpha", alpha, "a finite number above 0");
+        above_zero("alpha", alpha);
         self.params.alpha = alpha;
         self
     }
@@ -499,7 +487,7 @@ impl LGBMRegressor {
     /// The `c` of `"fair"`, above 0. Default 1.
     #[track_caller]
     pub fn fair_c(mut self, fair_c: f64) -> Self {
-        check(fair_c.is_finite() && fair_c > 0.0, "fair_c", fair_c, "a finite number above 0");
+        above_zero("fair_c", fair_c);
         self.params.fair_c = fair_c;
         self
     }
@@ -610,8 +598,7 @@ impl LGBMClassifier {
     /// How much more a row of the second class counts in the gradients, above 0. Default 1.
     #[track_caller]
     pub fn scale_pos_weight(mut self, scale_pos_weight: f64) -> Self {
-        let ok: bool = scale_pos_weight.is_finite() && scale_pos_weight > 0.0;
-        check(ok, "scale_pos_weight", scale_pos_weight, "a finite number above 0");
+        above_zero("scale_pos_weight", scale_pos_weight);
         self.params.scale_pos_weight = scale_pos_weight;
         self
     }
@@ -619,12 +606,45 @@ impl LGBMClassifier {
 
 /// `save_model` / `try_save_model` on a LightGBM-named model.
 macro_rules! lgbm_export {
-    ($model:ident, $classes:expr) => {
+    ($model:ident, $classes:expr, $columns:literal, $target:literal) => {
         impl $model {
             /// Writes the fitted model as LightGBM's own text model, which Python reads with
             /// `lightgbm.Booster(model_file=path)` and which predicts what this model
             /// predicts. (lightgbm: `model.booster_.save_model("model.txt")`) Not yet: a
             /// model with categorical features. Panics with the error's message at your line.
+            ///
+            /// ```
+            /// use rusmlai::prelude::*;
+            #[doc = concat!("let ds = read_csv(\"tests/fixtures/data/students.csv\").select(&", $columns, ").dropna(&[]);")]
+            #[doc = concat!("let mut model = ", stringify!($model), "::new().n_estimators(5);")]
+            #[doc = concat!("model.fit(&ds, \"", $target, "\");")]
+            #[doc = concat!("let path = std::env::temp_dir().join(\"rusmlai-doc-", stringify!($model), ".txt\");")]
+            /// model.save_model(&path);
+            /// assert!(std::fs::read_to_string(&path).unwrap().contains("tree"));
+            /// ```
+            ///
+            /// Edge case: a model that was never fitted has nothing to write:
+            /// ```
+            /// use rusmlai::prelude::*;
+            #[doc = concat!("let model = ", stringify!($model), "::new();")]
+            /// let path = std::env::temp_dir().join("rusmlai-doc-unfitted");
+            /// assert!(matches!(model.try_save_model(&path), Err(ModelError::NotFitted { .. })));
+            /// ```
+            ///
+            /// Python:
+            ///
+            /// ```python
+            /// import tempfile
+            /// import pandas as pd
+            /// from lightgbm import LGBMClassifier, LGBMRegressor
+            /// ds = pd.read_csv("tests/fixtures/data/students.csv")[["age", "cgpa", "passed"]].dropna()
+            /// for model, y in [(LGBMRegressor(n_estimators=5), "cgpa"), (LGBMClassifier(n_estimators=5), "passed")]:
+            ///     x = ds.drop(columns=[y] if y == "passed" else [y, "passed"])
+            ///     model.fit(x, ds[y].astype(int) if y == "passed" else ds[y])
+            ///     path = tempfile.mkdtemp() + "/model.txt"
+            ///     model.booster_.save_model(path)
+            ///     assert "tree" in open(path).read()
+            /// ```
             #[track_caller]
             pub fn save_model(&self, path: impl AsRef<std::path::Path>) {
                 crate::error::OrFatal::or_fatal(self.try_save_model(path))
@@ -653,8 +673,8 @@ macro_rules! lgbm_export {
     };
 }
 
-lgbm_export!(LGBMRegressor, |_: &LGBMRegressor| 0);
-lgbm_export!(LGBMClassifier, |m: &LGBMClassifier| m.classes_.len());
+lgbm_export!(LGBMRegressor, |_: &LGBMRegressor| 0, r#"["age", "cgpa"]"#, "cgpa");
+lgbm_export!(LGBMClassifier, |m: &LGBMClassifier| m.classes_.len(), r#"["age", "cgpa", "passed"]"#, "passed");
 
 #[cfg(test)]
 mod tests {
@@ -742,5 +762,17 @@ mod tests {
         }
         assert!(failed.is_empty(), "{}", failed.join("\n"));
     }
-}
 
+    /// Above 255 buckets the codes are two bytes (`hist::Codes::Wide`): on data with fewer
+    /// distinct values the buckets are the same, and so is every tree.
+    #[test]
+    fn two_byte_codes_grow_the_same_trees() {
+        let ds: Dataset = features(&data(), "y");
+        let predict = |max_bin: usize| -> Vec<f64> {
+            let mut model: LGBMRegressor = LGBMRegressor::new().n_estimators(20).max_bin(max_bin);
+            model.fit(&ds, "y");
+            model.predict(&ds).f64().unwrap().into_no_null_iter().collect()
+        };
+        assert_eq!(predict(255), predict(1000));
+    }
+}

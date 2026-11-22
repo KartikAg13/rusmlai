@@ -22,6 +22,7 @@ use crate::{
         },
     },
 };
+use crate::models::{above_zero};
 
 /// The settings of AdaBoost itself, with scikit-learn's names.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -183,8 +184,7 @@ impl AdaBoostClassifier {
     /// What each tree's vote is multiplied by, above 0. Default 1.
     #[track_caller]
     pub fn learning_rate(mut self, learning_rate: f64) -> Self {
-        let ok: bool = learning_rate.is_finite() && learning_rate > 0.0;
-        check(ok, "learning_rate", learning_rate, "a finite number above 0");
+        above_zero("learning_rate", learning_rate);
         self.params.learning_rate = learning_rate;
         self
     }
@@ -428,16 +428,11 @@ impl Classifier for AdaBoostClassifier {
 #[cfg(test)]
 mod tests {
     use polars::prelude::{DataFrame, IntoLazy, lit};
+    use crate::models::tree::tests::assert_close;
 
     use super::*;
     use crate::{models::tree::tests::table, utils::col};
 
-    fn assert_close(got: &[f64], want: &[f64], eps: f64) {
-        assert_eq!(got.len(), want.len());
-        for (g, w) in got.iter().zip(want) {
-            assert!((g - w).abs() < eps, "{got:?}, want {want:?}");
-        }
-    }
 
     fn fitted(model: AdaBoostClassifier, ds: &Dataset, target: &str) -> AdaBoostClassifier {
         let mut model: AdaBoostClassifier = model;

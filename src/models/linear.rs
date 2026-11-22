@@ -27,6 +27,7 @@ use crate::{
     },
     preprocess::one_of,
 };
+use crate::models::{at_least_zero};
 
 /// Eigenvalues of XᵀX + αI below this share of the largest one count as zero. Forming XᵀX
 /// rounds its entries by about the number of rows times f64's epsilon, so smaller eigenvalues
@@ -591,7 +592,7 @@ macro_rules! penalty_settings {
             #[doc = $alpha_doc]
             #[track_caller]
             pub fn alpha(mut self, alpha: f64) -> Self {
-                check(alpha.is_finite() && alpha >= 0.0, "alpha", alpha, "a finite number of 0 or more");
+                at_least_zero("alpha", alpha);
                 self.params.alpha = alpha;
                 self
             }
@@ -600,7 +601,7 @@ macro_rules! penalty_settings {
             /// Default 1e-4.
             #[track_caller]
             pub fn tol(mut self, tol: f64) -> Self {
-                check(tol.is_finite() && tol >= 0.0, "tol", tol, "a finite number of 0 or more");
+                at_least_zero("tol", tol);
                 self.params.tol = tol;
                 self
             }

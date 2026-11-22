@@ -82,8 +82,11 @@ pub mod prelude {
         error::{set_warnings, take_warnings},
         metadata::{dataset::role::ColumnRole, models::ModelCache, set_cache},
         metrics::{
-            accuracy_score, balanced_accuracy_score, log_loss, mean_absolute_error,
-            mean_squared_error, r2_score, roc_auc_score, roc_curve, root_mean_squared_error,
+            accuracy_score, average_precision_score, balanced_accuracy_score, calibration_curve,
+            confusion_matrix, log_loss, mean_absolute_error, mean_squared_error,
+            precision_recall_curve, r2_score, roc_auc_score, roc_curve, root_mean_squared_error,
+            try_average_precision_score, try_calibration_curve, try_confusion_matrix,
+            try_precision_recall_curve,
         },
         models::{
             AdaBoostClassifier, BaggingClassifier, BaggingRegressor, Classifier, DecisionTreeClassifier,
@@ -98,7 +101,13 @@ pub mod prelude {
             try_cross_val_score,
         },
         pipeline::Pipeline,
-        plot::style::{set_palette, set_theme},
+        plot::{
+            model::{
+                CalibrationDisplay, ConfusionMatrixDisplay, PrecisionRecallDisplay,
+                PredictionErrorDisplay, RocCurveDisplay,
+            },
+            style::{set_palette, set_theme},
+        },
         preprocess::{
             ColumnTransformer, CountEncoder, KBinsDiscretizer, LabelEncoder, MaxAbsScaler, MinMaxScaler, OneHotEncoder,
             OrdinalEncoder, PreprocessError, QuantileTransformer, RobustScaler, SimpleImputer, StandardScaler, TargetEncoder,

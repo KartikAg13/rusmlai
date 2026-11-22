@@ -5,7 +5,14 @@
 use std::panic::{self, AssertUnwindSafe};
 
 use polars::prelude::*;
-use rusmlai::{dataset::Dataset, display::Figure, plot::error::PlotError};
+use rusmlai::{
+    dataset::Dataset,
+    display::Figure,
+    plot::{
+        error::PlotError,
+        model::{CalibrationDisplay, ConfusionMatrixDisplay, PrecisionRecallDisplay, PredictionErrorDisplay, RocCurveDisplay},
+    },
+};
 
 type Chart = (&'static str, fn(&Dataset) -> Result<Figure, PlotError>);
 type Call<'a> = Box<dyn Fn() -> String + 'a>;
@@ -50,7 +57,19 @@ const CHARTS: &[Chart] = &[
     ("pairplot hue, repeated column", |d| {
         d.try_pairplot(&["y", "z", "y"], "h")
     }),
+    ("ConfusionMatrixDisplay", |d| ConfusionMatrixDisplay::try_from_predictions(&c(d, "x"), &c(d, "h"), "")),
+    ("ConfusionMatrixDisplay true", |d| ConfusionMatrixDisplay::try_from_predictions(&c(d, "h"), &c(d, "n"), "true")),
+    ("RocCurveDisplay", |d| RocCurveDisplay::try_from_predictions(&c(d, "h"), &c(d, "y"), "")),
+    ("PrecisionRecallDisplay", |d| PrecisionRecallDisplay::try_from_predictions(&c(d, "h"), &c(d, "z"), "")),
+    ("PredictionErrorDisplay", |d| PredictionErrorDisplay::try_from_predictions(&c(d, "y"), &c(d, "z"), "residual_vs_predicted")),
+    ("PredictionErrorDisplay actual", |d| PredictionErrorDisplay::try_from_predictions(&c(d, "y"), &c(d, "n"), "actual_vs_predicted")),
+    ("CalibrationDisplay", |d| CalibrationDisplay::try_from_predictions(&c(d, "h"), &c(d, "z"), 3, "quantile", "")),
 ];
+
+/// Column `name` of `d`, for the model charts, which take series.
+fn c(d: &Dataset, name: &str) -> Series {
+    d.dataframe().column(name).unwrap().as_materialized_series().clone()
+}
 
 fn base() -> DataFrame {
     df!(

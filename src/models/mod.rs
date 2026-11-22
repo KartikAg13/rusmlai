@@ -755,6 +755,24 @@ pub(crate) fn check(ok: bool, setting: &'static str, value: impl ToString, expec
     }
 }
 
+/// [`check`] that `value` is a finite number above 0.
+#[track_caller]
+pub(crate) fn above_zero(name: &'static str, value: f64) {
+    check(value.is_finite() && value > 0.0, name, value, "a finite number above 0");
+}
+
+/// [`check`] that `value` is a finite number of 0 or more.
+#[track_caller]
+pub(crate) fn at_least_zero(name: &'static str, value: f64) {
+    check(value.is_finite() && value >= 0.0, name, value, "a finite number of 0 or more");
+}
+
+/// [`check`] that `value` is a share above 0 up to 1.
+#[track_caller]
+pub(crate) fn share(name: &'static str, value: f64) {
+    check(value > 0.0 && value <= 1.0, name, value, "a share above 0.0 up to 1.0");
+}
+
 /// "null" or "nulls", for the error messages.
 fn nulls_word(n: usize) -> &'static str {
     if n == 1 { "null" } else { "nulls" }

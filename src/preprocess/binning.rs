@@ -36,7 +36,7 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 
 /// numpy's `percentile(sorted, q)` for `q` in percent, with `method` `"linear"`,
 /// `"inverted_cdf"` or `"averaged_inverted_cdf"`.
-fn percentile(sorted: &[f64], q: f64, method: &str) -> f64 {
+pub(crate) fn percentile(sorted: &[f64], q: f64, method: &str) -> f64 {
     let n: usize = sorted.len();
     let q: f64 = q / 100.0;
     let (index, gamma): (f64, f64) = match method {

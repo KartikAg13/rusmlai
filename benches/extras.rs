@@ -76,6 +76,28 @@ fn extras(c: &mut Criterion) {
     g.bench_function("metric/compute_sample_weight", |b| {
         b.iter(|| black_box(compute_sample_weight("balanced", &y)))
     });
+    // The model charts (2026-11-21), to a finished SVG; scikit-learn's side saves an SVG too.
+    let mut linear: LinearRegression = LinearRegression::new();
+    linear.fit(&design, "exam_score");
+    let (actual, fitted): (Series, Series) =
+        (design.dataframe().column("exam_score").unwrap().as_materialized_series().clone(), linear.predict(&design));
+    g.bench_function("metric/confusion_matrix", |b| b.iter(|| black_box(confusion_matrix(&y, &predicted, ""))));
+    g.bench_function("metric/precision_recall_curve", |b| b.iter(|| black_box(precision_recall_curve(&y, &score, ""))));
+    g.bench_function("metric/average_precision_score", |b| b.iter(|| black_box(average_precision_score(&y, &score))));
+    g.bench_function("metric/calibration_curve", |b| b.iter(|| black_box(calibration_curve(&y, &score, 10, "uniform", ""))));
+    g.bench_function("chart/ConfusionMatrixDisplay", |b| {
+        b.iter(|| black_box(ConfusionMatrixDisplay::from_predictions(&y, &predicted, "").svg()))
+    });
+    g.bench_function("chart/RocCurveDisplay", |b| b.iter(|| black_box(RocCurveDisplay::from_predictions(&y, &score, "").svg())));
+    g.bench_function("chart/PrecisionRecallDisplay", |b| {
+        b.iter(|| black_box(PrecisionRecallDisplay::from_predictions(&y, &score, "").svg()))
+    });
+    g.bench_function("chart/CalibrationDisplay", |b| {
+        b.iter(|| black_box(CalibrationDisplay::from_predictions(&y, &score, 10, "uniform", "").svg()))
+    });
+    g.bench_function("chart/PredictionErrorDisplay", |b| {
+        b.iter(|| black_box(PredictionErrorDisplay::from_predictions(&actual, &fitted, "residual_vs_predicted").sample(1000).svg()))
+    });
     let kfold: KFold = KFold::new().shuffle(true);
     let stratified: StratifiedKFold = StratifiedKFold::new().shuffle(true);
     g.bench_function("split/KFold", |b| b.iter(|| black_box(kfold.split(&s6e2))));

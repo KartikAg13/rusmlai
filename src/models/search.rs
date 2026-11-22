@@ -662,13 +662,8 @@ impl<M: Classifier + Clone + Send + Sync> Classifier for GridSearchCV<M> {
 mod tests {
     use super::*;
     use crate::models::{DecisionTreeClassifier, DecisionTreeRegressor, ElasticNet, tree::tests::table};
+    use crate::models::tree::tests::assert_close;
 
-    fn assert_close(got: &[f64], want: &[f64], eps: f64) {
-        assert_eq!(got.len(), want.len());
-        for (g, w) in got.iter().zip(want) {
-            assert!((g - w).abs() < eps, "{got:?}, want {want:?}");
-        }
-    }
 
     #[test]
     fn the_folds_are_scikit_learn_s() {

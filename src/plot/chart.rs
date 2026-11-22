@@ -221,7 +221,7 @@ impl Chart {
                         | ".percent"
                         | ".stacked"
                         | ".kde"
-                ) && !(option == ".sample" && self.name == "plot")
+                ) && !(option == ".sample" && xy::is_line(self.name))
             }
             Body::Kde(_) => matches!(
                 option,

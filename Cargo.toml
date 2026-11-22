@@ -10,6 +10,8 @@ repository = "https://github.com/KartikAg13/rusmlai"
 readme = "README.md"
 keywords = ["machine-learning", "dataframe", "polars", "scikit-learn", "plotting"]
 categories = ["science", "visualization"]
+# Only what a user builds: the website, the Python twins, the benches and the mold config stay here.
+exclude = ["site/", "bench-python/", "benches/", ".cargo/"]
 
 [dependencies.comfy-table]
 version = "8.0"

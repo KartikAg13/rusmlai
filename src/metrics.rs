@@ -557,6 +557,280 @@ pub fn try_balanced_accuracy_score(y_true: &Series, y_pred: &Series) -> Result<f
     Ok(recall.column("\0hit")?.f64()?.get(0).unwrap_or(f64::NAN))
 }
 
+/// The labels of `y_true` and `y_pred` together, sorted (numbers as numbers, text as text),
+/// as text, and the two inputs as text: scikit-learn's `unique_labels`. Inputs of two types
+/// are compared as text.
+pub(crate) fn unique_labels(y_true: &Series, y_pred: &Series) -> Result<(Vec<String>, Series, Series), ModelError> {
+    let (t, p): (Series, Series) = if y_true.dtype() == y_pred.dtype() {
+        (y_true.clone(), y_pred.clone())
+    } else {
+        (y_true.cast(&DataType::String)?, y_pred.cast(&DataType::String)?)
+    };
+    let mut both: Series = t.clone();
+    both.append(&p)?;
+    let labels: Series = both.unique()?.sort(Default::default())?.cast(&DataType::String)?;
+    let labels: Vec<String> = labels.str()?.iter().map(|l| l.unwrap_or_default().to_string()).collect();
+    Ok((labels, t.cast(&DataType::String)?, p.cast(&DataType::String)?))
+}
+
+/// The confusion matrix: row `i`, column `j` counts the rows whose true label is the `i`-th
+/// label and whose predicted label the `j`-th, the labels of both inputs sorted (scikit-learn's
+/// `confusion_matrix`). `normalize` is `""` (counts), `"true"` (each row sums to 1), `"pred"`
+/// (each column) or `"all"`; a row or column of zeros stays zeros, like scikit-learn.
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y_true = Series::new("y".into(), ["cat", "dog", "cat", "bird"]);
+/// let y_pred = Series::new("p".into(), ["cat", "cat", "cat", "bird"]);
+/// assert_eq!(confusion_matrix(&y_true, &y_pred, ""), [[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 1.0, 0.0]]);
+/// assert_eq!(confusion_matrix(&y_true, &y_pred, "pred")[1], [0.0, 2.0 / 3.0, 0.0]);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import confusion_matrix
+/// y_true, y_pred = ["cat", "dog", "cat", "bird"], ["cat", "cat", "cat", "bird"]
+/// assert confusion_matrix(y_true, y_pred).tolist() == [[1, 0, 0], [0, 2, 0], [0, 1, 0]]
+/// assert confusion_matrix(y_true, y_pred, normalize="pred")[1].tolist() == [0.0, 2 / 3, 0.0]
+/// ```
+#[track_caller]
+pub fn confusion_matrix(y_true: &Series, y_pred: &Series, normalize: &str) -> Vec<Vec<f64>> {
+    try_confusion_matrix(y_true, y_pred, normalize).or_fatal()
+}
+
+/// [`confusion_matrix`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_r2_score`]; [`ModelError::InvalidSetting`] for another `normalize`.
+pub fn try_confusion_matrix(y_true: &Series, y_pred: &Series, normalize: &str) -> Result<Vec<Vec<f64>>, ModelError> {
+    Ok(labeled_confusion_matrix(y_true, y_pred, normalize)?.1)
+}
+
+/// [`try_confusion_matrix`] with its labels, in the order of the rows.
+pub(crate) fn labeled_confusion_matrix(
+    y_true: &Series,
+    y_pred: &Series,
+    normalize: &str,
+) -> Result<(Vec<String>, Vec<Vec<f64>>), ModelError> {
+    if !matches!(normalize, "" | "true" | "pred" | "all") {
+        return Err(ModelError::InvalidSetting {
+            setting: "normalize",
+            value: normalize.into(),
+            expected: "\"\", \"true\", \"pred\" or \"all\"",
+        });
+    }
+    check(y_pred.len(), y_true, &[("y_pred", y_pred)])?;
+    let (labels, t, p): (Vec<String>, Series, Series) = unique_labels(y_true, y_pred)?;
+    let place: PlHashMap<&str, usize> = labels.iter().enumerate().map(|(i, l)| (l.as_str(), i)).collect();
+    let k: usize = labels.len();
+    let mut matrix: Vec<Vec<f64>> = vec![vec![0.0; k]; k];
+    // `check` refused nulls.
+    for (a, b) in t.str()?.iter().flatten().zip(p.str()?.iter().flatten()) {
+        matrix[place[a]][place[b]] += 1.0;
+    }
+    drop(place);
+    let share = |v: f64, total: f64| if total == 0.0 { 0.0 } else { v / total };
+    match normalize {
+        "true" => matrix.iter_mut().for_each(|row| {
+            let total: f64 = row.iter().sum();
+            row.iter_mut().for_each(|v| *v = share(*v, total));
+        }),
+        "pred" => {
+            let totals: Vec<f64> = (0..k).map(|j| matrix.iter().map(|row| row[j]).sum()).collect();
+            matrix.iter_mut().for_each(|row| row.iter_mut().zip(&totals).for_each(|(v, total)| *v = share(*v, *total)));
+        }
+        "all" => {
+            let total: f64 = matrix.iter().flatten().sum();
+            matrix.iter_mut().flatten().for_each(|v| *v = share(*v, total));
+        }
+        _ => {}
+    }
+    Ok((labels, matrix))
+}
+
+/// What [`precision_recall_curve`] gives: the precisions, the recalls and the thresholds.
+pub type PrecisionRecallCurve = (Vec<f64>, Vec<f64>, Vec<f64>);
+
+/// The precision and the recall of a binary target at each distinct score taken as the
+/// threshold, lowest threshold first, then a last point of precision 1 and recall 0 with no
+/// threshold: scikit-learn's `precision_recall_curve` (`drop_intermediate=False`).
+/// `y_score` and `pos_label` are those of [`roc_curve`].
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y = Series::new("y".into(), [0, 0, 1, 1]);
+/// let score = Series::new("s".into(), [0.1, 0.4, 0.35, 0.8]);
+/// let (precision, recall, thresholds) = precision_recall_curve(&y, &score, "");
+/// assert_eq!(precision, [0.5, 2.0 / 3.0, 0.5, 1.0, 1.0]);
+/// assert_eq!(recall, [1.0, 1.0, 0.5, 0.5, 0.0]);
+/// assert_eq!(thresholds, [0.1, 0.35, 0.4, 0.8]);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import precision_recall_curve
+/// precision, recall, thresholds = precision_recall_curve([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8])
+/// assert precision.tolist() == [0.5, 2 / 3, 0.5, 1.0, 1.0]
+/// assert recall.tolist() == [1.0, 1.0, 0.5, 0.5, 0.0]
+/// assert thresholds.tolist() == [0.1, 0.35, 0.4, 0.8]
+/// ```
+#[track_caller]
+pub fn precision_recall_curve(y_true: &Series, y_score: &Series, pos_label: &str) -> PrecisionRecallCurve {
+    try_precision_recall_curve(y_true, y_score, pos_label).or_fatal()
+}
+
+/// [`precision_recall_curve`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_roc_curve`].
+pub fn try_precision_recall_curve(
+    y_true: &Series,
+    y_score: &Series,
+    pos_label: &str,
+) -> Result<PrecisionRecallCurve, ModelError> {
+    let (fps, tps, mut thresholds) = counts(&ranked(y_true, y_score, pos_label)?);
+    let positives: f64 = *tps.last().unwrap_or(&0.0);
+    if positives == 0.0 {
+        warn(format_args!("no positive rows in y_true: every recall is 1"));
+    }
+    let mut precision: Vec<f64> = tps.iter().zip(&fps).map(|(t, f)| t / (t + f)).rev().collect();
+    let mut recall: Vec<f64> = tps.iter().rev().map(|t| if positives == 0.0 { 1.0 } else { t / positives }).collect();
+    precision.push(1.0);
+    recall.push(0.0);
+    thresholds.reverse();
+    Ok((precision, recall, thresholds))
+}
+
+/// The average precision of a binary target: Σ (Rₙ − Rₙ₋₁) Pₙ over the points of
+/// [`precision_recall_curve`], the area under it without interpolation (scikit-learn's
+/// `average_precision_score`). `y_score` is the positive class's score; the positive class is
+/// the greater of the two labels.
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y = Series::new("y".into(), [0, 0, 1, 1]);
+/// let score = Series::new("s".into(), [0.1, 0.4, 0.35, 0.8]);
+/// assert!((average_precision_score(&y, &score) - 5.0 / 6.0).abs() < 1e-15);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import average_precision_score
+/// assert abs(average_precision_score([0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8]) - 5 / 6) < 1e-15
+/// ```
+#[track_caller]
+pub fn average_precision_score(y_true: &Series, y_score: &Series) -> f64 {
+    try_average_precision_score(y_true, y_score).or_fatal()
+}
+
+/// [`average_precision_score`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_roc_curve`].
+pub fn try_average_precision_score(y_true: &Series, y_score: &Series) -> Result<f64, ModelError> {
+    let (precision, recall, _) = try_precision_recall_curve(y_true, y_score, "")?;
+    Ok(average_precision(&precision, &recall))
+}
+
+/// The average precision of the points of a precision-recall curve: scikit-learn's
+/// `-np.sum(np.diff(recall) * precision[:-1])`, in its order.
+pub(crate) fn average_precision(precision: &[f64], recall: &[f64]) -> f64 {
+    let terms: Vec<f64> = recall.windows(2).zip(precision).map(|(r, p)| (r[1] - r[0]) * p).collect();
+    -terms.iter().sum::<f64>()
+}
+
+/// What [`calibration_curve`] gives: the share of positives and the mean predicted
+/// probability in each bin that holds a row.
+pub type CalibrationCurve = (Vec<f64>, Vec<f64>);
+
+/// The share of positive rows against the mean predicted probability, in `n_bins` bins of the
+/// probability: scikit-learn's `calibration_curve`. `strategy` `"uniform"` makes bins of the
+/// same width on [0, 1], `"quantile"` bins of the same number of rows (numpy's percentiles);
+/// an empty bin gives no point. `pos_label` is that of [`roc_curve`].
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y = Series::new("y".into(), [0, 0, 1, 1, 1]);
+/// let p = Series::new("p".into(), [0.1, 0.3, 0.6, 0.7, 0.9]);
+/// let (prob_true, prob_pred) = calibration_curve(&y, &p, 3, "uniform", "");
+/// assert_eq!(prob_true, [0.0, 1.0, 1.0]);
+/// assert_eq!(prob_pred, [0.2, 0.6, 0.8]);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import numpy as np
+/// from sklearn.calibration import calibration_curve
+/// prob_true, prob_pred = calibration_curve([0, 0, 1, 1, 1], [0.1, 0.3, 0.6, 0.7, 0.9], n_bins=3)
+/// assert prob_true.tolist() == [0.0, 1.0, 1.0]
+/// assert np.allclose(prob_pred, [0.2, 0.6, 0.8], rtol=0, atol=1e-15)
+/// ```
+#[track_caller]
+pub fn calibration_curve(y_true: &Series, y_prob: &Series, n_bins: usize, strategy: &str, pos_label: &str) -> CalibrationCurve {
+    try_calibration_curve(y_true, y_prob, n_bins, strategy, pos_label).or_fatal()
+}
+
+/// [`calibration_curve`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_roc_curve`]; [`ModelError::InvalidSetting`] for a probability outside
+/// [0, 1], `n_bins` below 1 or another `strategy`.
+pub fn try_calibration_curve(
+    y_true: &Series,
+    y_prob: &Series,
+    n_bins: usize,
+    strategy: &str,
+    pos_label: &str,
+) -> Result<CalibrationCurve, ModelError> {
+    let invalid = |setting: &'static str, value: String, expected: &'static str| ModelError::InvalidSetting { setting, value, expected };
+    if n_bins == 0 {
+        return Err(invalid("n_bins", "0".into(), "1 or more"));
+    }
+    check(y_prob.len(), y_true, &[("y_prob", y_prob)])?;
+    let hits: Vec<bool> = positive(y_true, pos_label)?;
+    let probs: Series = y_prob.cast(&DataType::Float64)?.rechunk();
+    let probs: &[f64] = slice(&probs)?;
+    if let Some(p) = probs.iter().find(|p| !(0.0..=1.0).contains(*p)) {
+        return Err(invalid("y_prob", p.to_string(), "probabilities in [0, 1]"));
+    }
+    // numpy's linspace(0, 1, n_bins + 1): i × step, the last one exactly 1.
+    let step: f64 = 1.0 / n_bins as f64;
+    let quantiles: Vec<f64> = (0..=n_bins).map(|i| if i == n_bins { 1.0 } else { i as f64 * step }).collect();
+    let bins: Vec<f64> = match strategy {
+        "uniform" => quantiles,
+        "quantile" => {
+            let mut sorted: Vec<f64> = probs.to_vec();
+            sorted.sort_unstable_by(f64::total_cmp);
+            quantiles.iter().map(|q| crate::preprocess::binning::percentile(&sorted, q * 100.0, "linear")).collect()
+        }
+        _ => return Err(invalid("strategy", strategy.into(), "\"uniform\" or \"quantile\"")),
+    };
+    // numpy's searchsorted(bins[1:-1], p), side left: the first inner edge at or above p.
+    let inner: &[f64] = &bins[1..bins.len() - 1];
+    let (mut sums, mut trues, mut totals): (Vec<f64>, Vec<f64>, Vec<f64>) =
+        (vec![0.0; bins.len()], vec![0.0; bins.len()], vec![0.0; bins.len()]);
+    for (p, hit) in probs.iter().zip(&hits) {
+        let bin: usize = inner.partition_point(|edge| edge < p);
+        sums[bin] += p;
+        trues[bin] += f64::from(u8::from(*hit));
+        totals[bin] += 1.0;
+    }
+    let kept = |v: &[f64]| -> Vec<f64> { v.iter().zip(&totals).filter(|(_, n)| **n > 0.0).map(|(v, n)| v / n).collect() };
+    Ok((kept(&trues), kept(&sums)))
+}
+
 #[cfg(test)]
 mod tests {
     use polars::prelude::NamedFrom;
@@ -565,6 +839,32 @@ mod tests {
 
     fn s(values: &[f64]) -> Series {
         Series::new("v".into(), values)
+    }
+
+    /// scikit-learn 1.9.1 on tied scores (analysis/2026-11-21/model-charts: the values printed
+    /// by `precision_recall_curve`, `average_precision_score`, `calibration_curve` and
+    /// `confusion_matrix` on the same inputs).
+    #[test]
+    fn curves_with_ties_and_quantile_bins_are_scikit_learns() {
+        let y: Series = Series::new("y".into(), [1, 0, 1, 1, 0, 0, 1, 0, 1, 1]);
+        let score: Series = s(&[0.9, 0.9, 0.7, 0.5, 0.5, 0.5, 0.3, 0.2, 0.2, 0.05]);
+        let close = |a: &[f64], b: &[f64]| a.len() == b.len() && a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-15);
+        let (p, r, t) = try_precision_recall_curve(&y, &score, "").unwrap();
+        assert!(close(&p, &[0.6, 0.5555555555555556, 0.5714285714285714, 0.5, 0.6666666666666666, 0.5, 1.0]), "{p:?}");
+        assert!(close(&r, &[1.0, 0.8333333333333334, 0.6666666666666666, 0.5, 0.3333333333333333, 0.16666666666666666, 0.0]), "{r:?}");
+        assert_eq!(t, [0.05, 0.2, 0.3, 0.5, 0.7, 0.9]);
+        assert!((try_average_precision_score(&y, &score).unwrap() - 0.5656084656084656).abs() < 1e-15);
+        let (pt, pp) = try_calibration_curve(&y, &score, 4, "quantile", "").unwrap();
+        assert!(close(&pt, &[0.6666666666666666, 0.5, 0.6666666666666666]) && close(&pp, &[0.15, 0.45, 0.8333333333333334]), "{pt:?} {pp:?}");
+        let (pt, pp) = try_calibration_curve(&y, &score, 4, "uniform", "").unwrap();
+        assert!(close(&pt, &[0.6666666666666666, 0.5, 1.0, 0.5]) && close(&pp, &[0.15, 0.45, 0.7, 0.9]), "{pt:?} {pp:?}");
+        let true_: Series = Series::new("t".into(), [3, 1, 2, 2, 3]);
+        let pred: Series = Series::new("p".into(), [1, 1, 2, 3, 10]);
+        let all: Vec<Vec<f64>> = try_confusion_matrix(&true_, &pred, "all").unwrap();
+        let want: [[f64; 4]; 4] = [[0.2, 0.0, 0.0, 0.0], [0.0, 0.2, 0.2, 0.0], [0.2, 0.0, 0.0, 0.2], [0.0; 4]];
+        assert_eq!(all, want, "labels sort as numbers: 10 after 3");
+        assert!(try_calibration_curve(&y, &s(&[1.5; 10]), 4, "uniform", "").is_err());
+        assert!(try_confusion_matrix(&true_, &pred, "rows").is_err());
     }
 
     #[test]

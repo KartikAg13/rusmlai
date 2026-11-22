@@ -11,6 +11,7 @@ use crate::{
     metrics::positive,
     models::{ModelError, check, design::column, hist::feature},
 };
+use crate::models::{at_least_zero};
 
 const SCORINGS: &str = "\"roc_auc\", \"neg_log_loss\", \"neg_root_mean_squared_error\", \
                         \"neg_mean_squared_error\", \"neg_mean_absolute_error\" or \"r2\"";
@@ -243,7 +244,7 @@ impl HillClimbing {
     /// The least gain of a step; below it the climb stops. Default 1e-5.
     #[track_caller]
     pub fn tol(mut self, tol: f64) -> Self {
-        check(tol.is_finite() && tol >= 0.0, "tol", tol, "a finite number of 0 or more");
+        at_least_zero("tol", tol);
         self.tol = tol;
         self
     }

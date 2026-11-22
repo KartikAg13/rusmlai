@@ -33,10 +33,11 @@ use crate::{
             fit_classifier, fit_regressor, mixed, scores_of,
         },
         check,
-        hist::{Bins, Categories, Code, Rules, Step},
+        hist::{Bins, Categories, Code, Codes, Rules, Step},
         tree::{CATEGORICAL, ClassWeight, LEAF, Left, Node, Tree, pick_classes, share_columns},
     },
 };
+use crate::models::{above_zero, at_least_zero, share};
 
 /// Rows of one task of a histogram or a gradient pass. Fixed blocks, added in block order, so
 /// a fit is the same on any number of threads.
@@ -198,7 +199,8 @@ fn columns(bins: &Bins, loss: &Loss, s: &Symmetric, seed: u64) -> Vec<Column> {
     Rng::new(seed ^ 0xC7B0_057A_7157_1C5D).shuffle(&mut permutation);
     let mut out: Vec<Column> = Vec::new();
     for f in 0..bins.names.len() {
-        let (codes, edges, missing): (&[Code], &[(f64, f64)], bool) = bins.binned(f);
+        let (codes, edges, missing): (&Codes, &[(f64, f64)], bool) = bins.binned(f);
+        let codes: &[Code] = &codes.wide();
         let values: usize = edges.len();
         if bins.categories(f).is_some() {
             if values <= s.one_hot_max_size {
@@ -239,7 +241,7 @@ fn node_of(bins: &Bins, column: &Column, border: Code, s: &Symmetric, sets: &mut
     let mut left: Left = [0; 4];
     match &column.kind {
         Kind::Number => {
-            let (_, edges, missing): (&[Code], &[(f64, f64)], bool) = bins.binned(f);
+            let (_, edges, missing): (&Codes, &[(f64, f64)], bool) = bins.binned(f);
             let (threshold, missing_left): (f64, bool) = match (missing, s.nan_max) {
                 // Below every value: border 0 parts the missing values from the rest.
                 (true, false) if t == 0 => (f64::NEG_INFINITY, true),
@@ -917,18 +919,6 @@ impl Library for CatBoostParams {
     }
 }
 
-/// A share above 0 up to 1.
-#[track_caller]
-fn share(name: &'static str, value: f64) {
-    check(value > 0.0 && value <= 1.0, name, value, "a share above 0.0 up to 1.0");
-}
-
-/// A finite number of 0 or more.
-#[track_caller]
-fn at_least_zero(name: &'static str, value: f64) {
-    check(value.is_finite() && value >= 0.0, name, value, "a finite number of 0 or more");
-}
-
 macro_rules! catboost_settings {
     ($model:ident) => {
         impl $model {
@@ -950,8 +940,7 @@ macro_rules! catboost_settings {
             /// from the rows and the rounds (`learning_rate_` after `fit`).
             #[track_caller]
             pub fn learning_rate(mut self, learning_rate: f64) -> Self {
-                let ok: bool = learning_rate.is_finite() && learning_rate > 0.0;
-                check(ok, "learning_rate", learning_rate, "a finite number above 0");
+                above_zero("learning_rate", learning_rate);
                 self.params.learning_rate = Some(learning_rate);
                 self
             }
@@ -1296,8 +1285,7 @@ impl CatBoostClassifier {
     /// How much more a row of the second of two classes counts, above 0. Default 1.
     #[track_caller]
     pub fn scale_pos_weight(mut self, scale_pos_weight: f64) -> Self {
-        let ok: bool = scale_pos_weight.is_finite() && scale_pos_weight > 0.0;
-        check(ok, "scale_pos_weight", scale_pos_weight, "a finite number above 0");
+        above_zero("scale_pos_weight", scale_pos_weight);
         self.params.scale_pos_weight = scale_pos_weight;
         self
     }
@@ -1305,13 +1293,47 @@ impl CatBoostClassifier {
 
 /// `save_model` / `try_save_model` on a CatBoost-named model.
 macro_rules! catboost_export {
-    ($model:ident) => {
+    ($model:ident, $columns:literal, $target:literal) => {
         impl $model {
             /// Writes the fitted model as CatBoost's own JSON model, which Python reads with
             /// `CatBoostRegressor().load_model(path, format="json")` (or `CatBoostClassifier`)
             /// and which predicts what this model predicts. (catboost:
             /// `model.save_model("model.json", format="json")`) Not yet: a model with
             /// categorical features. Panics with the error's message at your line.
+            ///
+            /// ```
+            /// use rusmlai::prelude::*;
+            #[doc = concat!("let ds = read_csv(\"tests/fixtures/data/students.csv\").select(&", $columns, ").dropna(&[]);")]
+            #[doc = concat!("let mut model = ", stringify!($model), "::new().iterations(5);")]
+            #[doc = concat!("model.fit(&ds, \"", $target, "\");")]
+            #[doc = concat!("let path = std::env::temp_dir().join(\"rusmlai-doc-", stringify!($model), ".json\");")]
+            /// model.save_model(&path);
+            /// assert!(std::fs::read_to_string(&path).unwrap().contains("oblivious_trees"));
+            /// ```
+            ///
+            /// Edge case: a model that was never fitted has nothing to write:
+            /// ```
+            /// use rusmlai::prelude::*;
+            #[doc = concat!("let model = ", stringify!($model), "::new();")]
+            /// let path = std::env::temp_dir().join("rusmlai-doc-unfitted");
+            /// assert!(matches!(model.try_save_model(&path), Err(ModelError::NotFitted { .. })));
+            /// ```
+            ///
+            /// Python:
+            ///
+            /// ```python
+            /// import tempfile
+            /// import pandas as pd
+            /// from catboost import CatBoostClassifier, CatBoostRegressor
+            /// ds = pd.read_csv("tests/fixtures/data/students.csv")[["age", "cgpa", "passed"]].dropna()
+            /// kw = dict(iterations=5, verbose=0, allow_writing_files=False)
+            /// for model, y in [(CatBoostRegressor(**kw), "cgpa"), (CatBoostClassifier(**kw), "passed")]:
+            ///     x = ds.drop(columns=[y] if y == "passed" else [y, "passed"])
+            ///     model.fit(x, ds[y].astype(int) if y == "passed" else ds[y])
+            ///     path = tempfile.mkdtemp() + "/model.json"
+            ///     model.save_model(path, format="json")
+            ///     assert "oblivious_trees" in open(path).read()
+            /// ```
             #[track_caller]
             pub fn save_model(&self, path: impl AsRef<std::path::Path>) {
                 crate::error::OrFatal::or_fatal(self.try_save_model(path))
@@ -1349,8 +1371,8 @@ impl CatBoostClassifier {
     }
 }
 
-catboost_export!(CatBoostRegressor);
-catboost_export!(CatBoostClassifier);
+catboost_export!(CatBoostRegressor, r#"["age", "cgpa"]"#, "cgpa");
+catboost_export!(CatBoostClassifier, r#"["age", "cgpa", "passed"]"#, "passed");
 
 #[cfg(test)]
 mod tests {
@@ -1506,6 +1528,18 @@ mod tests {
             tree.walk_symmetric(&shape, &refs, 0, &mut by_levels);
             assert_eq!(walked, by_levels);
         }
+        // Through bytes (`tree::Quantized`), as `predict` reads them: the same sums.
+        let trees: &[Tree] = &model.estimators_;
+        let shapes: Vec<_> = trees.iter().map(Tree::symmetric).collect();
+        assert!(crate::models::tree::Quantized::new(trees, &shapes, refs.len()).is_some());
+        let sums: Vec<f64> = crate::models::tree::sum_leaves_on(trees, &refs, nan.height(), 1, |_, v, out| out[0] += v[0]);
+        let mut want: Vec<f64> = vec![0.0; nan.height()];
+        for tree in trees {
+            let mut leaves: Vec<u32> = vec![0; nan.height()];
+            tree.walk(&refs, 0, &mut leaves);
+            want.iter_mut().zip(&leaves).for_each(|(w, leaf)| *w += tree.value()[*leaf as usize]);
+        }
+        assert_eq!(sums, want);
     }
 
     #[test]

@@ -14,7 +14,26 @@ from sklearn.ensemble import ExtraTreesClassifier, ExtraTreesRegressor, Stacking
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression, Ridge, RidgeCV
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import balanced_accuracy_score, roc_auc_score, roc_curve
+import io
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from sklearn.calibration import CalibrationDisplay, calibration_curve
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import (
+    ConfusionMatrixDisplay,
+    PrecisionRecallDisplay,
+    PredictionErrorDisplay,
+    RocCurveDisplay,
+    average_precision_score,
+    balanced_accuracy_score,
+    confusion_matrix,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
+)
 from sklearn.model_selection import KFold, StratifiedKFold, cross_val_predict
 from sklearn.preprocessing import (
     KBinsDiscretizer,
@@ -83,6 +102,15 @@ def main() -> None:
     x1 = s6e1.drop(columns=["exam_score"])
     print(f"Pipeline(TargetEncoder, Ridge): train r2 {pipe().fit(x1, y1).score(x1, y1):.6f}", file=sys.stderr)
 
+    fitted: np.ndarray = LinearRegression().fit(design, y1).predict(design)
+
+    def svg(display) -> bytes:
+        """A display's figure saved as an SVG, as rusmlai's `.svg()` makes one."""
+        out = io.BytesIO()
+        display.figure_.savefig(out, format="svg")
+        plt.close(display.figure_)
+        return out.getvalue()
+
     def count_encode() -> pd.DataFrame:
         return pd.DataFrame({c: s6e1[c].map(s6e1[c].value_counts()) for c in TEXT})
 
@@ -92,6 +120,15 @@ def main() -> None:
         "metric/roc_curve": lambda jobs: roc_curve(y2, score, pos_label="Presence"),
         "metric/balanced_accuracy_score": lambda jobs: balanced_accuracy_score(y2, predicted),
         "metric/compute_sample_weight": lambda jobs: compute_sample_weight("balanced", y2),
+        "metric/confusion_matrix": lambda jobs: confusion_matrix(y2, predicted),
+        "metric/precision_recall_curve": lambda jobs: precision_recall_curve(y2, score, pos_label="Presence"),
+        "metric/average_precision_score": lambda jobs: average_precision_score(y2, score, pos_label="Presence"),
+        "metric/calibration_curve": lambda jobs: calibration_curve(y2, score, n_bins=10, pos_label="Presence"),
+        "chart/ConfusionMatrixDisplay": lambda jobs: svg(ConfusionMatrixDisplay.from_predictions(y2, predicted)),
+        "chart/RocCurveDisplay": lambda jobs: svg(RocCurveDisplay.from_predictions(y2, score, pos_label="Presence")),
+        "chart/PrecisionRecallDisplay": lambda jobs: svg(PrecisionRecallDisplay.from_predictions(y2, score, pos_label="Presence")),
+        "chart/CalibrationDisplay": lambda jobs: svg(CalibrationDisplay.from_predictions(y2, score, n_bins=10, pos_label="Presence")),
+        "chart/PredictionErrorDisplay": lambda jobs: svg(PredictionErrorDisplay.from_predictions(y1, fitted, subsample=1000, random_state=42)),
         "split/KFold": lambda jobs: list(kfold.split(x2)),
         "split/StratifiedKFold": lambda jobs: list(stratified.split(x2, y2)),
         "oof/LogisticRegression": lambda jobs: cross_val_predict(

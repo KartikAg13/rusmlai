@@ -1,7 +1,7 @@
 use polars::error::PolarsError;
 use thiserror::Error;
 
-use crate::dataset::error::DatasetError;
+use crate::{dataset::error::DatasetError, models::ModelError};
 
 /// Why a chart or a chart option failed. The `try_*` chart methods return it.
 #[derive(Debug, Error)]
@@ -50,4 +50,8 @@ pub enum PlotError {
 
     #[error(transparent)]
     Polars(#[from] PolarsError),
+
+    /// A metric or a model behind a model chart failed.
+    #[error(transparent)]
+    Model(#[from] ModelError),
 }

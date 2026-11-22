@@ -22,6 +22,7 @@ use crate::{
         tree::{pick_classes, share_columns},
     },
 };
+use crate::models::{share};
 
 /// The settings of a bag, with scikit-learn's names.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -181,8 +182,7 @@ macro_rules! bagging_settings {
             /// Default 1.0. A count (scikit-learn's int) is not taken.
             #[track_caller]
             pub fn max_samples(mut self, max_samples: f64) -> Self {
-                let ok: bool = max_samples > 0.0 && max_samples <= 1.0;
-                check(ok, "max_samples", max_samples, "a share above 0.0 up to 1.0");
+                share("max_samples", max_samples);
                 self.params.max_samples = max_samples;
                 self
             }
@@ -191,8 +191,7 @@ macro_rules! bagging_settings {
             /// most 1, drawn once per copy. Default 1.0. A count is not taken.
             #[track_caller]
             pub fn max_features(mut self, max_features: f64) -> Self {
-                let ok: bool = max_features > 0.0 && max_features <= 1.0;
-                check(ok, "max_features", max_features, "a share above 0.0 up to 1.0");
+                share("max_features", max_features);
                 self.params.max_features = max_features;
                 self
             }

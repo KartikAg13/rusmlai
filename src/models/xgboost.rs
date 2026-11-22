@@ -28,6 +28,7 @@ use crate::{
         tree::{Tree, pick_classes, share_columns},
     },
 };
+use crate::models::{above_zero, at_least_zero, share};
 
 /// XGBoost's settings, with its names and defaults (xgboost 3.4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -186,18 +187,6 @@ const REGRESSION: &str = "\"reg:squarederror\", \"reg:absoluteerror\", \"reg:qua
                           \"reg:pseudohubererror\", \"count:poisson\", \"reg:gamma\" or \"reg:tweedie\"";
 const CLASSIFICATION: &str = "\"binary:logistic\", \"multi:softprob\" or \"multi:softmax\"";
 
-/// A share above 0 up to 1.
-#[track_caller]
-fn share(name: &'static str, value: f64) {
-    check(value > 0.0 && value <= 1.0, name, value, "a share above 0.0 up to 1.0");
-}
-
-/// A finite number of 0 or more.
-#[track_caller]
-fn at_least_zero(name: &'static str, value: f64) {
-    check(value.is_finite() && value >= 0.0, name, value, "a finite number of 0 or more");
-}
-
 macro_rules! xgb_settings {
     ($model:ident) => {
         impl $model {
@@ -237,8 +226,7 @@ macro_rules! xgb_settings {
             /// How much of each tree's step is taken, above 0. Default 0.3 (XGBoost's `eta`).
             #[track_caller]
             pub fn learning_rate(mut self, learning_rate: f64) -> Self {
-                let ok: bool = learning_rate.is_finite() && learning_rate > 0.0;
-                check(ok, "learning_rate", learning_rate, "a finite number above 0");
+                above_zero("learning_rate", learning_rate);
                 self.params.learning_rate = learning_rate;
                 self
             }
@@ -449,8 +437,7 @@ impl XGBRegressor {
     /// The slope δ of `"reg:pseudohubererror"`, above 0. Default 1.
     #[track_caller]
     pub fn huber_slope(mut self, huber_slope: f64) -> Self {
-        let ok: bool = huber_slope.is_finite() && huber_slope > 0.0;
-        check(ok, "huber_slope", huber_slope, "a finite number above 0");
+        above_zero("huber_slope", huber_slope);
         self.params.huber_slope = huber_slope;
         self
     }
@@ -546,8 +533,7 @@ impl XGBClassifier {
     /// class 1) for unbalanced classes.
     #[track_caller]
     pub fn scale_pos_weight(mut self, scale_pos_weight: f64) -> Self {
-        let ok: bool = scale_pos_weight.is_finite() && scale_pos_weight > 0.0;
-        check(ok, "scale_pos_weight", scale_pos_weight, "a finite number above 0");
+        above_zero("scale_pos_weight", scale_pos_weight);
         self.params.scale_pos_weight = scale_pos_weight;
         self
     }
@@ -555,13 +541,46 @@ impl XGBClassifier {
 
 /// `save_model` / `try_save_model` on an XGBoost-named model.
 macro_rules! xgb_export {
-    ($model:ident) => {
+    ($model:ident, $columns:literal, $target:literal) => {
         impl $model {
             /// Writes the fitted model as XGBoost's own JSON model, which Python reads with
             /// `xgboost.XGBRegressor().load_model(path)` (or `XGBClassifier`, or
             /// `xgboost.Booster(model_file=path)`) and which predicts what this model
             /// predicts. (xgboost: `model.save_model("model.json")`) Not yet: a model with
             /// categorical features. Panics with the error's message at your line.
+            ///
+            /// ```
+            /// use rusmlai::prelude::*;
+            #[doc = concat!("let ds = read_csv(\"tests/fixtures/data/students.csv\").select(&", $columns, ").dropna(&[]);")]
+            #[doc = concat!("let mut model = ", stringify!($model), "::new().n_estimators(5);")]
+            #[doc = concat!("model.fit(&ds, \"", $target, "\");")]
+            #[doc = concat!("let path = std::env::temp_dir().join(\"rusmlai-doc-", stringify!($model), ".json\");")]
+            /// model.save_model(&path);
+            /// assert!(std::fs::read_to_string(&path).unwrap().contains("learner"));
+            /// ```
+            ///
+            /// Edge case: a model that was never fitted has nothing to write:
+            /// ```
+            /// use rusmlai::prelude::*;
+            #[doc = concat!("let model = ", stringify!($model), "::new();")]
+            /// let path = std::env::temp_dir().join("rusmlai-doc-unfitted");
+            /// assert!(matches!(model.try_save_model(&path), Err(ModelError::NotFitted { .. })));
+            /// ```
+            ///
+            /// Python:
+            ///
+            /// ```python
+            /// import tempfile
+            /// import pandas as pd
+            /// from xgboost import XGBClassifier, XGBRegressor
+            /// ds = pd.read_csv("tests/fixtures/data/students.csv")[["age", "cgpa", "passed"]].dropna()
+            /// for model, y in [(XGBRegressor(n_estimators=5), "cgpa"), (XGBClassifier(n_estimators=5), "passed")]:
+            ///     x = ds.drop(columns=[y] if y == "passed" else [y, "passed"])
+            ///     model.fit(x, ds[y].astype(int) if y == "passed" else ds[y])
+            ///     path = tempfile.mkdtemp() + "/model.json"
+            ///     model.save_model(path)
+            ///     assert "learner" in open(path).read()
+            /// ```
             #[track_caller]
             pub fn save_model(&self, path: impl AsRef<std::path::Path>) {
                 crate::error::OrFatal::or_fatal(self.try_save_model(path))
@@ -584,8 +603,8 @@ macro_rules! xgb_export {
     };
 }
 
-xgb_export!(XGBRegressor);
-xgb_export!(XGBClassifier);
+xgb_export!(XGBRegressor, r#"["age", "cgpa"]"#, "cgpa");
+xgb_export!(XGBClassifier, r#"["age", "cgpa", "passed"]"#, "passed");
 
 #[cfg(test)]
 pub(crate) mod tests {

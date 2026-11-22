@@ -31,6 +31,7 @@ use crate::{
         tree::{ClassWeight, Tree, pick_classes, read_trees, share_columns, sum_leaves_on},
     },
 };
+use crate::models::{above_zero, at_least_zero, share};
 
 /// Rows in one task of the pass that makes the gradients. The blocks are fixed and their
 /// losses are added in block order, so the result is the same on any number of threads.
@@ -986,7 +987,8 @@ pub(crate) fn scores_of(
             .collect::<Result<_, ModelError>>()
     })?;
     let columns: Vec<&[f64]> = series.iter().map(column).collect();
-    let add = |t: usize, value: &[f64], sum: &mut [f64]| sum[t % k] += value[0];
+    // `t % k` divides on every row: a division by a number that might be 0 stays in the loop.
+    let add = |t: usize, value: &[f64], sum: &mut [f64]| sum[if k == 1 { 0 } else { t % k }] += value[0];
     let mut scores: Vec<f64> = sum_leaves_on(trees, &columns, dataset.height(), k, add);
     for row in scores.chunks_mut(k) {
         row.iter_mut().zip(baseline).for_each(|(score, base)| *score += base);
@@ -1444,8 +1446,7 @@ macro_rules! boosting_settings {
             /// needs more rounds and often scores better.
             #[track_caller]
             pub fn learning_rate(mut self, learning_rate: f64) -> Self {
-                let ok: bool = learning_rate.is_finite() && learning_rate > 0.0;
-                check(ok, "learning_rate", learning_rate, "a finite number above 0");
+                above_zero("learning_rate", learning_rate);
                 self.params.learning_rate = learning_rate;
                 self
             }
@@ -1490,12 +1491,7 @@ macro_rules! boosting_settings {
             /// The L2 penalty on the values of the leaves, 0 or more. Default 0.
             #[track_caller]
             pub fn l2_regularization(mut self, l2_regularization: f64) -> Self {
-                check(
-                    l2_regularization.is_finite() && l2_regularization >= 0.0,
-                    "l2_regularization",
-                    l2_regularization,
-                    "a finite number of 0 or more",
-                );
+                at_least_zero("l2_regularization", l2_regularization);
                 self.params.l2_regularization = l2_regularization;
                 self
             }
@@ -1505,12 +1501,7 @@ macro_rules! boosting_settings {
             /// XGBoost's `reg_alpha`; scikit-learn has none.
             #[track_caller]
             pub fn l1_regularization(mut self, l1_regularization: f64) -> Self {
-                check(
-                    l1_regularization.is_finite() && l1_regularization >= 0.0,
-                    "l1_regularization",
-                    l1_regularization,
-                    "a finite number of 0 or more",
-                );
+                at_least_zero("l1_regularization", l1_regularization);
                 self.params.l1_regularization = l1_regularization;
                 self
             }
@@ -1520,12 +1511,7 @@ macro_rules! boosting_settings {
             /// none.
             #[track_caller]
             pub fn min_split_gain(mut self, min_split_gain: f64) -> Self {
-                check(
-                    min_split_gain.is_finite() && min_split_gain >= 0.0,
-                    "min_split_gain",
-                    min_split_gain,
-                    "a finite number of 0 or more",
-                );
+                at_least_zero("min_split_gain", min_split_gain);
                 self.params.min_split_gain = min_split_gain;
                 self
             }
@@ -1535,8 +1521,7 @@ macro_rules! boosting_settings {
             /// `max_features`, LightGBM's and XGBoost's `colsample_bynode`.
             #[track_caller]
             pub fn max_features(mut self, max_features: f64) -> Self {
-                let ok: bool = max_features > 0.0 && max_features <= 1.0;
-                check(ok, "max_features", max_features, "a share above 0.0 up to 1.0");
+                share("max_features", max_features);
                 self.params.max_features = max_features;
                 self
             }
@@ -1547,8 +1532,7 @@ macro_rules! boosting_settings {
             /// histogram boosting has none.
             #[track_caller]
             pub fn subsample(mut self, subsample: f64) -> Self {
-                let ok: bool = subsample > 0.0 && subsample <= 1.0;
-                check(ok, "subsample", subsample, "a share above 0.0 up to 1.0");
+                share("subsample", subsample);
                 self.params.subsample = subsample;
                 self
             }
@@ -1602,7 +1586,7 @@ macro_rules! boosting_settings {
             /// A loss counts as better when it is lower by more than this. Default 1e-7.
             #[track_caller]
             pub fn tol(mut self, tol: f64) -> Self {
-                check(tol.is_finite() && tol >= 0.0, "tol", tol, "a finite number of 0 or more");
+                at_least_zero("tol", tol);
                 self.params.tol = tol;
                 self
             }
@@ -1837,16 +1821,11 @@ impl GradientBoostingRegressor {
 #[cfg(test)]
 mod tests {
     use polars::prelude::{DataFrame, IntoLazy, lit};
+    use crate::models::tree::tests::assert_close;
 
     use super::*;
     use crate::{models::tree::tests::table, utils::col};
 
-    fn assert_close(got: &[f64], want: &[f64], eps: f64) {
-        assert_eq!(got.len(), want.len());
-        for (g, w) in got.iter().zip(want) {
-            assert!((g - w).abs() < eps, "{got:?}, want {want:?}");
-        }
-    }
 
     fn first_values(predicted: Series) -> Vec<f64> {
         predicted.f64().unwrap().into_no_null_iter().collect()

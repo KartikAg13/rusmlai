@@ -24,6 +24,7 @@ use crate::{
         linear::solve,
     },
 };
+use crate::models::at_least_zero;
 
 /// `C` is a number or `"inf"`: JSON has no infinity, and `C = inf` means no penalty.
 mod c_value {
@@ -214,12 +215,7 @@ impl LogisticRegression {
     /// most `tol`. Default 1e-4.
     #[track_caller]
     pub fn tol(mut self, tol: f64) -> Self {
-        check(
-            tol.is_finite() && tol >= 0.0,
-            "tol",
-            tol,
-            "a finite number of 0 or more",
-        );
+        at_least_zero("tol", tol);
         self.params.tol = tol;
         self
     }
