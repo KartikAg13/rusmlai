@@ -41,6 +41,7 @@ use crate::{
 };
 
 pub mod clean;
+pub mod ops;
 pub mod error;
 pub mod read;
 pub mod split;
@@ -1449,33 +1450,6 @@ pub fn try_read_csv(path: impl AsRef<Path>) -> Result<Dataset, DatasetError> {
 }
 
 impl Dataset {
-    /// `dataframe`, whose rows line up with this dataset's, as a dataset whose stats are
-    /// computed on first use, with this dataset's path: a model's output, like
-    /// `predict_proba`.
-    pub(crate) fn derived(&self, dataframe: DataFrame) -> Dataset {
-        let columns: indexmap::IndexMap<String, std::sync::Arc<ColumnInfo>> = dataframe
-            .columns()
-            .iter()
-            .map(|c| {
-                (
-                    c.name().to_string(),
-                    std::sync::Arc::new(ColumnInfo::new(c)),
-                )
-            })
-            .collect();
-        let metadata: Metadata = Metadata {
-            filepath: self.metadata.filepath.clone(),
-            height: dataframe.height(),
-            width: dataframe.width(),
-            dataset_cache: crate::metadata::dataset::DatasetCache::new(columns),
-            plot_cache: crate::metadata::plot::PlotCache::default(),
-        };
-        Dataset {
-            dataframe,
-            metadata,
-        }
-    }
-
     /// This dataset with the column `name` of `source` added, or replaced. The column keeps its
     /// stats from `source`, so a model's `fit` reads the target's cached stats. The rows must
     /// line up.

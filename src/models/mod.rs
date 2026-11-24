@@ -29,15 +29,15 @@ pub use bagging::{BaggingClassifier, BaggingRegressor};
 pub use search::{GridSearchCV, cross_val_score, try_cross_val_score};
 pub use summary::OlsSummary;
 pub use stacking::{AnyModel, StackingClassifier, StackingRegressor};
-pub use boosting::{GradientBoostingClassifier, GradientBoostingRegressor};
+pub use boosting::{HistGradientBoostingClassifier, HistGradientBoostingRegressor};
 pub use catboost::{CatBoostClassifier, CatBoostRegressor};
 pub use dummy::DummyRegressor;
 pub use folds::{Cv, KFold, StratifiedKFold, cross_val_predict, try_cross_val_predict};
 pub use hill::HillClimbing;
 pub use forest::{ExtraTreesClassifier, ExtraTreesRegressor, RandomForestClassifier, RandomForestRegressor};
 pub use lightgbm::{LGBMClassifier, LGBMRegressor};
-pub use linear::{ElasticNet, Lasso, LinearRegression, Ridge, RidgeCV};
-pub use logistic::LogisticRegression;
+pub use linear::{ElasticNet, Lasso, LinearRegression, Ridge, RidgeCV, RidgeClassifier};
+pub use logistic::{Cs, LogisticRegression, LogisticRegressionCV};
 pub use tree::{
     ClassWeight, DecisionTreeClassifier, DecisionTreeRegressor, compute_sample_weight,
     try_compute_sample_weight,
@@ -61,7 +61,7 @@ use crate::{
     },
     metrics::{
         try_accuracy_score, try_balanced_accuracy_score, try_log_loss, try_regression_scores,
-        try_roc_auc_score,
+        score_scorer, try_roc_auc_score,
     },
     preprocess::{LabelEncoder, Transform, error::PreprocessError},
     utils::col,
@@ -90,6 +90,14 @@ pub enum ModelError {
     /// `predict` or `score` ran before `fit`.
     #[error("{model} is not fitted: call fit first")]
     NotFitted {
+        /// The model's name.
+        model: &'static str,
+    },
+
+    /// The model gives scores, not probabilities, like scikit-learn's (which has no
+    /// `predict_proba` for it).
+    #[error("{model} has no predict_proba, like scikit-learn's: use its decision_function, or a model with probabilities such as LogisticRegression")]
+    NoProbabilities {
         /// The model's name.
         model: &'static str,
     },
@@ -328,7 +336,9 @@ pub trait Model: Debug {
     /// is better. `""` is the model's own score, R² or the accuracy. A regressor takes
     /// `"r2"`, `"neg_mean_squared_error"`, `"neg_root_mean_squared_error"` and
     /// `"neg_mean_absolute_error"`, a classifier `"accuracy"`, `"balanced_accuracy"`,
-    /// `"roc_auc"` (a binary target) and `"neg_log_loss"`. Unlike
+    /// `"roc_auc"` (a binary target), `"neg_log_loss"`, `"precision"`, `"recall"` and `"f1"`
+    /// (the greater label positive), the last three also with `_micro`, `_macro` or
+    /// `_weighted`. Unlike
     /// `score`, it records nothing in the model cache: a search scores many models that are
     /// never kept.
     fn try_evaluate(&self, dataset: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError>;
@@ -589,7 +599,7 @@ pub trait Classifier: Model {
 const REGRESSION_SCORERS: &str = "\"r2\", \"neg_mean_squared_error\", \"neg_root_mean_squared_error\" or \"neg_mean_absolute_error\" for a regressor";
 
 /// The scorer names a classifier takes in [`Model::try_evaluate`].
-const CLASSIFICATION_SCORERS: &str = "\"accuracy\", \"balanced_accuracy\", \"roc_auc\" or \"neg_log_loss\" for a classifier";
+const CLASSIFICATION_SCORERS: &str = "\"accuracy\", \"balanced_accuracy\", \"roc_auc\", \"neg_log_loss\", \"precision\", \"recall\" or \"f1\" (each also with \"_micro\", \"_macro\" or \"_weighted\") for a classifier";
 
 /// [`Model::try_evaluate`] of a regressor.
 pub(crate) fn evaluate_regressor<R: Regressor + ?Sized>(
@@ -634,22 +644,30 @@ pub(crate) fn evaluate_classifier<C: Classifier + ?Sized>(
         "balanced_accuracy" => try_balanced_accuracy_score(y, &model.try_predict(dataset)?),
         "roc_auc" => {
             // The score of the greater class: predict_proba's columns are the sorted classes.
-            let proba: Dataset = model.try_predict_proba(dataset)?;
-            if proba.width() != 2 {
+            // A model with no probabilities ranks by its decision_function, as scikit-learn.
+            let (scores, last): (Dataset, usize) = match model.try_predict_proba(dataset) {
+                Ok(proba) => (proba, 1),
+                Err(ModelError::NoProbabilities { .. }) => (model.try_predict_method(dataset, "decision_function")?, 0),
+                Err(e) => return Err(e),
+            };
+            if scores.width() != last + 1 {
                 return Err(ModelError::InvalidSetting {
                     setting: "scoring",
-                    value: format!("roc_auc with {} classes", proba.width()),
+                    value: format!("roc_auc with {} classes", scores.width().max(2)),
                     expected: "a binary target for \"roc_auc\"",
                 });
             }
-            let last: String = proba.columns()[1].clone();
-            try_roc_auc_score(y, proba.column(&last)?.as_materialized_series())
+            let name: String = scores.columns()[last].clone();
+            try_roc_auc_score(y, scores.column(&name)?.as_materialized_series())
         }
-        _ => Err(ModelError::InvalidSetting {
-            setting: "scoring",
-            value: scoring.into(),
-            expected: CLASSIFICATION_SCORERS,
-        }),
+        _ => match score_scorer(scoring) {
+            Some((metric, average)) => metric(y, &model.try_predict(dataset)?, "", average),
+            None => Err(ModelError::InvalidSetting {
+                setting: "scoring",
+                value: scoring.into(),
+                expected: CLASSIFICATION_SCORERS,
+            }),
+        },
     }
 }
 

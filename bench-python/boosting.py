@@ -44,10 +44,10 @@ def main() -> None:
 
     # name: (make(n_jobs), features, target)
     fits = {
-        "fit/GradientBoostingRegressor": (lambda jobs: HistGradientBoostingRegressor(early_stopping=False), x, y),
-        "fit/GradientBoostingRegressor/categorical": (lambda jobs: HistGradientBoostingRegressor(early_stopping=False), xcat, y),
-        "fit/GradientBoostingClassifier": (lambda jobs: HistGradientBoostingClassifier(early_stopping=False), xc, yc),
-        "fit/GradientBoostingClassifier/early_stopping": (lambda jobs: HistGradientBoostingClassifier(random_state=42), xc, yc),
+        "fit/HistGradientBoostingRegressor": (lambda jobs: HistGradientBoostingRegressor(early_stopping=False), x, y),
+        "fit/HistGradientBoostingRegressor/categorical": (lambda jobs: HistGradientBoostingRegressor(early_stopping=False), xcat, y),
+        "fit/HistGradientBoostingClassifier": (lambda jobs: HistGradientBoostingClassifier(early_stopping=False), xc, yc),
+        "fit/HistGradientBoostingClassifier/early_stopping": (lambda jobs: HistGradientBoostingClassifier(random_state=42), xc, yc),
         "fit/AdaBoostClassifier": (lambda jobs: AdaBoostClassifier(random_state=42), xc, yc),
         "fit/GridSearchCV": (lambda jobs: GridSearchCV(DecisionTreeClassifier(random_state=42), grid, cv=5, n_jobs=jobs), xc, yc),
     }
@@ -72,8 +72,8 @@ def main() -> None:
         many: float = median_ms(lambda: make(-1).fit(features, target), repeats)
         print(f"{name:<52} {one:>8.1f}ms {many:>8.1f}ms", file=sys.stderr)
     predicts = {
-        "predict/GradientBoostingRegressor": (fitted["fit/GradientBoostingRegressor"], "predict", x),
-        "predict_proba/GradientBoostingClassifier": (fitted["fit/GradientBoostingClassifier"], "predict_proba", xc),
+        "predict/HistGradientBoostingRegressor": (fitted["fit/HistGradientBoostingRegressor"], "predict", x),
+        "predict_proba/HistGradientBoostingClassifier": (fitted["fit/HistGradientBoostingClassifier"], "predict_proba", xc),
     }
     for name, (model, method, features) in predicts.items():
         with threadpool_limits(limits=1):

@@ -651,6 +651,304 @@ pub(crate) fn labeled_confusion_matrix(
     Ok((labels, matrix))
 }
 
+/// Precision, recall or F1, scored one label at a time.
+#[derive(Clone, Copy)]
+enum Score {
+    Precision,
+    Recall,
+    F1,
+}
+
+impl Score {
+    /// The score of one label from its true positives, predicted rows and true rows (or the
+    /// sums of every label, for `average = "micro"`). Nothing to divide by gives 0 and a
+    /// warning, like scikit-learn's `zero_division = "warn"`.
+    fn of(self, tp: f64, predicted: f64, truth: f64) -> f64 {
+        let (over, under, why): (f64, f64, &str) = match self {
+            Self::Precision => (tp, predicted, "Precision is 0 for a label that is never predicted"),
+            Self::Recall => (tp, truth, "Recall is 0 for a label that is not in y_true"),
+            Self::F1 => (2.0 * tp, predicted + truth, "F1 is 0 for a label in neither input"),
+        };
+        if under == 0.0 {
+            warn(why);
+            0.0
+        } else {
+            over / under
+        }
+    }
+}
+
+/// The labels of both inputs, sorted, and each label's true positives, predicted rows and true
+/// rows.
+type LabelCounts = (Vec<String>, Vec<f64>, Vec<f64>, Vec<f64>);
+
+/// [`LabelCounts`] from the confusion matrix.
+fn label_counts(y_true: &Series, y_pred: &Series) -> Result<LabelCounts, ModelError> {
+    let (labels, m): (Vec<String>, Vec<Vec<f64>>) = labeled_confusion_matrix(y_true, y_pred, "")?;
+    let k: usize = labels.len();
+    let tp: Vec<f64> = (0..k).map(|i| m[i][i]).collect();
+    let predicted: Vec<f64> = (0..k).map(|j| m.iter().map(|row| row[j]).sum()).collect();
+    let truth: Vec<f64> = m.iter().map(|row| row.iter().sum()).collect();
+    Ok((labels, tp, predicted, truth))
+}
+
+/// [`precision_score`], [`recall_score`] and [`f1_score`].
+fn try_score(score: Score, y_true: &Series, y_pred: &Series, pos_label: &str, average: &str) -> Result<f64, ModelError> {
+    if !matches!(average, "binary" | "micro" | "macro" | "weighted") {
+        return Err(ModelError::InvalidSetting {
+            setting: "average",
+            value: average.into(),
+            expected: "\"binary\", \"micro\", \"macro\" or \"weighted\"",
+        });
+    }
+    let (labels, tp, predicted, truth): LabelCounts = label_counts(y_true, y_pred)?;
+    let per_label = || (0..labels.len()).map(|i| score.of(tp[i], predicted[i], truth[i]));
+    match average {
+        "binary" => {
+            if labels.len() > 2 {
+                return Err(ModelError::InvalidSetting {
+                    setting: "average",
+                    value: format!("binary with {} labels", labels.len()),
+                    expected: "\"micro\", \"macro\" or \"weighted\" for more than two labels",
+                });
+            }
+            // The labels are sorted, so the greater one is last.
+            let i: usize = if pos_label.is_empty() {
+                labels.len() - 1
+            } else {
+                // Read in y_true's type, as `positive` does, so "1" finds the float label 1.0.
+                let typed: Series = Series::new("".into(), [pos_label]).cast(y_true.dtype())?.cast(&DataType::String)?;
+                let wanted: &str = typed.str()?.get(0).unwrap_or(pos_label);
+                labels.iter().position(|l| l == wanted).ok_or_else(|| ModelError::UnknownClass {
+                    class: pos_label.into(),
+                    classes: labels.clone(),
+                })?
+            };
+            Ok(score.of(tp[i], predicted[i], truth[i]))
+        }
+        "micro" => Ok(score.of(tp.iter().sum(), predicted.iter().sum(), truth.iter().sum())),
+        "macro" => Ok(per_label().sum::<f64>() / labels.len() as f64),
+        _ => Ok(per_label().zip(&truth).map(|(s, w)| s * w).sum::<f64>() / truth.iter().sum::<f64>()),
+    }
+}
+
+/// The share of the rows predicted as a label that have it: scikit-learn's `precision_score`.
+/// `average` is `"binary"` (the score of `pos_label` alone; `""` takes the greater of the two
+/// labels, as [`roc_curve`] does), `"micro"` (every row counts once), `"macro"` (the mean over
+/// the labels of both inputs) or `"weighted"` (that mean weighted by each label's rows in
+/// `y_true`). A label that is never predicted scores 0, with a warning. Labels compare as in
+/// [`accuracy_score`].
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y_true = Series::new("y".into(), [0, 1, 1, 0, 1]);
+/// let y_pred = Series::new("p".into(), [0, 1, 0, 0, 1]);
+/// assert_eq!(precision_score(&y_true, &y_pred, "", "binary"), 1.0);
+/// assert_eq!(precision_score(&y_true, &y_pred, "0", "binary"), 2.0 / 3.0);
+///
+/// let y_true = Series::new("y".into(), ["cat", "dog", "dog", "cat", "bird", "dog"]);
+/// let y_pred = Series::new("p".into(), ["cat", "dog", "cat", "cat", "dog", "dog"]);
+/// assert_eq!(precision_score(&y_true, &y_pred, "", "macro"), 4.0 / 9.0);
+/// assert_eq!(precision_score(&y_true, &y_pred, "", "weighted"), 0.555_555_555_555_555_5);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import precision_score
+/// assert precision_score([0, 1, 1, 0, 1], [0, 1, 0, 0, 1]) == 1.0
+/// assert precision_score([0, 1, 1, 0, 1], [0, 1, 0, 0, 1], pos_label=0) == 2 / 3
+/// y_true = ["cat", "dog", "dog", "cat", "bird", "dog"]
+/// y_pred = ["cat", "dog", "cat", "cat", "dog", "dog"]
+/// assert precision_score(y_true, y_pred, average="macro") == 4 / 9
+/// assert precision_score(y_true, y_pred, average="weighted") == 0.5555555555555555
+/// ```
+#[track_caller]
+pub fn precision_score(y_true: &Series, y_pred: &Series, pos_label: &str, average: &str) -> f64 {
+    try_precision_score(y_true, y_pred, pos_label, average).or_fatal()
+}
+
+/// [`precision_score`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_r2_score`]; [`ModelError::InvalidSetting`] for another `average`, or
+/// `"binary"` with more than two labels; [`ModelError::UnknownClass`] for a `pos_label` that
+/// is in neither input.
+pub fn try_precision_score(y_true: &Series, y_pred: &Series, pos_label: &str, average: &str) -> Result<f64, ModelError> {
+    try_score(Score::Precision, y_true, y_pred, pos_label, average)
+}
+
+/// The share of the rows of a label that are predicted as it: scikit-learn's `recall_score`.
+/// `pos_label` and `average` are those of [`precision_score`]; `"micro"` recall is the
+/// accuracy.
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y_true = Series::new("y".into(), [0, 1, 1, 0, 1]);
+/// let y_pred = Series::new("p".into(), [0, 1, 0, 0, 1]);
+/// assert_eq!(recall_score(&y_true, &y_pred, "", "binary"), 2.0 / 3.0);
+///
+/// let y_true = Series::new("y".into(), ["cat", "dog", "dog", "cat", "bird", "dog"]);
+/// let y_pred = Series::new("p".into(), ["cat", "dog", "cat", "cat", "dog", "dog"]);
+/// assert_eq!(recall_score(&y_true, &y_pred, "", "macro"), 0.555_555_555_555_555_5);
+/// assert_eq!(recall_score(&y_true, &y_pred, "", "micro"), accuracy_score(&y_true, &y_pred));
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import accuracy_score, recall_score
+/// assert recall_score([0, 1, 1, 0, 1], [0, 1, 0, 0, 1]) == 2 / 3
+/// y_true = ["cat", "dog", "dog", "cat", "bird", "dog"]
+/// y_pred = ["cat", "dog", "cat", "cat", "dog", "dog"]
+/// assert recall_score(y_true, y_pred, average="macro") == 0.5555555555555555
+/// assert recall_score(y_true, y_pred, average="micro") == accuracy_score(y_true, y_pred)
+/// ```
+#[track_caller]
+pub fn recall_score(y_true: &Series, y_pred: &Series, pos_label: &str, average: &str) -> f64 {
+    try_recall_score(y_true, y_pred, pos_label, average).or_fatal()
+}
+
+/// [`recall_score`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_precision_score`].
+pub fn try_recall_score(y_true: &Series, y_pred: &Series, pos_label: &str, average: &str) -> Result<f64, ModelError> {
+    try_score(Score::Recall, y_true, y_pred, pos_label, average)
+}
+
+/// The harmonic mean of precision and recall, 2·tp / (2·tp + fp + fn): scikit-learn's
+/// `f1_score`. `pos_label` and `average` are those of [`precision_score`]; `"macro"` is the
+/// mean of each label's F1, not the F1 of the mean precision and recall.
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y_true = Series::new("y".into(), [0, 1, 1, 0, 1]);
+/// let y_pred = Series::new("p".into(), [0, 1, 0, 0, 1]);
+/// assert_eq!(f1_score(&y_true, &y_pred, "", "binary"), 0.8);
+///
+/// let y_true = Series::new("y".into(), ["cat", "dog", "dog", "cat", "bird", "dog"]);
+/// let y_pred = Series::new("p".into(), ["cat", "dog", "cat", "cat", "dog", "dog"]);
+/// assert_eq!(f1_score(&y_true, &y_pred, "", "macro"), 0.488_888_888_888_888_93);
+/// assert_eq!(f1_score(&y_true, &y_pred, "", "weighted"), 0.6);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import f1_score
+/// assert f1_score([0, 1, 1, 0, 1], [0, 1, 0, 0, 1]) == 0.8
+/// y_true = ["cat", "dog", "dog", "cat", "bird", "dog"]
+/// y_pred = ["cat", "dog", "cat", "cat", "dog", "dog"]
+/// assert f1_score(y_true, y_pred, average="macro") == 0.48888888888888893
+/// assert f1_score(y_true, y_pred, average="weighted") == 0.6
+/// ```
+#[track_caller]
+pub fn f1_score(y_true: &Series, y_pred: &Series, pos_label: &str, average: &str) -> f64 {
+    try_f1_score(y_true, y_pred, pos_label, average).or_fatal()
+}
+
+/// [`f1_score`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_precision_score`].
+pub fn try_f1_score(y_true: &Series, y_pred: &Series, pos_label: &str, average: &str) -> Result<f64, ModelError> {
+    try_score(Score::F1, y_true, y_pred, pos_label, average)
+}
+
+/// A precision, recall or F1 metric with the `average` it takes.
+pub(crate) type ScoreFn = fn(&Series, &Series, &str, &str) -> Result<f64, ModelError>;
+
+/// scikit-learn's scorers `"precision"`, `"recall"` and `"f1"` (binary, the greater label
+/// positive) and their `_micro`, `_macro` and `_weighted` forms, as a metric and its average.
+pub(crate) fn score_scorer(scoring: &str) -> Option<(ScoreFn, &'static str)> {
+    let (name, average): (&str, &'static str) = match scoring.split_once('_') {
+        None => (scoring, "binary"),
+        Some((name, "micro")) => (name, "micro"),
+        Some((name, "macro")) => (name, "macro"),
+        Some((name, "weighted")) => (name, "weighted"),
+        Some(_) => return None,
+    };
+    let metric: ScoreFn = match name {
+        "precision" => try_precision_score,
+        "recall" => try_recall_score,
+        "f1" => try_f1_score,
+        _ => return None,
+    };
+    Some((metric, average))
+}
+
+/// Precision, recall, F1 and the rows in `y_true` (`support`) for each label, then the
+/// accuracy, the macro average and the weighted average: scikit-learn's
+/// `classification_report`, as a table. The columns are `label`, `precision`, `recall`,
+/// `f1-score` and `support`; the `accuracy` row has the accuracy under `f1-score`, the rows
+/// under `support` and nulls under `precision` and `recall`, as scikit-learn prints it.
+///
+/// ```
+/// use rusmlai::polars::prelude::*;
+/// use rusmlai::prelude::*;
+/// let y_true = Series::new("y".into(), ["cat", "dog", "dog", "cat", "bird", "dog"]);
+/// let y_pred = Series::new("p".into(), ["cat", "dog", "cat", "cat", "dog", "dog"]);
+/// let report: Dataset = classification_report(&y_true, &y_pred);
+/// println!("{report}");
+/// assert_eq!(report.shape(), (6, 5));
+/// assert_eq!(report.to_list("f1-score"), [0.0, 0.8, 2.0 / 3.0, 2.0 / 3.0, 0.488_888_888_888_888_93, 0.6]);
+/// assert_eq!(report.to_list("support"), [1.0, 2.0, 3.0, 6.0, 6.0, 6.0]);
+/// assert!(report.to_list("precision")[3].is_nan()); // the accuracy row
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// from sklearn.metrics import classification_report
+/// y_true = ["cat", "dog", "dog", "cat", "bird", "dog"]
+/// y_pred = ["cat", "dog", "cat", "cat", "dog", "dog"]
+/// print(classification_report(y_true, y_pred))
+/// report = classification_report(y_true, y_pred, output_dict=True)
+/// rows = ["bird", "cat", "dog", "macro avg", "weighted avg"]
+/// assert [report[r]["f1-score"] for r in rows] == [0.0, 0.8, 2 / 3, 0.48888888888888893, 0.6]
+/// assert report["accuracy"] == 2 / 3
+/// assert [report[r]["support"] for r in rows] == [1, 2, 3, 6, 6]
+/// ```
+#[track_caller]
+pub fn classification_report(y_true: &Series, y_pred: &Series) -> Dataset {
+    try_classification_report(y_true, y_pred).or_fatal()
+}
+
+/// [`classification_report`] that returns an error instead of panicking.
+///
+/// # Errors
+///
+/// The same as [`try_r2_score`].
+pub fn try_classification_report(y_true: &Series, y_pred: &Series) -> Result<Dataset, ModelError> {
+    let (mut labels, tp, predicted, truth): LabelCounts = label_counts(y_true, y_pred)?;
+    let k: usize = labels.len();
+    let rows: f64 = truth.iter().sum();
+    let scores = |score: Score| -> Vec<Option<f64>> {
+        let each: Vec<f64> = (0..k).map(|i| score.of(tp[i], predicted[i], truth[i])).collect();
+        let weighted: f64 = each.iter().zip(&truth).map(|(s, w)| s * w).sum::<f64>() / rows;
+        let accuracy: Option<f64> = matches!(score, Score::F1).then(|| tp.iter().sum::<f64>() / rows);
+        let macro_average: f64 = each.iter().sum::<f64>() / k as f64;
+        (each.into_iter().map(Some)).chain([accuracy, Some(macro_average), Some(weighted)]).collect()
+    };
+    let support: Vec<i64> = (truth.iter().map(|&t| t as i64)).chain([rows as i64; 3]).collect();
+    labels.extend(["accuracy", "macro avg", "weighted avg"].map(String::from));
+    let frame: DataFrame = DataFrame::new(k + 3, vec![
+        Series::new("label".into(), labels).into_column(),
+        Series::new("precision".into(), scores(Score::Precision)).into_column(),
+        Series::new("recall".into(), scores(Score::Recall)).into_column(),
+        Series::new("f1-score".into(), scores(Score::F1)).into_column(),
+        Series::new("support".into(), support).into_column(),
+    ])?;
+    Ok(Dataset::new(frame, ""))
+}
+
 /// What [`precision_recall_curve`] gives: the precisions, the recalls and the thresholds.
 pub type PrecisionRecallCurve = (Vec<f64>, Vec<f64>, Vec<f64>);
 
@@ -969,4 +1267,21 @@ mod tests {
         assert_eq!(try_roc_auc_score(&pair, &scores).unwrap(), 1.0);
     }
 
+    /// scikit-learn refuses `average="binary"` on three labels and a `pos_label` that is in
+    /// neither input, and gives 0 where nothing is predicted; the scorer names map to an
+    /// average.
+    #[test]
+    fn precision_recall_and_f1_refuse_what_scikit_learn_refuses() {
+        let three: Series = Series::new("y".into(), ["a", "b", "c"]);
+        let binary = try_f1_score(&three, &three, "", "binary");
+        assert!(matches!(binary, Err(ModelError::InvalidSetting { setting: "average", .. })));
+        assert!(matches!(try_f1_score(&three, &three, "", "mean"), Err(ModelError::InvalidSetting { .. })));
+        let (y, never): (Series, Series) = (s(&[0.0, 1.0]), s(&[0.0, 0.0]));
+        assert!(matches!(try_precision_score(&y, &never, "2", "binary"), Err(ModelError::UnknownClass { .. })));
+        assert_eq!(try_precision_score(&y, &never, "", "binary").unwrap(), 0.0);
+        assert_eq!(try_recall_score(&y, &never, "0", "binary").unwrap(), 1.0);
+        assert_eq!(score_scorer("f1_macro").map(|(_, a)| a), Some("macro"));
+        assert_eq!(score_scorer("recall").map(|(_, a)| a), Some("binary"));
+        assert!(score_scorer("f1_binary").is_none() && score_scorer("roc_auc").is_none());
+    }
 }

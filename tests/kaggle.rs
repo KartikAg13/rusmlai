@@ -462,14 +462,14 @@ fn boosting_adaboost_and_search_score_like_scikit_learn_on_the_kaggle_files() {
         (accuracy, loss)
     };
     // scikit-learn: 100 rounds, accuracy 0.887913, log loss 0.270137.
-    let mut model = GradientBoostingClassifier::new().early_stopping(false);
+    let mut model = HistGradientBoostingClassifier::new().early_stopping(false);
     model.fit(&train, target);
     let (accuracy, loss) = scores("boosting 100 rounds", &model);
     near("boosting accuracy", accuracy, 0.887913, 0.0015);
     near("boosting log loss", loss, 0.270137, 0.002);
     // scikit-learn, seeds 0 to 2: 100 rounds each, accuracy 0.887556 to 0.887952, log loss
     // 0.270375 to 0.270478.
-    let mut model = GradientBoostingClassifier::new();
+    let mut model = HistGradientBoostingClassifier::new();
     model.fit(&train, target);
     eprintln!("s6e2 boosting early stopping: rounds {}", model.n_iter_);
     let (accuracy, loss) = scores("boosting early stopping", &model);
@@ -517,7 +517,7 @@ fn boosting_adaboost_and_search_score_like_scikit_learn_on_the_kaggle_files() {
     // scikit-learn with the pandas category dtype, seeds 0 to 2 (kaggle-categorical.py):
     // R² 0.784208 to 0.784448, RMSE 8.8112 to 8.8161.
     let y = test.dataframe().column("exam_score").unwrap().as_materialized_series().clone();
-    let mut model = GradientBoostingRegressor::new().early_stopping(false);
+    let mut model = HistGradientBoostingRegressor::new().early_stopping(false);
     model.fit(&train, "exam_score");
     let predicted = model.predict(&test);
     let (r2, rmse) = (r2_score(&y, &predicted), root_mean_squared_error(&y, &predicted));
@@ -536,10 +536,10 @@ fn boosting_adaboost_and_search_score_like_scikit_learn_on_the_kaggle_files() {
     // scikit-learn, seeds 0 to 2: R² 0.783925 to 0.784106 (100 rounds), 0.783908 to 0.784160
     // (early stopping, 100 rounds each); RMSE 8.8171 to 8.8223.
     for (name, model) in [
-        ("100 rounds", GradientBoostingRegressor::new().early_stopping(false)),
-        ("early stopping", GradientBoostingRegressor::new()),
+        ("100 rounds", HistGradientBoostingRegressor::new().early_stopping(false)),
+        ("early stopping", HistGradientBoostingRegressor::new()),
     ] {
-        let mut model: GradientBoostingRegressor = model;
+        let mut model: HistGradientBoostingRegressor = model;
         model.fit(&train, "exam_score");
         let predicted = model.predict(&test);
         let (r2, rmse) = (r2_score(&y, &predicted), root_mean_squared_error(&y, &predicted));

@@ -42,10 +42,15 @@ version = "2.14.0"
 default-features = false
 features = ['serde']
 
+# Besides reading and the lazy engine: the expressions Kaggle notebooks build features with
+# (`Dataset::assign`): abs, concat_str, cum_*, cut / qcut, is_between, is_in, log / exp, rank,
+# rolling_* and round, and the str methods (with regex; `strings` fails to build without
+# `rolling_window`, which links the polars-time crate it needs). `dtype-u8` / `dtype-u16`: the
+# codes of the category columns `cut` makes, so `to_physical()` (pandas' `.cat.codes`) works.
 [dependencies.polars]
 version = "0.55.2"
 default-features = false
-features = ["csv", "fmt_no_tty", "lazy", "parquet", "replace", "serde"]
+features = ["abs", "concat_str", "csv", "cum_agg", "cutqcut", "dtype-u16", "dtype-u8", "fmt_no_tty", "is_between", "is_in", "lazy", "log", "parquet", "rank", "regex", "replace", "rolling_window", "round_series", "serde", "strings"]
 
 # SVG to pixels, for the PNG a chart saves (`display::png`).
 [dependencies.resvg]

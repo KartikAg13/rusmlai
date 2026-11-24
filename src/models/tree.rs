@@ -702,7 +702,7 @@ pub(crate) fn share_columns(
             Series::new(class.into(), share.collect::<Vec<f64>>()).into()
         })
         .collect();
-    Ok(dataset.derived(DataFrame::new_infer_height(columns)?))
+    Ok(dataset.reshaped(DataFrame::new_infer_height(columns)?, |_| false))
 }
 
 /// How many features a node may split on: scikit-learn's `max_features`. A whole number is a

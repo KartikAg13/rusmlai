@@ -545,7 +545,7 @@ fn compute_corr(dataset: &Dataset, columns: &[String]) -> Result<PlotResult, Plo
 
 /// Σ(da·db) / √(Σda² · Σdb²) over the rows where `a` and `b` are both present, two passes. A
 /// constant column gives 0 / 0 = NaN (no correlation), not 0.
-fn pearson(a: &str, b: &str) -> Expr {
+pub(crate) fn pearson(a: &str, b: &str) -> Expr {
     let finite = |c: &str| col(c).cast(DataType::Float64).is_finite(); // null and NaN are false
     let both: Expr = finite(a).and(finite(b));
     let centered = |c: &str| {

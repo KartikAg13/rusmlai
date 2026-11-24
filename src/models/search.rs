@@ -21,7 +21,8 @@ use crate::{
     models::{Classifier, Model, ModelError, Regressor, bad_learned, check, folds::Cv, trainable},
 };
 
-/// Every scorer name a search takes.
+/// Every scorer name a search takes, besides the precision, recall and F1 scorers
+/// (`metrics::score_scorer`).
 const SCORERS: [&str; 9] = [
     "",
     "accuracy",
@@ -179,15 +180,16 @@ pub fn try_cross_val_score<M: Model + Clone + Send + Sync>(
     })
 }
 
-fn check_scoring(scoring: &str) -> Result<(), ModelError> {
-    if SCORERS.contains(&scoring) {
+pub(crate) fn check_scoring(scoring: &str) -> Result<(), ModelError> {
+    if SCORERS.contains(&scoring) || crate::metrics::score_scorer(scoring).is_some() {
         return Ok(());
     }
     Err(ModelError::InvalidSetting {
         setting: "scoring",
         value: scoring.into(),
         expected: "\"\" (the model's own score), \"accuracy\", \"balanced_accuracy\", \
-                   \"roc_auc\", \"neg_log_loss\", \"r2\", \
+                   \"roc_auc\", \"neg_log_loss\", \"precision\", \"recall\", \"f1\" \
+                   (each also with \"_micro\", \"_macro\" or \"_weighted\"), \"r2\", \
                    \"neg_mean_squared_error\", \"neg_root_mean_squared_error\" or \
                    \"neg_mean_absolute_error\"",
     })
@@ -377,8 +379,9 @@ impl<M: Model + Clone + Send + Sync> GridSearchCV<M> {
     }
 
     /// The score that ranks the combinations, a scikit-learn scorer name: `"accuracy"`,
-    /// `"balanced_accuracy"`, `"roc_auc"` (a binary target), `"neg_log_loss"`, `"r2"`, `"neg_mean_squared_error"`, `"neg_root_mean_squared_error"`
-    /// or `"neg_mean_absolute_error"`. Higher is always better, hence the `neg_` errors.
+    /// `"balanced_accuracy"`, `"roc_auc"` (a binary target), `"neg_log_loss"`, `"precision"`,
+    /// `"recall"`, `"f1"` (each also with `_micro`, `_macro` or `_weighted`), `"r2"`,
+    /// `"neg_mean_squared_error"`, `"neg_root_mean_squared_error"` or `"neg_mean_absolute_error"`. Higher is always better, hence the `neg_` errors.
     /// Default `""`: the model's own score, R² or the accuracy.
     #[track_caller]
     pub fn scoring(mut self, scoring: &str) -> Self {

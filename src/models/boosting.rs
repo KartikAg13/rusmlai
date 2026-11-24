@@ -1,4 +1,4 @@
-//! [`GradientBoostingClassifier`] and [`GradientBoostingRegressor`]: histogram gradient
+//! [`HistGradientBoostingClassifier`] and [`HistGradientBoostingRegressor`]: histogram gradient
 //! boosting, like scikit-learn's `HistGradientBoosting*` and LightGBM.
 //!
 //! The model is a sum of small trees. Each round grows one tree (one per class for more than
@@ -1644,7 +1644,7 @@ boosted_model! {
     ///     "",
     /// );
     /// // 12 rows: a leaf of 20 rows, the default, could never split.
-    /// let mut model = GradientBoostingClassifier::new().min_samples_leaf(1);
+    /// let mut model = HistGradientBoostingClassifier::new().min_samples_leaf(1);
     /// model.fit(&ds, "passed");
     /// assert_eq!(model.n_iter_, 100);
     /// assert_eq!(model.classes_, ["no", "yes"]);
@@ -1656,7 +1656,7 @@ boosted_model! {
     /// let course: Vec<&str> = ["math", "art", "bio"].iter().flat_map(|c| [*c; 12]).collect();
     /// let passed: Vec<&str> = course.iter().map(|c| if *c == "math" { "yes" } else { "no" }).collect();
     /// let courses = Dataset::new(df!("course" => course, "passed" => passed).unwrap(), "");
-    /// let mut model = GradientBoostingClassifier::new().min_samples_leaf(1);
+    /// let mut model = HistGradientBoostingClassifier::new().min_samples_leaf(1);
     /// model.fit(&courses, "passed");
     /// assert_eq!(model.is_categorical_, [true]);
     /// assert_eq!(model.score(&courses, "passed"), 1.0);
@@ -1687,12 +1687,12 @@ boosted_model! {
     /// assert model.is_categorical_.tolist() == [True]
     /// assert model.score(courses[["course"]], courses["passed"]) == 1.0
     /// ```
-    pub struct GradientBoostingClassifier(Params = Params::new("log_loss"));
+    pub struct HistGradientBoostingClassifier(Params = Params::new("log_loss"));
 }
 
-boosting_settings!(GradientBoostingClassifier);
+boosting_settings!(HistGradientBoostingClassifier);
 
-impl GradientBoostingClassifier {
+impl HistGradientBoostingClassifier {
     /// 100 rounds of trees of 31 leaves on the log loss, with a learning rate of 0.1.
     pub fn new() -> Self {
         Self::default()
@@ -1725,7 +1725,7 @@ boosted_model! {
     ///
     /// The features (text as categories), early stopping, `n_iter_`, the settings from LightGBM
     /// and XGBoost, and the agreement with scikit-learn are those of
-    /// [`GradientBoostingClassifier`].
+    /// [`HistGradientBoostingClassifier`].
     ///
     /// scikit-learn settings with no setter: `verbose`, `scoring`. Not yet: `monotonic_cst`,
     /// `interaction_cst`, `warm_start`.
@@ -1742,21 +1742,21 @@ boosted_model! {
     ///     "",
     /// );
     /// // 8 rows: a leaf of 20 rows, the default, could never split.
-    /// let mut model = GradientBoostingRegressor::new().min_samples_leaf(1);
+    /// let mut model = HistGradientBoostingRegressor::new().min_samples_leaf(1);
     /// model.fit(&ds, "price");
     /// assert_eq!(model.n_iter_, 100);
     /// assert!(model.score(&ds, "price") > 0.999);
     ///
     /// // Fewer rounds with a higher learning rate: each tree takes a larger step.
-    /// let mut fast = GradientBoostingRegressor::new().min_samples_leaf(1).max_iter(10).learning_rate(0.5);
+    /// let mut fast = HistGradientBoostingRegressor::new().min_samples_leaf(1).max_iter(10).learning_rate(0.5);
     /// fast.fit(&ds, "price");
     /// assert!(fast.score(&ds, "price") > 0.99);
     ///
     /// // The median instead of the mean, and a Poisson loss for counts.
-    /// let mut median = GradientBoostingRegressor::new().loss("absolute_error").min_samples_leaf(1);
+    /// let mut median = HistGradientBoostingRegressor::new().loss("absolute_error").min_samples_leaf(1);
     /// median.fit(&ds, "price");
     /// assert!(median.score(&ds, "price") > 0.999);
-    /// let mut counts = GradientBoostingRegressor::new().loss("poisson").min_samples_leaf(1);
+    /// let mut counts = HistGradientBoostingRegressor::new().loss("poisson").min_samples_leaf(1);
     /// counts.fit(&ds, "price");
     /// assert!(counts.score(&ds, "price") > 0.999);
     /// ```
@@ -1784,12 +1784,12 @@ boosted_model! {
     /// counts = HistGradientBoostingRegressor(loss="poisson", min_samples_leaf=1).fit(x, y)
     /// assert counts.score(x, y) > 0.999
     /// ```
-    pub struct GradientBoostingRegressor(Params = Params::new("squared_error"));
+    pub struct HistGradientBoostingRegressor(Params = Params::new("squared_error"));
 }
 
-boosting_settings!(GradientBoostingRegressor);
+boosting_settings!(HistGradientBoostingRegressor);
 
-impl GradientBoostingRegressor {
+impl HistGradientBoostingRegressor {
     /// 100 rounds of trees of 31 leaves on the squared error, with a learning rate of 0.1.
     pub fn new() -> Self {
         Self::default()
@@ -1849,7 +1849,7 @@ mod tests {
         // scikit-learn 1.9.1 (analysis/2026-11-17/boosting/parity.py).
         let ds: Dataset = table().drop(&["class"]);
         let first: Dataset = Dataset::new(ds.dataframe().slice(0, 4), "");
-        let mut model = GradientBoostingRegressor::new().max_iter(20).min_samples_leaf(5);
+        let mut model = HistGradientBoostingRegressor::new().max_iter(20).min_samples_leaf(5);
         model.fit(&ds, "y");
         assert_eq!((model.n_iter_, leaves(&model.estimators_)), (20, 620));
         assert!(model.train_score_.is_empty(), "no early stopping on 400 rows");
@@ -1857,7 +1857,7 @@ mod tests {
         let want = [3.7246592603280133, 7.803292199923989, 20.433983080305193, 4.144797127998227];
         assert_close(&first_values(model.predict(&first)), &want, 1e-6);
 
-        let mut deep = GradientBoostingRegressor::new()
+        let mut deep = HistGradientBoostingRegressor::new()
             .max_iter(15)
             .min_samples_leaf(5)
             .max_depth(3)
@@ -1879,7 +1879,7 @@ mod tests {
     #[test]
     fn the_classifier_matches_scikit_learn_on_two_and_three_classes() {
         let ds: Dataset = binary();
-        let mut model = GradientBoostingClassifier::new().max_iter(20).min_samples_leaf(5);
+        let mut model = HistGradientBoostingClassifier::new().max_iter(20).min_samples_leaf(5);
         model.fit(&ds, "hit");
         assert_eq!((model.classes_.clone(), leaves(&model.estimators_)), (vec!["0".into(), "1".into()], 620));
         assert_close(&model.baseline, &[-0.41589273127042337], 1e-12);
@@ -1893,7 +1893,7 @@ mod tests {
         assert_close(&proba.to_list("1"), &[0.05232012755361374, 0.05646410243408288], 1e-6);
 
         let ds: Dataset = table().drop(&["y"]);
-        let mut model = GradientBoostingClassifier::new().max_iter(10).min_samples_leaf(5);
+        let mut model = HistGradientBoostingClassifier::new().max_iter(10).min_samples_leaf(5);
         model.fit(&ds, "class");
         assert_eq!((model.estimators_.len(), leaves(&model.estimators_)), (30, 930));
         let base = [-0.1468981306299441, 0.185807623195792, -0.038909492565848205];
@@ -1911,7 +1911,7 @@ mod tests {
     #[test]
     fn early_stopping_holds_rows_out_and_stops_when_they_stop_getting_better() {
         let ds: Dataset = table().drop(&["class"]);
-        let mut model = GradientBoostingRegressor::new()
+        let mut model = HistGradientBoostingRegressor::new()
             .min_samples_leaf(5)
             .max_iter(500)
             .learning_rate(0.5)
@@ -1936,15 +1936,15 @@ mod tests {
     #[test]
     fn learned_values_round_trip_and_a_broken_record_is_refused() {
         let ds: Dataset = table().drop(&["y"]);
-        let mut trained = GradientBoostingClassifier::new().max_iter(5).min_samples_leaf(5);
+        let mut trained = HistGradientBoostingClassifier::new().max_iter(5).min_samples_leaf(5);
         trained.fit(&ds, "class");
         let mut weights: Vec<u8> = Vec::new();
         trained.write_weights(&mut weights).unwrap();
-        let mut loaded: GradientBoostingClassifier = GradientBoostingClassifier::new();
+        let mut loaded: HistGradientBoostingClassifier = HistGradientBoostingClassifier::new();
         loaded.try_load(trained.learned(), &weights, "class").unwrap();
         assert_eq!(loaded.estimators_, trained.estimators_);
         assert_eq!(loaded.predict_proba(&ds).to_list("2"), trained.predict_proba(&ds).to_list("2"));
-        let mut again: GradientBoostingClassifier = GradientBoostingClassifier::new();
+        let mut again: HistGradientBoostingClassifier = HistGradientBoostingClassifier::new();
         again.try_set_params(trained.params()).unwrap();
         assert_eq!(again.params(), trained.params());
 
@@ -1954,19 +1954,19 @@ mod tests {
             trained.estimators_[14].write(&mut last).unwrap();
             last.len()
         };
-        let err: String = GradientBoostingClassifier::new()
+        let err: String = HistGradientBoostingClassifier::new()
             .try_load(trained.learned(), &weights[..cut], "class")
             .unwrap_err()
             .to_string();
         assert!(err.contains("14 trees for 5 rounds of 3 scores"), "{err}");
         // A regressor's record is not a classifier's.
-        let mut regressor = GradientBoostingRegressor::new().max_iter(2).min_samples_leaf(5);
+        let mut regressor = HistGradientBoostingRegressor::new().max_iter(2).min_samples_leaf(5);
         regressor.fit(&table().drop(&["class"]), "y");
         let mut bytes: Vec<u8> = Vec::new();
         regressor.write_weights(&mut bytes).unwrap();
-        assert!(GradientBoostingClassifier::new().try_load(regressor.learned(), &bytes, "class").is_err());
+        assert!(HistGradientBoostingClassifier::new().try_load(regressor.learned(), &bytes, "class").is_err());
         assert!(matches!(
-            GradientBoostingRegressor::new().try_predict(&ds),
+            HistGradientBoostingRegressor::new().try_predict(&ds),
             Err(ModelError::NotFitted { .. })
         ));
     }
@@ -1974,7 +1974,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "max_leaf_nodes = 1 is not valid")]
     fn a_bad_setting_panics_at_the_setter() {
-        let _ = GradientBoostingRegressor::new().max_leaf_nodes(1);
+        let _ = HistGradientBoostingRegressor::new().max_leaf_nodes(1);
     }
 
     /// `table()` plus `cat`, a text feature of 7 categories with nulls, `y2`, a target that
@@ -2013,7 +2013,7 @@ mod tests {
         ];
         for (loss, q, target, want_leaves, want_score, want) in cases {
             let data: Dataset = ds.select(&["a", "b", "c", target]);
-            let mut model = GradientBoostingRegressor::new().loss(loss).max_iter(20).min_samples_leaf(5);
+            let mut model = HistGradientBoostingRegressor::new().loss(loss).max_iter(20).min_samples_leaf(5);
             if let Some(q) = q {
                 model = model.quantile(q);
             }
@@ -2036,7 +2036,7 @@ mod tests {
             frame.with_column(cat.into()).unwrap();
             Dataset::new(frame, "")
         };
-        let mut model = GradientBoostingRegressor::new().max_iter(20).min_samples_leaf(5);
+        let mut model = HistGradientBoostingRegressor::new().max_iter(20).min_samples_leaf(5);
         model.fit(&ds, "y2");
         assert_eq!(model.is_categorical_, [false, false, false, true]);
         assert_eq!(leaves(&model.estimators_), 620);
@@ -2047,7 +2047,7 @@ mod tests {
         let want = [4.594002914562685, 6.181852188925231, 23.74716243856518, 6.652011747063418];
         assert_close(&first_values(model.predict(&unseen)), &want, 1e-6);
 
-        let mut deep = GradientBoostingRegressor::new()
+        let mut deep = HistGradientBoostingRegressor::new()
             .max_iter(10)
             .min_samples_leaf(5)
             .max_leaf_nodes(0)
@@ -2061,7 +2061,7 @@ mod tests {
         // Set splits survive the cache's bytes.
         let mut bytes: Vec<u8> = Vec::new();
         model.write_weights(&mut bytes).unwrap();
-        let mut back = GradientBoostingRegressor::new();
+        let mut back = HistGradientBoostingRegressor::new();
         back.try_load(model.learned(), &bytes, "y2").unwrap();
         assert_eq!(back.predict(&unseen), model.predict(&unseen));
         assert!(model.estimators_.iter().any(|tree| tree.is_categorical().contains(&1)));
@@ -2070,10 +2070,10 @@ mod tests {
     #[test]
     fn a_text_column_is_refused_unless_categorical() {
         let ds: Dataset = wide().select(&["a", "cat", "y"]);
-        let mut model = GradientBoostingRegressor::new().categorical_features(&[]);
+        let mut model = HistGradientBoostingRegressor::new().categorical_features(&[]);
         let err: String = model.try_fit(&ds, "y").unwrap_err().to_string();
         assert!(err.contains("feature 'cat' is str, not a number"), "{err}");
-        let few = GradientBoostingRegressor::new().max_bins(5).min_samples_leaf(5);
+        let few = HistGradientBoostingRegressor::new().max_bins(5).min_samples_leaf(5);
         let err: String = few.clone().try_fit(&ds, "y").unwrap_err().to_string();
         assert!(err.contains("categorical feature 'cat' has 7 categories; at most max_bins (5)"), "{err}");
     }
@@ -2088,7 +2088,7 @@ mod tests {
             ([("0", 1.0), ("1", 4.0)].into(), 0.9704016298494671, 0.9675, [0.0973839136712914, 0.09320632165427688, 0.3294871095757591, 0.09739050222971819]),
         ];
         for (weight, baseline, score, want) in cases {
-            let mut model = GradientBoostingClassifier::new().class_weight(weight).max_iter(20).min_samples_leaf(5);
+            let mut model = HistGradientBoostingClassifier::new().class_weight(weight).max_iter(20).min_samples_leaf(5);
             model.fit(&ds, "hit");
             assert!((model.baseline[0] - baseline).abs() < 1e-12, "{:?}", model.baseline);
             assert_eq!(model.score(&ds, "hit"), score);
@@ -2101,7 +2101,7 @@ mod tests {
         // scikit-learn's fit(sample_weight=w): a bag's bootstrap counts reach boosting so.
         let ds: Dataset = table().drop(&["class"]);
         let w: Vec<f32> = (0..400).map(|i| (i * 7 % 4) as f32).collect();
-        let mut model = GradientBoostingRegressor::new().max_iter(20).min_samples_leaf(5);
+        let mut model = HistGradientBoostingRegressor::new().max_iter(20).min_samples_leaf(5);
         model.try_train_weighted(&ds, "y", &w).unwrap().unwrap();
         assert!((model.baseline[0] - 16.182916666666667).abs() < 1e-12);
         assert_eq!(leaves(&model.estimators_), 620);
@@ -2117,36 +2117,36 @@ mod tests {
             polars::df!("x" => [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0], "y" => [1.0, 2.0, 3.0, 4.0, 11.0, 12.0, 13.0, 14.0]).unwrap(),
             "",
         );
-        let fit = |model: GradientBoostingRegressor| {
+        let fit = |model: HistGradientBoostingRegressor| {
             let mut model = model.max_iter(1).max_leaf_nodes(2).min_samples_leaf(1).learning_rate(1.0);
             model.fit(&ds, "y");
             first_values(model.predict(&ds))
         };
         // The mean is 7.5; Σg is +20 on the left and -20 on the right, over 4 rows.
-        assert_close(&fit(GradientBoostingRegressor::new()), &[2.5, 2.5, 2.5, 2.5, 12.5, 12.5, 12.5, 12.5], 1e-12);
+        assert_close(&fit(HistGradientBoostingRegressor::new()), &[2.5, 2.5, 2.5, 2.5, 12.5, 12.5, 12.5, 12.5], 1e-12);
         // L1 of 8 moves each Σg 8 towards 0: steps of 12 / 4 = 3.
-        let l1 = fit(GradientBoostingRegressor::new().l1_regularization(8.0));
+        let l1 = fit(HistGradientBoostingRegressor::new().l1_regularization(8.0));
         assert_close(&l1, &[4.5, 4.5, 4.5, 4.5, 10.5, 10.5, 10.5, 10.5], 1e-12);
         // The split takes 2 × 20² / 4 = 200 off the loss: a minimum above that keeps one leaf.
-        let flat = fit(GradientBoostingRegressor::new().min_split_gain(201.0));
+        let flat = fit(HistGradientBoostingRegressor::new().min_split_gain(201.0));
         assert_close(&flat, &[7.5; 8], 1e-12);
-        assert_close(&fit(GradientBoostingRegressor::new().min_split_gain(199.0)), &[2.5, 2.5, 2.5, 2.5, 12.5, 12.5, 12.5, 12.5], 1e-12);
+        assert_close(&fit(HistGradientBoostingRegressor::new().min_split_gain(199.0)), &[2.5, 2.5, 2.5, 2.5, 12.5, 12.5, 12.5, 12.5], 1e-12);
     }
 
     #[test]
     fn subsample_and_max_features_draw_from_the_seed() {
         let ds: Dataset = table().drop(&["class"]);
-        let fit = |model: GradientBoostingRegressor| {
+        let fit = |model: HistGradientBoostingRegressor| {
             let mut model = model.max_iter(20).min_samples_leaf(5);
             model.fit(&ds, "y");
             (first_values(model.predict(&ds)), model.score(&ds, "y"))
         };
-        let plain = fit(GradientBoostingRegressor::new());
+        let plain = fit(HistGradientBoostingRegressor::new());
         // A share of 1 draws nothing.
-        assert_eq!(fit(GradientBoostingRegressor::new().subsample(1.0).max_features(1.0)), plain);
+        assert_eq!(fit(HistGradientBoostingRegressor::new().subsample(1.0).max_features(1.0)), plain);
         for model in [
-            GradientBoostingRegressor::new().subsample(0.5),
-            GradientBoostingRegressor::new().max_features(0.5),
+            HistGradientBoostingRegressor::new().subsample(0.5),
+            HistGradientBoostingRegressor::new().max_features(0.5),
         ] {
             let (once, score) = fit(model.clone());
             assert_eq!(fit(model.clone()), (once.clone(), score), "the same seed draws the same");

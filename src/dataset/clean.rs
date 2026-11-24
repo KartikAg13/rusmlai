@@ -63,7 +63,7 @@ impl From<bool> for Scalar {
 }
 
 impl Scalar {
-    fn lit(&self) -> Expr {
+    pub(super) fn lit(&self) -> Expr {
         match self {
             Scalar::Float(v) => lit(*v),
             Scalar::Int(v) => lit(*v),
@@ -93,9 +93,10 @@ fn dtype_of(name: &str) -> Result<DataType, DatasetError> {
 }
 
 impl Dataset {
-    /// `frame` as a dataset with this one's path; the columns `kept` says are unchanged keep
-    /// their stats, the others compute theirs on first use.
-    fn reshaped(&self, frame: DataFrame, kept: impl Fn(&str) -> bool) -> Dataset {
+    /// `frame` as a dataset with this one's path (a step's result, or a model's output like
+    /// `predict_proba`); the columns `kept` says are unchanged keep their stats, the others
+    /// compute theirs on first use.
+    pub(crate) fn reshaped(&self, frame: DataFrame, kept: impl Fn(&str) -> bool) -> Dataset {
         let columns: IndexMap<String, Arc<ColumnInfo>> = (frame.columns().iter())
             .map(|c| {
                 let name: &str = c.name().as_str();
@@ -117,15 +118,33 @@ impl Dataset {
     }
 
     /// Every named column exists; `&[]` is every column.
-    fn names(&self, columns: &[&str]) -> Result<Vec<String>, DatasetError> {
+    pub(super) fn names(&self, columns: &[&str]) -> Result<Vec<String>, DatasetError> {
         match columns.is_empty() {
             true => Ok(self.columns()),
             false => columns.iter().map(|c| self.column(c).map(|_| c.to_string())).collect(),
         }
     }
 
-    fn lazy(&self) -> LazyFrame {
+    pub(super) fn lazy(&self) -> LazyFrame {
         self.dataframe.clone().lazy()
+    }
+
+    /// Whether a value of `name` is there: not null, and not NaN in a float column (pandas'
+    /// `notna`).
+    pub(super) fn present(&self, name: &str) -> Result<Expr, DatasetError> {
+        let there: Expr = col(name).is_not_null();
+        Ok(match self.column(name)?.dtype().is_float() {
+            true => there.and(col(name).is_not_nan()),
+            false => there,
+        })
+    }
+
+    /// `name` with NaN as null, so Polars skips it where pandas skips NaN.
+    pub(super) fn value(&self, name: &str) -> Result<Expr, DatasetError> {
+        Ok(match self.column(name)?.dtype().is_float() {
+            true => col(name).fill_nan(lit(NULL).cast(DataType::Float64)),
+            false => col(name),
+        })
     }
 
     /// The rows without a missing value (null, or NaN in a float column) in any of `subset`;
@@ -155,11 +174,7 @@ impl Dataset {
     pub fn try_dropna(&self, subset: &[&str]) -> Result<Dataset, DatasetError> {
         let mut keep: Expr = lit(true);
         for name in self.names(subset)? {
-            let mut present: Expr = col(&name).is_not_null();
-            if matches!(self.column(&name)?.dtype(), DataType::Float32 | DataType::Float64) {
-                present = present.and(col(&name).is_not_nan());
-            }
-            keep = keep.and(present);
+            keep = keep.and(self.present(&name)?);
         }
         let frame: DataFrame = self.lazy().filter(keep).collect()?;
         Ok(self.reshaped(frame, |_| false))
@@ -465,13 +480,7 @@ impl Dataset {
             ..Default::default()
         };
         // NaN sorts as a missing value, last, as in pandas (Polars puts it above every number).
-        let exprs: Vec<Expr> = names
-            .iter()
-            .map(|name| match self.column(name).map(|c| c.dtype().is_float()) {
-                Ok(true) => col(name).fill_nan(lit(NULL).cast(DataType::Float64)),
-                _ => col(name),
-            })
-            .collect();
+        let exprs: Vec<Expr> = names.iter().map(|name| self.value(name)).collect::<Result<_, _>>()?;
         let frame: DataFrame = self.lazy().sort_by_exprs(exprs, options).collect()?;
         Ok(self.reshaped(frame, |_| false))
     }

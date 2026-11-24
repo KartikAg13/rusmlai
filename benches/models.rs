@@ -445,7 +445,7 @@ fn forest(c: &mut Criterion) {
     g.finish();
 }
 
-/// `GradientBoosting*` (histogram boosting), `AdaBoostClassifier` and `GridSearchCV` on the
+/// `HistGradientBoosting*` (histogram boosting), `AdaBoostClassifier` and `GridSearchCV` on the
 /// matrices of [`tree`]: the settings of `bench-python/boosting.py`. Boosting runs its 100
 /// rounds without early stopping, so both sides grow the same number of trees; one bench
 /// times the default, with early stopping, as a user gets it.
@@ -456,17 +456,17 @@ fn boost(c: &mut Criterion) {
     g.sample_size(10).measurement_time(seconds());
     let leaves = |trees: &[Tree]| -> usize { trees.iter().map(Tree::n_leaves).sum() };
 
-    let regressor = || GradientBoostingRegressor::new().early_stopping(false);
-    let mut fitted: GradientBoostingRegressor = regressor();
+    let regressor = || HistGradientBoostingRegressor::new().early_stopping(false);
+    let mut fitted: HistGradientBoostingRegressor = regressor();
     fitted.fit(&ds1, TARGET);
     eprintln!(
-        "fit/GradientBoostingRegressor: rounds {} leaves {} train r2 {:.6}",
+        "fit/HistGradientBoostingRegressor: rounds {} leaves {} train r2 {:.6}",
         fitted.n_iter_,
         leaves(&fitted.estimators_),
         fitted.score(&ds1, TARGET)
     );
-    bench_fit(&mut g, "fit/GradientBoostingRegressor", &s6e1, TARGET, regressor);
-    g.bench_function("predict/GradientBoostingRegressor", |b| {
+    bench_fit(&mut g, "fit/HistGradientBoostingRegressor", &s6e1, TARGET, regressor);
+    g.bench_function("predict/HistGradientBoostingRegressor", |b| {
         b.iter(|| black_box(fitted.predict(&ds1)))
     });
 
@@ -474,38 +474,38 @@ fn boost(c: &mut Criterion) {
     // scikit-learn's side gives them the pandas category dtype.
     let csv: String = format!("{}/tests/fixtures/s6e1/train.csv", env!("CARGO_MANIFEST_DIR"));
     let raw: DataFrame = Dataset::new(common::load(&PathBuf::from(csv)), "").drop(&["id"]).dataframe().clone();
-    let mut fitted: GradientBoostingRegressor = regressor();
+    let mut fitted: HistGradientBoostingRegressor = regressor();
     fitted.fit(&Dataset::new(raw.clone(), ""), TARGET);
     eprintln!(
-        "fit/GradientBoostingRegressor/categorical: rounds {} leaves {} train r2 {:.6}",
+        "fit/HistGradientBoostingRegressor/categorical: rounds {} leaves {} train r2 {:.6}",
         fitted.n_iter_,
         leaves(&fitted.estimators_),
         fitted.score(&Dataset::new(raw.clone(), ""), TARGET)
     );
-    bench_fit(&mut g, "fit/GradientBoostingRegressor/categorical", &raw, TARGET, regressor);
+    bench_fit(&mut g, "fit/HistGradientBoostingRegressor/categorical", &raw, TARGET, regressor);
 
-    let classifier = || GradientBoostingClassifier::new().early_stopping(false);
-    let mut fitted: GradientBoostingClassifier = classifier();
+    let classifier = || HistGradientBoostingClassifier::new().early_stopping(false);
+    let mut fitted: HistGradientBoostingClassifier = classifier();
     fitted.fit(&ds2, HEART);
     eprintln!(
-        "fit/GradientBoostingClassifier: rounds {} leaves {} train accuracy {:.6}",
+        "fit/HistGradientBoostingClassifier: rounds {} leaves {} train accuracy {:.6}",
         fitted.n_iter_,
         leaves(&fitted.estimators_),
         fitted.score(&ds2, HEART)
     );
-    bench_fit(&mut g, "fit/GradientBoostingClassifier", &s6e2, HEART, classifier);
-    g.bench_function("predict_proba/GradientBoostingClassifier", |b| {
+    bench_fit(&mut g, "fit/HistGradientBoostingClassifier", &s6e2, HEART, classifier);
+    g.bench_function("predict_proba/HistGradientBoostingClassifier", |b| {
         b.iter(|| black_box(fitted.predict_proba(&ds2)))
     });
-    let mut early: GradientBoostingClassifier = GradientBoostingClassifier::new();
+    let mut early: HistGradientBoostingClassifier = HistGradientBoostingClassifier::new();
     early.fit(&ds2, HEART);
     eprintln!(
-        "fit/GradientBoostingClassifier/early_stopping: rounds {} leaves {} train accuracy {:.6}",
+        "fit/HistGradientBoostingClassifier/early_stopping: rounds {} leaves {} train accuracy {:.6}",
         early.n_iter_,
         leaves(&early.estimators_),
         early.score(&ds2, HEART)
     );
-    bench_fit(&mut g, "fit/GradientBoostingClassifier/early_stopping", &s6e2, HEART, GradientBoostingClassifier::new);
+    bench_fit(&mut g, "fit/HistGradientBoostingClassifier/early_stopping", &s6e2, HEART, HistGradientBoostingClassifier::new);
 
     let ada = || AdaBoostClassifier::new();
     let mut fitted: AdaBoostClassifier = ada();

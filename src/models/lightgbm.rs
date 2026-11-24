@@ -1,7 +1,7 @@
 //! [`LGBMRegressor`] and [`LGBMClassifier`]: gradient boosting with LightGBM's names,
 //! defaults and split rules, on rusmlai's histogram tree engine (`models/hist.rs`).
 //!
-//! The engine is the one of [`GradientBoostingRegressor`](crate::models::GradientBoostingRegressor);
+//! The engine is the one of [`HistGradientBoostingRegressor`](crate::models::HistGradientBoostingRegressor);
 //! these types only map LightGBM's settings onto it ([`Library`]): leaf-wise trees of 31
 //! leaves, a learning rate of 0.1, leaves of at least 20 rows (`min_child_samples`), counted as
 //! LightGBM counts them, from each side's share of the hessian.

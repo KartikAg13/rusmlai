@@ -1,5 +1,6 @@
 //! [`LinearRegression`], [`Ridge`], [`Lasso`] and [`ElasticNet`]: scikit-learn's four linear
-//! regressors, each a type with scikit-learn's settings and defaults, over one solve.
+//! regressors, each a type with scikit-learn's settings and defaults, over one solve; [`RidgeCV`]
+//! and [`RidgeClassifier`] on the same solve.
 //!
 //! One pass computes XᵀX and Xᵀy of the centered data, read in chunks of rows. Every solve then
 //! works on that small p × p matrix:
@@ -12,8 +13,9 @@
 //!   updates"), the same steps and the same stopping rule (duality gap) as scikit-learn's
 //!   `enet_coordinate_descent_gram`. Each step costs O(p), not O(rows).
 
-use faer::{Mat, Side};
-use polars::prelude::{NamedFrom, Series};
+use faer::{Accum, Mat, Par, Side, linalg::matmul::matmul};
+use indexmap::IndexMap;
+use polars::prelude::{Column, DataFrame, DataType, IdxCa, IdxSize, NamedFrom, Series};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
@@ -22,8 +24,9 @@ use crate::{
     error::{OrFatal, warn},
     metadata::models::CachedRun,
     models::{
-        Model, ModelError, Regressor, bad_learned, check,
-        design::{DesignMatrix, scores},
+        Classifier, ClassWeight, Model, ModelError, Regressor, bad_learned, check, class_labels,
+        design::{DesignMatrix, col, scores},
+        label_target,
     },
     preprocess::one_of,
 };
@@ -1163,6 +1166,410 @@ impl Regressor for RidgeCV {
     }
 }
 
+/// `RidgeClassifier`'s settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RidgeClassifierParams {
+    alpha: f64,
+    fit_intercept: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    class_weight: Option<ClassWeight>,
+}
+
+/// What `RidgeClassifier` learns, as the model cache stores it.
+#[derive(Serialize, Deserialize)]
+struct RidgeClassifierLearned {
+    classes_: Vec<String>,
+    coef_: Vec<Vec<f64>>,
+    intercept_: Vec<f64>,
+    feature_names_in_: Vec<String>,
+    /// The target's type, so `predict` gives labels of that type.
+    dtype: DataType,
+}
+
+/// The weighted sums of one pass over the rows, each feature minus its plain mean: Σw, Σw·x,
+/// Σw·xxᵀ, and for each class Σw and Σw·x.
+struct ClassSums {
+    total: f64,
+    x: Vec<f64>,
+    gram: Mat<f64>,
+    class_total: Vec<f64>,
+    class_x: Vec<Vec<f64>>,
+}
+
+/// Fits a [`RidgeClassifier`]: the target as +1 for a class and −1 for the others (one column
+/// for `classes_[1]` with two classes), and one Ridge per column over one weighted XᵀX.
+fn fit_ridge_classifier(
+    params: &RidgeClassifierParams,
+    dataset: &Dataset,
+    target: &str,
+    sample_weight: Option<&[f32]>,
+) -> Result<RidgeClassifierLearned, ModelError> {
+    let (classes, codes): (Vec<String>, Series) = label_target(dataset, target)?;
+    let y: Vec<u32> = codes.f64()?.into_no_null_iter().map(|c| c as u32).collect();
+    let code_sum: f64 = y.iter().map(|&c| f64::from(c)).sum();
+    let matrix: DesignMatrix = DesignMatrix::try_with_target(dataset, target, codes, code_sum)?;
+    let of_class: Vec<f64> = match &params.class_weight {
+        Some(class_weight) => class_weight.exact(&classes, &y, None)?,
+        None => vec![1.0; classes.len()],
+    };
+    let weight = |i: usize| of_class[y[i] as usize] * sample_weight.map_or(1.0, |w| f64::from(w[i]));
+    let (p, k): (usize, usize) = (matrix.names.len(), classes.len());
+    let offset: Vec<f64> = if params.fit_intercept { matrix.means().0 } else { vec![0.0; p] };
+    let size: usize = crate::models::design::CHUNK.min(matrix.rows().max(1));
+    let zero = || {
+        let sums = ClassSums {
+            total: 0.0,
+            x: vec![0.0; p],
+            gram: Mat::zeros(p, p),
+            class_total: vec![0.0; k],
+            class_x: vec![vec![0.0; p]; k],
+        };
+        (sums, Mat::<f64>::zeros(size, p))
+    };
+    let parts = matrix.fold(&offset, false, zero, |(sums, scaled), start, part| {
+        let len: usize = part.nrows();
+        let w: Vec<f64> = (start..start + len).map(weight).collect();
+        for (i, wi) in w.iter().enumerate() {
+            sums.total += wi;
+            sums.class_total[y[start + i] as usize] += wi;
+        }
+        for j in 0..p {
+            let (values, out) = (col(part, j), &mut scaled.col_as_slice_mut(j)[..len]);
+            for i in 0..len {
+                let wx: f64 = w[i] * values[i];
+                out[i] = w[i].sqrt() * values[i];
+                sums.x[j] += wx;
+                sums.class_x[y[start + i] as usize][j] += wx;
+            }
+        }
+        let rows = scaled.as_ref().subrows(0, len);
+        matmul(sums.gram.as_mut(), Accum::Add, rows.transpose(), rows, 1.0, Par::Seq);
+    });
+    let mut all: ClassSums = zero().0;
+    for (part, _) in parts {
+        all.total += part.total;
+        all.gram += part.gram;
+        all.x.iter_mut().zip(&part.x).for_each(|(a, b)| *a += b);
+        all.class_total.iter_mut().zip(&part.class_total).for_each(|(a, b)| *a += b);
+        for (a, b) in all.class_x.iter_mut().zip(&part.class_x) {
+            a.iter_mut().zip(b).for_each(|(a, b)| *a += b);
+        }
+    }
+    if all.total <= 0.0 {
+        return Err(ModelError::InvalidSetting {
+            setting: "sample_weight",
+            value: "a total of 0".into(),
+            expected: "weights whose total is above 0",
+        });
+    }
+    // Centered on the weighted means: Σw(x − x̄)(x − x̄)ᵀ = Σw·xxᵀ − (Σw·x)(Σw·x)ᵀ / Σw.
+    let shift: Vec<f64> = all.x.iter().map(|s| s / all.total).collect();
+    if params.fit_intercept {
+        for a in 0..p {
+            for b in 0..p {
+                all.gram[(a, b)] -= all.x[a] * shift[b];
+            }
+        }
+    }
+    let outputs: Vec<usize> = if k == 2 { vec![1] } else { (0..k).collect() };
+    let (mut coef_, mut intercept_): (Vec<Vec<f64>>, Vec<f64>) = (Vec::new(), Vec::new());
+    for c in outputs {
+        // Σw(x − x̄)(y − ȳ) with y = ±1: 2·Σ_c w·x − (1 + ȳ)·Σw·x, and 1 + ȳ = 2·Σ_c w / Σw.
+        let share: f64 = if params.fit_intercept { 2.0 * all.class_total[c] / all.total } else { 1.0 };
+        let v: Mat<f64> = Mat::from_fn(p, 1, |j, _| 2.0 * all.class_x[c][j] - share * all.x[j]);
+        let w: Vec<f64> = solve(all.gram.clone(), &v, params.alpha, matrix.rows())?.coef;
+        intercept_.push(if params.fit_intercept {
+            let x_mean = |j: usize| offset[j] + shift[j];
+            share - 1.0 - (0..p).map(|j| x_mean(j) * w[j]).sum::<f64>()
+        } else {
+            0.0
+        });
+        coef_.push(w);
+    }
+    Ok(RidgeClassifierLearned {
+        classes_: classes,
+        coef_,
+        intercept_,
+        feature_names_in_: matrix.names,
+        dtype: dataset.column(target)?.dtype().clone(),
+    })
+}
+
+/// A classifier from Ridge regression: scikit-learn's `RidgeClassifier`. Each class becomes a
+/// target of +1 for its rows and −1 for the others, a [`Ridge`] fits each target (one for
+/// `classes_[1]` with two classes), and a row goes to the class with the highest score. Fast
+/// and steady with many correlated features; a common stacking and baseline model.
+///
+/// Like scikit-learn it gives scores, not probabilities: [`RidgeClassifier::decision_function`]
+/// gives them, and `predict_proba` returns [`ModelError::NoProbabilities`]. The `"roc_auc"`
+/// scorer uses the scores, as scikit-learn's does.
+///
+/// `fit` costs one pass over the rows for a weighted XᵀX and every class's Xᵀy, then one small
+/// solve per class (scikit-learn's `solver="cholesky"`, its default on dense data). `fit` with
+/// row weights (scikit-learn's `sample_weight`) is [`Model::try_train_weighted`], as for the
+/// trees.
+///
+/// scikit-learn settings with no setter: `solver`, `max_iter`, `tol` and `random_state` (one
+/// exact solve here; they only change the iterative solvers), `copy_X`. Not yet: `positive`.
+///
+/// ```
+/// use rusmlai::prelude::*;
+/// let ds = Dataset::new(
+///     df!(
+///         "x1" => [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+///         "x2" => [2.5, 1.0, 3.5, 2.0, 6.0, 4.5, 7.5, 5.0, 9.0, 8.5],
+///         "y" => ["a", "a", "b", "a", "b", "c", "b", "c", "c", "c"],
+///     )
+///     .unwrap(),
+///     "",
+/// );
+/// let mut model = RidgeClassifier::new().alpha(0.5);
+/// model.fit(&ds, "y");
+/// assert_eq!(model.classes_, ["a", "b", "c"]);
+/// assert!((model.coef_[1][1] - 0.397_428_676_161_610_8).abs() < 1e-12);
+/// assert!((model.intercept_[2] + 1.552_780_981_501_846_3).abs() < 1e-12);
+/// assert_eq!(model.score(&ds, "y"), 0.9);
+/// assert_eq!(model.decision_function(&ds).columns(), ["a", "b", "c"]);
+///
+/// // A rare class that counts as much as a frequent one:
+/// let mut balanced = RidgeClassifier::new().class_weight("balanced");
+/// balanced.fit(&ds, "y");
+/// assert!((balanced.intercept_[0] - 1.033_218_525_030_272_6).abs() < 1e-12);
+/// ```
+///
+/// Python:
+///
+/// ```python
+/// import pandas as pd
+/// from sklearn.linear_model import RidgeClassifier
+/// ds = pd.DataFrame({
+///     "x1": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+///     "x2": [2.5, 1.0, 3.5, 2.0, 6.0, 4.5, 7.5, 5.0, 9.0, 8.5],
+///     "y": ["a", "a", "b", "a", "b", "c", "b", "c", "c", "c"],
+/// })
+/// X = ds[["x1", "x2"]]
+/// model = RidgeClassifier(alpha=0.5).fit(X, ds["y"])
+/// assert model.classes_.tolist() == ["a", "b", "c"]
+/// assert abs(model.coef_[1][1] - 0.3974286761616108) < 1e-12
+/// assert abs(model.intercept_[2] + 1.5527809815018463) < 1e-12
+/// assert model.score(X, ds["y"]) == 0.9
+/// assert model.decision_function(X).shape == (10, 3)
+///
+/// balanced = RidgeClassifier(class_weight="balanced").fit(X, ds["y"])
+/// assert abs(balanced.intercept_[0] - 1.0332185250302726) < 1e-12
+/// ```
+#[derive(Debug, Clone)]
+pub struct RidgeClassifier {
+    params: RidgeClassifierParams,
+    /// The classes `fit` saw, sorted.
+    pub classes_: Vec<String>,
+    /// The coefficients, in the order of `feature_names_in_`: one row for `classes_[1]` with
+    /// two classes, one row per class with more.
+    pub coef_: Vec<Vec<f64>>,
+    /// The constant term of each row of `coef_` (0 with `fit_intercept(false)`).
+    pub intercept_: Vec<f64>,
+    /// The feature columns `fit` saw.
+    pub feature_names_in_: Vec<String>,
+    /// How many features `fit` saw.
+    pub n_features_in_: usize,
+    dtype: Option<DataType>,
+    target: Option<String>,
+    run: Option<CachedRun>,
+}
+
+impl Default for RidgeClassifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RidgeClassifier {
+    /// `alpha = 1`, an intercept, every class weighing the same.
+    pub fn new() -> Self {
+        Self {
+            params: RidgeClassifierParams { alpha: 1.0, fit_intercept: true, class_weight: None },
+            classes_: Vec::new(),
+            coef_: Vec::new(),
+            intercept_: Vec::new(),
+            feature_names_in_: Vec::new(),
+            n_features_in_: 0,
+            dtype: None,
+            target: None,
+            run: None,
+        }
+    }
+
+    /// The strength of the L2 penalty, on [`Ridge`]'s scale: 0 or more, larger is stronger.
+    /// Default 1.
+    #[track_caller]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        at_least_zero("alpha", alpha);
+        self.params.alpha = alpha;
+        self
+    }
+
+    /// `true` (the default) learns a constant term, never penalized.
+    pub fn fit_intercept(mut self, fit_intercept: bool) -> Self {
+        self.params.fit_intercept = fit_intercept;
+        self
+    }
+
+    /// How much each class counts ([`ClassWeight`]): `"balanced"`, or pairs such as
+    /// `[("yes", 5.0)]`. Default: every class the same.
+    #[track_caller]
+    pub fn class_weight(mut self, class_weight: impl Into<ClassWeight>) -> Self {
+        self.params.class_weight = Some(class_weight.into().checked(false));
+        self
+    }
+
+    /// The score of each row for each row of `coef_`, one column each, named after its class
+    /// (one column, `classes_[1]`, with two classes): scikit-learn's `decision_function`. A
+    /// row goes to the class with the highest score (with two classes: to `classes_[1]` above
+    /// 0).
+    #[track_caller]
+    pub fn decision_function(&self, dataset: &Dataset) -> Dataset {
+        self.try_decision_function(dataset).or_fatal()
+    }
+
+    /// [`RidgeClassifier::decision_function`] that returns an error instead of panicking.
+    ///
+    /// # Errors
+    ///
+    /// [`ModelError::NotFitted`] before `fit`, and a missing or non-number feature column.
+    pub fn try_decision_function(&self, dataset: &Dataset) -> Result<Dataset, ModelError> {
+        let z: Vec<Vec<f64>> = self.decision(dataset)?;
+        let names: &[String] = if z.len() == 1 { &self.classes_[1..] } else { &self.classes_ };
+        let columns: Vec<Column> =
+            names.iter().zip(z).map(|(class, scores)| Series::new(class.into(), scores).into()).collect();
+        Ok(dataset.reshaped(DataFrame::new_infer_height(columns)?, |_| false))
+    }
+
+    fn decision(&self, dataset: &Dataset) -> Result<Vec<Vec<f64>>, ModelError> {
+        if self.target.is_none() {
+            return Err(ModelError::NotFitted { model: "RidgeClassifier" });
+        }
+        let coef: Vec<&[f64]> = self.coef_.iter().map(Vec::as_slice).collect();
+        scores(dataset, &self.feature_names_in_, &coef, &self.intercept_)
+    }
+
+    fn set_learned(&mut self, l: RidgeClassifierLearned, target: &str) {
+        self.n_features_in_ = l.feature_names_in_.len();
+        (self.classes_, self.coef_, self.intercept_) = (l.classes_, l.coef_, l.intercept_);
+        (self.feature_names_in_, self.dtype) = (l.feature_names_in_, Some(l.dtype));
+        self.target = Some(target.into());
+    }
+}
+
+impl Model for RidgeClassifier {
+    fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
+    fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
+        let learned: RidgeClassifierLearned = fit_ridge_classifier(&self.params, dataset, target, None)?;
+        self.set_learned(learned, target);
+        Ok(())
+    }
+
+    fn try_train_weighted(&mut self, dataset: &Dataset, target: &str, weights: &[f32]) -> Option<Result<(), ModelError>> {
+        let fitted = fit_ridge_classifier(&self.params, dataset, target, Some(weights));
+        Some(fitted.map(|learned| self.set_learned(learned, target)))
+    }
+
+    fn params(&self) -> Value {
+        serde_json::to_value(&self.params).unwrap_or_default()
+    }
+
+    fn learned(&self) -> Value {
+        serde_json::to_value(RidgeClassifierLearned {
+            classes_: self.classes_.clone(),
+            coef_: self.coef_.clone(),
+            intercept_: self.intercept_.clone(),
+            feature_names_in_: self.feature_names_in_.clone(),
+            dtype: self.dtype.clone().unwrap_or(DataType::String),
+        })
+        .unwrap_or_default()
+    }
+
+    fn try_load(&mut self, learned: Value, _: &[u8], target: &str) -> Result<(), ModelError> {
+        let l: RidgeClassifierLearned = serde_json::from_value(learned)?;
+        let outputs: usize = if l.classes_.len() == 2 { 1 } else { l.classes_.len() };
+        let features: usize = l.feature_names_in_.len();
+        if l.classes_.len() < 2
+            || l.coef_.len() != outputs
+            || l.intercept_.len() != outputs
+            || l.coef_.iter().any(|row| row.len() != features)
+        {
+            return Err(bad_learned(format!(
+                "{} classes, {} coefficient rows and {} intercepts for {features} features",
+                l.classes_.len(),
+                l.coef_.len(),
+                l.intercept_.len()
+            )));
+        }
+        self.set_learned(l, target);
+        Ok(())
+    }
+
+    fn try_set_params(&mut self, params: Value) -> Result<(), ModelError> {
+        self.params = serde_json::from_value(params)?;
+        Ok(())
+    }
+
+    fn try_evaluate(&self, dataset: &Dataset, target: &str, scoring: &str) -> Result<f64, ModelError> {
+        crate::models::evaluate_classifier(self, dataset, target, scoring)
+    }
+
+    fn try_predict_method(&self, dataset: &Dataset, method: &str) -> Result<Dataset, ModelError> {
+        match method {
+            "decision_function" => self.try_decision_function(dataset),
+            _ => crate::models::predict_classifier(self, dataset, method),
+        }
+    }
+
+    fn is_classifier(&self) -> bool {
+        true
+    }
+
+    fn run(&self) -> Option<&CachedRun> {
+        self.run.as_ref()
+    }
+
+    fn set_run(&mut self, run: Option<CachedRun>) {
+        self.run = run;
+    }
+}
+
+impl Classifier for RidgeClassifier {
+    /// `classes_[1]` where the score is above 0 with two classes, else the class with the
+    /// highest score (the first one on a tie), like scikit-learn.
+    fn try_predict(&self, dataset: &Dataset) -> Result<Series, ModelError> {
+        let z: Vec<Vec<f64>> = self.decision(dataset)?;
+        let picks: Vec<IdxSize> = (0..dataset.height())
+            .map(|i| match z.as_slice() {
+                [only] => IdxSize::from(only[i] > 0.0),
+                _ => (1..z.len()).fold(0, |best, k| if z[k][i] > z[best][i] { k } else { best }) as IdxSize,
+            })
+            .collect();
+        let dtype: &DataType = self.dtype.as_ref().unwrap_or(&DataType::String);
+        let labels: Series = class_labels(self.target.as_deref().unwrap_or_default(), &self.classes_, dtype)?;
+        Ok(labels.take(&IdxCa::from_vec("".into(), picks))?)
+    }
+
+    fn try_predict_proba(&self, _: &Dataset) -> Result<Dataset, ModelError> {
+        Err(ModelError::NoProbabilities { model: "RidgeClassifier" })
+    }
+
+    /// The accuracy, which the cache records alone: there is no probability for a log loss.
+    fn try_score(&self, dataset: &Dataset, target: &str) -> Result<f64, ModelError> {
+        let y: &Series = dataset.column(target)?.as_materialized_series();
+        let accuracy: f64 = crate::metrics::try_accuracy_score(y, &self.try_predict(dataset)?)?;
+        crate::metadata::models::score(self, dataset, IndexMap::from([("accuracy".to_string(), accuracy)]));
+        Ok(accuracy)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use polars::df;
@@ -1379,4 +1786,76 @@ mod tests {
         }
     }
 
+
+    /// 10 rows, three classes; scikit-learn 1.9.1's `RidgeClassifier` on the same rows.
+    fn classes() -> Dataset {
+        Dataset::new(
+            df!(
+                "x1" => [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+                "x2" => [2.5, 1.0, 3.5, 2.0, 6.0, 4.5, 7.5, 5.0, 9.0, 8.5],
+                "y" => ["a", "a", "b", "a", "b", "c", "b", "c", "c", "c"],
+                "two" => ["no", "no", "no", "yes", "no", "yes", "no", "yes", "yes", "yes"],
+            )
+            .unwrap(),
+            "",
+        )
+    }
+
+    fn assert_rows(got: &[Vec<f64>], want: &[&[f64]]) {
+        for (g, w) in got.iter().zip(want) {
+            for (a, b) in g.iter().zip(*w) {
+                assert!((a - b).abs() < 1e-12, "{got:?}, want {want:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ridge_classifier_matches_scikit_learn() {
+        let ds: Dataset = classes();
+        let (three, two): (Dataset, Dataset) = (ds.drop(&["two"]), ds.drop(&["y"]));
+        let mut binary = RidgeClassifier::new();
+        binary.fit(&two, "two");
+        assert_rows(&binary.coef_, &[&[0.522_911_051_212_937_8, -0.372_272_796_623_099]]);
+        assert!((binary.intercept_[0] + 1.033_260_438_386_818).abs() < 1e-12);
+        let scores: Dataset = binary.decision_function(&two);
+        assert_eq!(scores.columns(), ["yes"]);
+        assert!((scores.to_list("yes")[1] + 0.359_711_132_584_041_4).abs() < 1e-12);
+        assert_eq!(binary.score(&two, "two"), 1.0);
+        assert_eq!(binary.try_evaluate(&two, "two", "roc_auc").unwrap(), 1.0);
+        let proba = binary.try_predict_proba(&two);
+        assert!(matches!(proba, Err(ModelError::NoProbabilities { model: "RidgeClassifier" })));
+
+        let mut balanced = RidgeClassifier::new().class_weight("balanced");
+        balanced.fit(&three, "y");
+        assert_rows(&balanced.coef_, &[
+            &[-0.046_460_745_949_303_04, -0.236_887_177_827_895_56],
+            &[-0.338_100_706_959_517_66, 0.403_013_566_319_102_35],
+            &[0.384_561_452_908_821, -0.166_126_388_491_207_06],
+        ]);
+        let weights: [f32; 10] = [1.0, 2.0, 1.0, 0.5, 1.0, 1.0, 3.0, 1.0, 1.0, 2.0];
+        balanced.try_train_weighted(&three, "y", &weights).unwrap().unwrap();
+        assert_rows(&balanced.coef_, &[
+            &[-0.045_495_540_391_967_95, -0.225_674_601_522_865_4],
+            &[-0.430_364_123_771_518_34, 0.526_185_236_461_254_8],
+            &[0.475_859_664_163_486_13, -0.300_510_634_938_389_25],
+        ]);
+        assert!((balanced.intercept_[1] + 0.540_349_129_850_762_2).abs() < 1e-12);
+
+        let mut plain = RidgeClassifier::new().fit_intercept(false).class_weight([("c", 2.0)]);
+        plain.fit(&three, "y");
+        assert_rows(&plain.coef_, &[
+            &[-0.036_381_468_335_512_826, -0.087_022_853_228_719_04],
+            &[-0.343_031_944_703_906, 0.298_866_679_120_744_16],
+            &[0.286_614_982_252_943_74, -0.257_519_148_141_230_84],
+        ]);
+        assert_eq!(plain.intercept_, [0.0; 3]);
+
+        // Through a Pipeline, as the S6E4 notebook uses it: the scores and roc_auc reach the model.
+        let prep = crate::preprocess::ColumnTransformer::new()
+            .add("num", &["x1", "x2"], crate::steps![crate::preprocess::StandardScaler::new()]);
+        let mut pipe = crate::pipeline::Pipeline::new(prep, RidgeClassifier::new().class_weight("balanced"));
+        pipe.try_train(&two, "two").unwrap();
+        assert_eq!(pipe.try_predict_method(&two, "decision_function").unwrap().columns(), ["yes"]);
+        assert_eq!(pipe.try_evaluate(&two, "two", "roc_auc").unwrap(), 1.0);
+    }
 }

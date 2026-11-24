@@ -1,4 +1,5 @@
-"""pandas' side of `benches/clean.rs`: python3 bench-python/clean.py [repeats]
+"""pandas' side of `benches/clean.rs` (cleaning and the `dataset/ops.rs` methods):
+python3 bench-python/clean.py [repeats]
 
 The same rows (S6E1, 630,000 rows, in memory) and calls. pandas runs each on one thread; the
 timing is the median of `repeats` runs (7 by default) after a warm-up.
@@ -30,6 +31,37 @@ def main() -> None:
         "sample": lambda: ds.sample(100_000, random_state=42),
         "sort_values": lambda: ds.sort_values("exam_score", ascending=False),
         "value_counts": lambda: ds["course"].value_counts(),
+    }
+    means = ds.groupby("course").agg({"exam_score": "mean"}).reset_index()
+    number = ds.select_dtypes("number")
+    works |= {
+        "merge": lambda: ds.merge(means, on="course", how="left"),
+        "concat": lambda: pd.concat([ds, ds]),
+        "groupby": lambda: ds.groupby(["course", "gender"])
+        .agg({"exam_score": "mean", "study_hours": "max", "id": "count"})
+        .reset_index(),
+        "pivot_table": lambda: ds.pivot_table(values="exam_score", index="course", columns="gender", aggfunc="mean"),
+        "melt": lambda: ds.melt(id_vars=["id"], value_vars=["study_hours", "sleep_hours"]),
+        "get_dummies": lambda: pd.get_dummies(ds, columns=["course"]),
+        "isna": lambda: ds.isna(),
+        "ffill": lambda: ds.ffill(),
+        "sum": lambda: ds.sum(numeric_only=True),
+        "mean": lambda: ds.mean(numeric_only=True),
+        "median": lambda: ds.median(numeric_only=True),
+        "std": lambda: ds.std(numeric_only=True),
+        "quantile": lambda: ds.quantile(0.25, numeric_only=True),
+        "count": lambda: ds.count(),
+        "nunique": lambda: ds.nunique(),
+        "corr": lambda: ds.corr(numeric_only=True),
+        "unique": lambda: ds["course"].unique(),
+        "nlargest": lambda: ds.nlargest(100, "exam_score"),
+        "select_dtypes": lambda: ds.select_dtypes("number"),
+        "assign": lambda: ds.assign(older=ds["age"] + 1),
+        "replace": lambda: ds.replace({"course": {"b.sc": "bsc"}}),
+        "clip": lambda: number.clip(0, 50),
+        "round": lambda: ds.round(1),
+        "shift": lambda: ds.shift(1),
+        "diff": lambda: number.diff(),
     }
     print(f"median of {repeats} runs", file=sys.stderr)
     for name, work in works.items():

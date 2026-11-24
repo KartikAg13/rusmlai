@@ -1,7 +1,7 @@
 //! [`XGBRegressor`] and [`XGBClassifier`]: gradient boosting with XGBoost's names, defaults
 //! and split rules, on rusmlai's histogram tree engine (`models/hist.rs`).
 //!
-//! The engine is the one of [`GradientBoostingRegressor`](crate::models::GradientBoostingRegressor);
+//! The engine is the one of [`HistGradientBoostingRegressor`](crate::models::HistGradientBoostingRegressor);
 //! these types only map XGBoost's settings onto it ([`Library`]), so code ported from
 //! `xgboost.XGBRegressor` keeps its settings and gets XGBoost's trees: depth-wise trees of
 //! depth 6, a learning rate of 0.3, `reg_lambda` 1 and `min_child_weight` 1. A row goes left

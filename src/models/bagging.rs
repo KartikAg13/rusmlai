@@ -92,7 +92,7 @@ fn train_copy<M: Model>(
         return trained;
     }
     let frame = part.dataframe.take(&IdxCa::from_vec("".into(), picked))?;
-    copy.try_train(&part.derived(frame), target)
+    copy.try_train(&part.reshaped(frame, |_| false), target)
 }
 
 /// `p.n_estimators` copies of `base`, each trained on its own sample, on the Polars pool.

@@ -89,9 +89,11 @@ mod tests {
         dataset::Dataset,
         models::{
             AdaBoostClassifier, CatBoostClassifier, CatBoostRegressor, Classifier, DecisionTreeClassifier, DecisionTreeRegressor,
-            DummyRegressor, ElasticNet, ExtraTreesClassifier, ExtraTreesRegressor, GradientBoostingClassifier,
-            GradientBoostingRegressor, LGBMClassifier, LGBMRegressor, Lasso, LinearRegression, LogisticRegression,
-            RandomForestClassifier, RandomForestRegressor, Regressor, Ridge, RidgeCV, XGBClassifier, XGBRegressor,
+            DummyRegressor, ElasticNet, ExtraTreesClassifier, ExtraTreesRegressor, HistGradientBoostingClassifier,
+            HistGradientBoostingRegressor, LGBMClassifier, LGBMRegressor, Lasso, LinearRegression, LogisticRegression,
+            LogisticRegressionCV,
+            RandomForestClassifier, RandomForestRegressor, Regressor, Ridge, RidgeCV, RidgeClassifier, XGBClassifier,
+            XGBRegressor,
         },
         pipeline::Pipeline,
         preprocess::{ColumnTransformer, OneHotEncoder, SimpleImputer, StandardScaler, TargetEncoder},
@@ -144,19 +146,30 @@ mod tests {
         regressor(DecisionTreeRegressor::new().max_depth(4), &ds);
         regressor(RandomForestRegressor::new().n_estimators(5), &ds);
         regressor(ExtraTreesRegressor::new().n_estimators(5), &ds);
-        regressor(GradientBoostingRegressor::new().max_iter(10), &ds);
+        regressor(HistGradientBoostingRegressor::new().max_iter(10), &ds);
         regressor(XGBRegressor::new().n_estimators(10), &ds);
         regressor(LGBMRegressor::new().n_estimators(10).min_child_samples(5), &ds);
         regressor(CatBoostRegressor::new().iterations(10), &ds);
         classifier(LogisticRegression::new(), &ds);
+        classifier(LogisticRegressionCV::new().Cs(3), &ds);
         classifier(DecisionTreeClassifier::new(), &ds);
         classifier(RandomForestClassifier::new().n_estimators(5), &ds);
         classifier(ExtraTreesClassifier::new().n_estimators(5), &ds);
-        classifier(GradientBoostingClassifier::new().max_iter(10), &ds);
+        classifier(HistGradientBoostingClassifier::new().max_iter(10), &ds);
         classifier(XGBClassifier::new().n_estimators(10), &ds);
         classifier(LGBMClassifier::new().n_estimators(10).min_child_samples(5), &ds);
         classifier(CatBoostClassifier::new().iterations(10), &ds);
         classifier(AdaBoostClassifier::new(), &ds);
+        // No probabilities: its scores and settings come back.
+        let x: Dataset = ds.drop(&["y"]);
+        let mut ridge: RidgeClassifier = RidgeClassifier::new().class_weight("balanced");
+        ridge.try_train(&x, "class").unwrap();
+        let file = path("RidgeClassifier");
+        ridge.try_save(&file).unwrap();
+        let loaded: RidgeClassifier = RidgeClassifier::try_load_from(&file).unwrap();
+        assert_eq!(loaded.decision_function(&x).dataframe(), ridge.decision_function(&x).dataframe());
+        assert_eq!((loaded.params(), loaded.predict(&x)), (ridge.params(), ridge.predict(&x)));
+        std::fs::remove_file(file).unwrap();
     }
 
     #[test]
