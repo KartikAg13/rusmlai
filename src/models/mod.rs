@@ -539,7 +539,7 @@ pub trait Regressor: Model {
 /// A model that predicts a class, like scikit-learn's classifiers.
 ///
 /// `fit` takes the target column as it is: text, integers or booleans. The classes are its
-/// distinct values, sorted like [`LabelEncoder`](crate::preprocess::LabelEncoder) sorts them
+/// distinct values, sorted like [`LabelEncoder`] sorts them
 /// (`classes_`). `predict` gives one class per row, in the target's own type, `predict_proba`
 /// one probability column per class, named after the class, and `score` is the accuracy
 /// ([`accuracy_score`]). The cache records each score with the log loss ([`log_loss`]).

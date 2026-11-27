@@ -1,3 +1,5 @@
+//! [`OrFatal`], which turns a `try_*` result into the panicking public API, and the `warn` channel for non-fatal problems.
+
 use std::{
     fmt::Display,
     sync::{Mutex, PoisonError},

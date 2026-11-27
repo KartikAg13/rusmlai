@@ -862,6 +862,7 @@ impl CatBoostParams {
             validation_fraction: 0.1,
             n_iter_no_change: 10,
             tol: 0.0,
+            keep_best: false,
             base_score: (!from_average).then_some(0.0),
             symmetric: Some(Symmetric {
                 depth: self.depth,
@@ -1120,7 +1121,7 @@ boosted_model! {
     /// system settings. Not yet: losses other than `"RMSE"`, `grow_policy` (`"Depthwise"`,
     /// `"Lossguide"`), `boosting_type="Ordered"`, combinations of categories
     /// (`max_ctr_complexity` is 1), `GreedyLogSum` borders for a feature with more than 254
-    /// values, early stopping (it needs an `eval_set`), `leaf_estimation_iterations` above 1,
+    /// values, `fit_eval_set` and early stopping, `leaf_estimation_iterations` above 1,
     /// `monotone_constraints`, text and embedding features.
     ///
     /// ```

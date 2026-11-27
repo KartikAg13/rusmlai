@@ -4,7 +4,8 @@
 //! `bench-python/linear.py` give scikit-learn. The `cache_*` benches time the model cache. The
 //! trees (`tree`) run against `bench-python/trees.py`, the forests and bags (`forest`) against
 //! `bench-python/forests.py`, boosting, AdaBoost and the grid search (`boost`) against
-//! `bench-python/boosting.py`.
+//! `bench-python/boosting.py`, and `XGB*` / `LGBM*` (`gbm`) against XGBoost and LightGBM in
+//! `bench-python/gbm.py`. `RidgeClassifier` and `LogisticRegressionCV` are in `logistic`.
 
 mod common;
 
@@ -189,6 +190,34 @@ fn logistic(c: &mut Criterion) {
     // predict, predict_proba, the accuracy and the log loss, on a text target.
     g.bench_function("score/LogisticRegression", |b| {
         b.iter(|| black_box(fitted.score(&features, "Heart Disease")))
+    });
+
+    // scikit-learn's defaults on the same matrix (`bench-python/linear.py`): RidgeClassifier
+    // (alpha 1), LogisticRegressionCV (10 values of C, 5 stratified folds, accuracy, refit).
+    let mut ridge: RidgeClassifier = RidgeClassifier::new();
+    ridge.fit(&features, "Heart Disease");
+    let mut cv: LogisticRegressionCV = LogisticRegressionCV::new();
+    cv.fit(&features, "Heart Disease");
+    eprintln!(
+        "RidgeClassifier: train accuracy {:.6}; LogisticRegressionCV: C_ {} train accuracy {:.6}",
+        ridge.score(&features, "Heart Disease"),
+        cv.C_,
+        cv.score(&features, "Heart Disease")
+    );
+    g.bench_function("fit/RidgeClassifier", |b| {
+        b.iter(|| {
+            let mut model: RidgeClassifier = RidgeClassifier::new();
+            model.fit(&features, "Heart Disease");
+            black_box(model)
+        })
+    });
+    g.bench_function("predict/RidgeClassifier", |b| b.iter(|| black_box(ridge.predict(&features))));
+    g.bench_function("fit/LogisticRegressionCV", |b| {
+        b.iter(|| {
+            let mut model: LogisticRegressionCV = LogisticRegressionCV::new();
+            model.fit(&features, "Heart Disease");
+            black_box(model)
+        })
     });
     g.finish();
 }
@@ -534,5 +563,69 @@ fn boost(c: &mut Criterion) {
     g.finish();
 }
 
-criterion_group!(benches, linear, logistic, tree, forest, boost);
+fn leaves(trees: &[Tree]) -> usize {
+    trees.iter().map(Tree::n_leaves).sum()
+}
+
+/// S6E1 as read, without `id`: the 7 text columns stay text, so a booster splits them as
+/// categories.
+fn raw_s6e1() -> DataFrame {
+    let csv: String = format!("{}/tests/fixtures/s6e1/train.csv", env!("CARGO_MANIFEST_DIR"));
+    Dataset::new(common::load(&PathBuf::from(csv)), "").drop(&["id"]).dataframe().clone()
+}
+
+/// One booster regressor: its fit and predict on the codes of [`tree_tables`], and its fit on
+/// the text columns as categories.
+fn boosted_regressor<M: Regressor>(
+    g: &mut BenchmarkGroup<'_, WallTime>,
+    name: &str,
+    (codes, raw): (&DataFrame, &DataFrame),
+    make: impl Fn() -> M,
+    trees: impl Fn(&M) -> &[Tree],
+) {
+    let ds: Dataset = Dataset::new(codes.clone(), "");
+    let mut fitted: M = make();
+    fitted.fit(&ds, TARGET);
+    eprintln!("fit/{name}: leaves {} train r2 {:.6}", leaves(trees(&fitted)), fitted.score(&ds, TARGET));
+    bench_fit(g, &format!("fit/{name}"), codes, TARGET, &make);
+    g.bench_function(format!("predict/{name}"), |b| b.iter(|| black_box(fitted.predict(&ds))));
+    let ds: Dataset = Dataset::new(raw.clone(), "");
+    let mut fitted: M = make();
+    fitted.fit(&ds, TARGET);
+    eprintln!("fit/{name}/categorical: leaves {} train r2 {:.6}", leaves(trees(&fitted)), fitted.score(&ds, TARGET));
+    bench_fit(g, &format!("fit/{name}/categorical"), raw, TARGET, &make);
+}
+
+/// One booster classifier: its fit and predict_proba on S6E2.
+fn boosted_classifier<M: Classifier>(
+    g: &mut BenchmarkGroup<'_, WallTime>,
+    name: &str,
+    s6e2: &DataFrame,
+    make: impl Fn() -> M,
+    trees: impl Fn(&M) -> &[Tree],
+) {
+    let ds: Dataset = Dataset::new(s6e2.clone(), "");
+    let mut fitted: M = make();
+    fitted.fit(&ds, HEART);
+    eprintln!("fit/{name}: leaves {} train accuracy {:.6}", leaves(trees(&fitted)), fitted.score(&ds, HEART));
+    bench_fit(g, &format!("fit/{name}"), s6e2, HEART, &make);
+    g.bench_function(format!("predict_proba/{name}"), |b| b.iter(|| black_box(fitted.predict_proba(&ds))));
+}
+
+/// `XGBRegressor` / `XGBClassifier` and `LGBMRegressor` / `LGBMClassifier` with their
+/// libraries' defaults (100 rounds) on the matrices of [`tree`], against XGBoost 3.4 and
+/// LightGBM 4.7 themselves in `bench-python/gbm.py`.
+fn gbm(c: &mut Criterion) {
+    let (s6e1, s6e2): (DataFrame, DataFrame) = tree_tables();
+    let raw: DataFrame = raw_s6e1();
+    let mut g = c.benchmark_group("gbm");
+    g.sample_size(10).measurement_time(seconds());
+    boosted_regressor(&mut g, "XGBRegressor", (&s6e1, &raw), XGBRegressor::new, |m| &m.estimators_);
+    boosted_classifier(&mut g, "XGBClassifier", &s6e2, XGBClassifier::new, |m| &m.estimators_);
+    boosted_regressor(&mut g, "LGBMRegressor", (&s6e1, &raw), LGBMRegressor::new, |m| &m.estimators_);
+    boosted_classifier(&mut g, "LGBMClassifier", &s6e2, LGBMClassifier::new, |m| &m.estimators_);
+    g.finish();
+}
+
+criterion_group!(benches, linear, logistic, tree, forest, boost, gbm);
 criterion_main!(benches);

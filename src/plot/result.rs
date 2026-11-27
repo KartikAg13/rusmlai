@@ -1,3 +1,5 @@
+//! [`PlotResult`]: the numbers a chart caches (never its SVG).
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// The cached numbers of a chart, not its SVG. A missing group is NaN, never 0.

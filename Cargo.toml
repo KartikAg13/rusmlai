@@ -54,7 +54,7 @@ features = ["abs", "concat_str", "csv", "cum_agg", "cutqcut", "dtype-u16", "dtyp
 
 # SVG to pixels, for the PNG a chart saves (`display::png`).
 [dependencies.resvg]
-version = "0.48.1"
+version = "0.50.0"
 default-features = false
 features = ["memmap-fonts", "system-fonts", "text"]
 

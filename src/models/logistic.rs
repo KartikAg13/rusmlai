@@ -2,7 +2,7 @@
 //! Newton's method on the weighted Gram matrix; [`LogisticRegressionCV`] picks its `C` by
 //! cross-validation.
 //!
-//! Each Newton step costs one pass over the rows ([`DesignMatrix::fold`]): chunk by chunk, the
+//! Each Newton step costs one pass over the rows (`DesignMatrix::fold`): chunk by chunk, the
 //! probabilities, the log loss, the gradient Xᵀ(p − y) and the Hessian Xᵀ·diag(h)·X. The step
 //! then solves that small system. A fit takes a handful of passes. The line search and the
 //! stopping rule are scikit-learn's `solver="newton-cholesky"`, so both take the same steps.

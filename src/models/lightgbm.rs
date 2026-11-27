@@ -2,7 +2,7 @@
 //! defaults and split rules, on rusmlai's histogram tree engine (`models/hist.rs`).
 //!
 //! The engine is the one of [`HistGradientBoostingRegressor`](crate::models::HistGradientBoostingRegressor);
-//! these types only map LightGBM's settings onto it ([`Library`]): leaf-wise trees of 31
+//! these types only map LightGBM's settings onto it (`Library`): leaf-wise trees of 31
 //! leaves, a learning rate of 0.1, leaves of at least 20 rows (`min_child_samples`), counted as
 //! LightGBM counts them, from each side's share of the hessian.
 
@@ -60,6 +60,9 @@ pub(crate) struct LgbmParams {
     class_weight: Option<ClassWeight>,
     is_unbalance: bool,
     scale_pos_weight: f64,
+    /// `None`: no early stopping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    early_stopping_rounds: Option<usize>,
 }
 
 impl Default for LgbmParams {
@@ -91,6 +94,7 @@ impl Default for LgbmParams {
             class_weight: None,
             is_unbalance: false,
             scale_pos_weight: 1.0,
+            early_stopping_rounds: None,
         }
     }
 }
@@ -137,10 +141,11 @@ impl Library for LgbmParams {
             subsample_freq: self.subsample_freq,
             rules: Rules::Lightgbm,
             seed: self.random_state.unwrap_or(0),
-            early_stopping: false,
+            early_stopping: self.early_stopping_rounds.is_some(),
             validation_fraction: 0.1,
-            n_iter_no_change: 10,
+            n_iter_no_change: self.early_stopping_rounds.unwrap_or(10),
             tol: 0.0,
+            keep_best: true,
             base_score: (!self.boost_from_average).then_some(0.0),
             symmetric: None,
         }
@@ -219,6 +224,16 @@ impl Library for LgbmParams {
 macro_rules! lgbm_settings {
     ($model:ident) => {
         impl $model {
+            /// Stop when the loss on the eval set has not got better for this many rounds,
+            /// then keep the trees up to the best round, as LightGBM does (predict then uses the
+            /// best round). Needs [`Self::fit_eval_set`]. Default: off, every round trains.
+            #[track_caller]
+            pub fn early_stopping_rounds(mut self, early_stopping_rounds: usize) -> Self {
+                check(early_stopping_rounds > 0, "early_stopping_rounds", early_stopping_rounds, "1 or more");
+                self.params.early_stopping_rounds = Some(early_stopping_rounds);
+                self
+            }
+
             /// The rounds of trees. Default 100.
             #[track_caller]
             pub fn n_estimators(mut self, n_estimators: usize) -> Self {
@@ -396,7 +411,7 @@ boosted_model! {
     /// `extra_trees`, `path_smooth`, `monotone_constraints`, `interaction_constraints`,
     /// LightGBM's own settings for categories (`cat_smooth`, `cat_l2`, `max_cat_threshold`,
     /// `max_cat_to_onehot`, `min_data_per_group`: a text column is split as scikit-learn
-    /// splits it), early stopping (it needs an `eval_set`), and LightGBM's bucket for 0 and
+    /// splits it), and LightGBM's bucket for 0 and
     /// its buckets of a feature with more than `max_bin` values (rusmlai's are quantiles of
     /// the rows).
     ///

@@ -1,3 +1,5 @@
+//! [`PlotError`]: why a chart or a chart option failed.
+
 use polars::error::PolarsError;
 use thiserror::Error;
 

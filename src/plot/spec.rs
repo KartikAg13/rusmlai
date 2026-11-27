@@ -1,3 +1,5 @@
+//! [`PlotSpec`]: what a chart asks for, and the key of the chart cache.
+
 use polars::lazy::dsl::Expr;
 use serde::{Deserialize, Serialize};
 

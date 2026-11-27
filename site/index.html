@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>rusmlai: pandas and seaborn names in Rust</title>
+  <title>rusmlai: pandas, scikit-learn and seaborn names in Rust</title>
   <meta name="description" content="A Rust library for tabular machine learning, with the names you know from pandas, scikit-learn and seaborn. Polars underneath. Works in .rs programs and Jupyter notebooks.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/atkinson-hyperlegible-next-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
@@ -16,6 +16,7 @@
     <a class="wordmark" href="index.html"><span class="mark" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></span>rusmlai</a>
     <nav class="site-nav" aria-label="Site">
       <a href="docs/index.html">Guide</a>
+      <a href="docs/models.html">Models</a>
       <a href="docs/charts.html">Charts</a>
       <a href="https://github.com/KartikAg13/rusmlai">GitHub</a>
     </nav>
@@ -23,13 +24,13 @@
 
   <main class="page">
     <section class="hero">
-      <h1>The pandas and seaborn names you know, in Rust.</h1>
-      <p class="lede">rusmlai reads a CSV, works out every column’s statistics once and keeps them next to the file. Then each chart is one line. Polars does the heavy work, and the same code runs in a <code>.rs</code> program and in a Jupyter notebook.</p>
+      <h1>The pandas, scikit-learn and seaborn names you know, in Rust.</h1>
+      <p class="lede">rusmlai reads a CSV, works out every column’s statistics once and keeps them next to the file. Then each chart, fit and score is one line. Polars does the heavy work, and the same code runs in a <code>.rs</code> program and in a Jupyter notebook.</p>
       <div class="actions">
         <button class="install" type="button" data-copy="cargo add rusmlai"><code>cargo add rusmlai</code><span>Copy</span></button>
         <a href="docs/index.html">Read the guide</a>
       </div>
-      <p class="status">Early days: loading data, column statistics and 18 charts work now. Preprocessing and models come next.</p>
+      <p class="status">Loading, cleaning, 18 data charts, preprocessing, linear models, trees, forests, four boosting engines, metrics and model charts work now. kNN, naive Bayes and unsupervised models come in 1.2.</p>
     </section>
 
     <figure class="cell">
@@ -70,10 +71,10 @@ ds.countplot("course", "");</code></pre>
 
     <section class="section" aria-labelledby="names">
       <h2 id="names">Write it the way you would in Python</h2>
-      <p>Methods keep their pandas and seaborn names, and defaults follow scikit-learn. Rust adds the types and the <code>&amp;</code>. An empty string means “not used”, the way <code>hue=None</code> does.</p>
+      <p>Methods keep their pandas, scikit-learn and seaborn names, and defaults follow scikit-learn. Rust adds the types and the <code>&amp;</code>. A model takes the table and the name of the target column. An empty string means “not used”, the way <code>hue=None</code> does.</p>
       <div class="table-wrap">
         <table class="names">
-          <thead><tr><th scope="col">pandas / seaborn</th><th scope="col">rusmlai</th></tr></thead>
+          <thead><tr><th scope="col">pandas / scikit-learn / seaborn</th><th scope="col">rusmlai</th></tr></thead>
           <tbody>
             <tr><td><code>pd.read_csv("train.csv")</code></td><td><code>read_csv("train.csv")</code></td></tr>
             <tr><td><code>df.describe()</code></td><td><code>ds.describe()</code></td></tr>
@@ -83,6 +84,9 @@ ds.countplot("course", "");</code></pre>
             <tr><td><code>sns.boxplot(df, x="course", y="exam_score")</code></td><td><code>ds.boxplot("course", "exam_score", "")</code></td></tr>
             <tr><td><code>sns.heatmap(df.corr())</code></td><td><code>ds.corrplot()</code></td></tr>
             <tr><td><code>plt.title("Scores")</code></td><td><code>.title("Scores")</code></td></tr>
+            <tr><td><code>train_test_split(df, test_size=0.2, random_state=42)</code></td><td><code>train_test_split(&amp;ds, 0.2, 42, "")</code></td></tr>
+            <tr><td><code>RandomForestRegressor(n_estimators=200).fit(X, y)</code></td><td><code>RandomForestRegressor::new().n_estimators(200).fit(&amp;train, "exam_score")</code></td></tr>
+            <tr><td><code>cross_val_score(model, X, y, cv=5, scoring="roc_auc")</code></td><td><code>cross_val_score(&amp;model, &amp;ds, "target", 5, "roc_auc")</code></td></tr>
           </tbody>
         </table>
       </div>
@@ -91,7 +95,7 @@ ds.countplot("course", "");</code></pre>
 
     <section class="section" aria-labelledby="charts">
       <h2 id="charts">One line per chart, and options that chain</h2>
-      <p>Eighteen charts, drawn as SVG with values on hover. In a notebook a chart shows itself. In a program it saves itself as a PNG next to your data. All of these came from the same 630,000-row file.</p>
+      <p>Eighteen data charts and five model charts, drawn as SVG with values on hover. In a notebook a chart shows itself. In a program it saves itself as a PNG next to your data. All of these came from the same 630,000-row file.</p>
       <div class="gallery">
         <figure>
           <img src="img/score-shapes-by-course.png" width="1440" height="938" loading="lazy" alt="Violin plots of exam score for each of the seven courses, sorted by median, each in its own palette color.">
@@ -126,28 +130,42 @@ ds.countplot("course", "");</code></pre>
       <p class="speed-note">A 630,000-row, 13-column Kaggle CSV on an i5-1135G7 laptop. The scale is logarithmic: each grid step is ten times longer than the one before.</p>
     </section>
 
+    <section class="section" aria-labelledby="fits">
+      <h2 id="fits">Faster than scikit-learn, on one core and on all</h2>
+      <p>A model ships only when its fit is not slower than scikit-learn’s, on one thread and on every core. The gain on one core comes from fewer passes over the data. The gain on all cores comes from running in parallel what scikit-learn leaves on one thread.</p>
+      <ol class="speed">
+        <li><span class="op"><code>AdaBoostClassifier</code> fit</span><span class="track"><span class="fill fit" style="--w: 69%"></span></span><span class="t">24×</span></li>
+        <li><span class="op"><code>GridSearchCV</code> of a decision tree</span><span class="track"><span class="fill fit" style="--w: 61.5%"></span></span><span class="t">17×</span></li>
+        <li><span class="op">Linear models fit</span><span class="track"><span class="fill fit" style="--w: 47.7%"></span></span><span class="t">9×</span></li>
+        <li><span class="op"><code>DecisionTreeRegressor</code> fit</span><span class="track"><span class="fill fit" style="--w: 28.4%"></span></span><span class="t">3.7×</span></li>
+        <li><span class="op">Random forest fit</span><span class="track"><span class="fill fit" style="--w: 20.7%"></span></span><span class="t">2.6×</span></li>
+        <li><span class="op"><code>HistGradientBoosting</code> fit</span><span class="track"><span class="fill fit" style="--w: 5.9%"></span></span><span class="t">1.3×</span></li>
+        <li aria-hidden="true"><span class="scale fits"><span>1×</span><span>10×</span><span>100×</span></span></li>
+      </ol>
+      <p class="speed-note">The lowest speed-up measured for each, against scikit-learn 1.9 with the same rows and settings, on an i5-1135G7 laptop. The scale is logarithmic. A long grid search of a random forest took 49.5 minutes against 4 hours 48 minutes and found the same best settings. Against XGBoost and LightGBM themselves, some fits and predicts are still slower: the numbers are in the <a href="docs/models.html#speed">Models chapter</a>.</p>
+    </section>
+
     <section class="section" aria-labelledby="status">
       <h2 id="status">Where rusmlai stands</h2>
       <div class="split">
         <div>
           <h3>Works now</h3>
           <ul>
-            <li><code>read_csv</code>, <code>head</code>, <code>tail</code>, <code>info</code>, <code>describe</code>, <code>select</code>, <code>drop</code></li>
-            <li>Column statistics, cached next to the CSV</li>
-            <li>18 charts with seaborn’s names, cached the same way</li>
-            <li>HTML tables and inline charts in Jupyter through evcxr</li>
-            <li>Scalers, encoders, imputers, <code>ColumnTransformer</code>, <code>Pipeline</code> and <code>train_test_split</code></li>
-            <li>Linear and logistic regression, decision trees, random forests, bagging, gradient boosting and AdaBoost, faster than scikit-learn on one core and on all cores</li>
-            <li><code>GridSearchCV</code> and <code>cross_val_score</code></li>
-            <li>A cache of every fitted model, and an offline journal of the runs</li>
+            <li>CSV, TSV, Parquet, Excel, SQLite, PostgreSQL and MySQL readers, with column statistics cached next to the file</li>
+            <li>pandas methods for cleaning and reshaping: <code>dropna</code>, <code>fillna</code>, <code>merge</code>, <code>groupby</code>, <code>pivot_table</code> and 40 more</li>
+            <li>18 charts with seaborn’s names, cached the same way, and HTML tables and inline charts in Jupyter through evcxr</li>
+            <li>Scalers, encoders, <code>TargetEncoder</code>, <code>ColumnTransformer</code> and <code>Pipeline</code></li>
+            <li>Linear and logistic models, trees, forests, Extra Trees, bagging, AdaBoost and histogram boosting</li>
+            <li><code>XGB*</code>, <code>LGBM*</code> and <code>CatBoost*</code> with each library’s names and defaults</li>
+            <li><code>GridSearchCV</code>, <code>cross_val_score</code>, stacking and hill climbing</li>
+            <li>A cache of every fitted model, an offline journal of the runs, and <code>save</code> / <code>load</code></li>
           </ul>
         </div>
         <div>
-          <h3>Coming in 1.0</h3>
+          <h3>Coming in 1.2</h3>
           <ul>
             <li>kNN and naive Bayes</li>
-            <li><code>KMeans</code> and <code>PCA</code></li>
-            <li>Saved models that load in Python as scikit-learn objects</li>
+            <li><code>KMeans</code>, <code>PCA</code> and other unsupervised models</li>
           </ul>
         </div>
       </div>
@@ -158,6 +176,7 @@ ds.countplot("course", "");</code></pre>
     <span>rusmlai, tabular machine learning in Rust</span>
     <nav aria-label="Footer">
       <a href="docs/index.html">Guide</a>
+      <a href="docs/models.html">Models</a>
       <a href="docs/names.html">Python names</a>
       <a href="https://github.com/KartikAg13/rusmlai">GitHub</a>
     </nav>

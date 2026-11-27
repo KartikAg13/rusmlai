@@ -1,3 +1,5 @@
+//! [`DatasetError`]: why reading or changing a [`Dataset`](crate::dataset::Dataset) failed.
+
 use polars::error::PolarsError;
 use thiserror::Error;
 

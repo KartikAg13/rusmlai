@@ -257,7 +257,7 @@ impl Dataset {
     /// `estimator` (mean, median, min, max, std, count, sum) draws only that one. With
     /// `column = ""` it draws one bar per numeric column, for `estimator` ("mean" when `""`).
     /// Text columns and identifiers (an `id` column, see
-    /// [`ColumnRole`](crate::metadata::dataset::role::ColumnRole)) are skipped, and count is the
+    /// [`ColumnRole`]) are skipped, and count is the
     /// number of values that aren't null.
     ///
     /// Options: the ones of [`Dataset::bar`].

@@ -2,7 +2,7 @@
 
 A Rust library for tabular machine learning, with the names you know from pandas, scikit-learn and seaborn. Tables run on [Polars](https://docs.pola.rs/). The same code works in a `.rs` program and in a Jupyter notebook through the [evcxr](https://github.com/evcxr/evcxr) kernel.
 
-rusmlai is young, but it works end to end today: load a CSV, look at it, draw 18 kinds of chart, preprocess, split, train linear and logistic models, score them, and compare every run in a training journal. On a 630,000-row Kaggle file the linear models train 9× to 26× faster than scikit-learn, and logistic regression 1.3× to 5.6× faster, with the same coefficients. Decision trees train 3.5× to 33× faster, forests and bags 2.7× to 5.4×, AdaBoost 24× to 41× and a grid search 17×. Histogram gradient boosting trains 1.17× to 1.86× faster. The scores are scikit-learn's.
+rusmlai is young, but it works end to end today: load a CSV, look at it, clean it, draw 18 kinds of chart, preprocess, split, train linear models, trees, forests and boosters, score them, and compare every run in a training journal. On a 630,000-row Kaggle file the linear models train 9× to 26× faster than scikit-learn, and logistic regression 1.3× to 5.6× faster, with the same coefficients. Decision trees train 3.5× to 33× faster, forests and bags 2.7× to 5.4×, AdaBoost 24× to 41× and a grid search 17×. Histogram gradient boosting trains 1.17× to 1.86× faster. The scores are scikit-learn's.
 
 ## Install
 
@@ -110,11 +110,11 @@ fn main() {
 }
 ```
 
-- Transformers: `StandardScaler`, `MinMaxScaler`, `MaxAbsScaler`, `RobustScaler`, `SimpleImputer`, `OneHotEncoder`, `OrdinalEncoder` and `LabelEncoder`, with scikit-learn's settings. They learn from the cached stats, so a fit makes no pass over the data.
-- Models: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `RidgeCV`, `LogisticRegression` (two or more classes), `LogisticRegressionCV`, `RidgeClassifier` and `DummyRegressor`. They give scikit-learn's coefficients. `DecisionTreeClassifier` and `DecisionTreeRegressor` grow scikit-learn's tree when each feature has at most 255 distinct values (more values go into 255 buckets), and take missing values as they are. `RandomForestClassifier` and `RandomForestRegressor` grow many of those trees on all cores, and `BaggingClassifier` and `BaggingRegressor` average copies of any model. `HistGradientBoostingClassifier` and `HistGradientBoostingRegressor` are scikit-learn's histogram gradient boosting, tree for tree: early stopping, its five regression losses (squared and absolute error, quantile, Poisson, gamma), class weights, and text columns as categorical features with no encoding; plus LightGBM's `subsample`, `l1_regularization` and `min_split_gain`. `AdaBoostClassifier` is SAMME on decision trees. The tree and forest classifiers take `class_weight`, and every tree model takes `max_leaf_nodes`. Their scores agree with scikit-learn's as two of its own seeds agree.
+- Transformers: `StandardScaler`, `MinMaxScaler`, `MaxAbsScaler`, `RobustScaler`, `SimpleImputer`, `OneHotEncoder`, `OrdinalEncoder`, `LabelEncoder`, `CountEncoder`, `TargetEncoder`, `KBinsDiscretizer` and `QuantileTransformer`, with scikit-learn's settings. They learn from the cached stats, so a fit makes no pass over the data.
+- Models: `LinearRegression`, `Ridge`, `Lasso`, `ElasticNet`, `RidgeCV`, `LogisticRegression` (two or more classes), `LogisticRegressionCV`, `RidgeClassifier` and `DummyRegressor`. They give scikit-learn's coefficients. `DecisionTreeClassifier` and `DecisionTreeRegressor` grow scikit-learn's tree when each feature has at most 255 distinct values (more values go into 255 buckets), and take missing values as they are. `RandomForestClassifier` and `RandomForestRegressor` grow many of those trees on all cores, and `BaggingClassifier` and `BaggingRegressor` average copies of any model. `HistGradientBoostingClassifier` and `HistGradientBoostingRegressor` are scikit-learn's histogram gradient boosting, tree for tree: early stopping, its five regression losses (squared and absolute error, quantile, Poisson, gamma), class weights, and text columns as categorical features with no encoding; plus LightGBM's `subsample`, `l1_regularization` and `min_split_gain`. `AdaBoostClassifier` is SAMME on decision trees. `ExtraTreesClassifier` and `ExtraTreesRegressor` draw random splits. `XGBRegressor` / `XGBClassifier`, `LGBMRegressor` / `LGBMClassifier` and `CatBoostRegressor` / `CatBoostClassifier` keep their library's names, defaults and split rules. The boosters take an eval set (`fit_eval_set`), and XGB and LGBM take `early_stopping_rounds`, which stop where XGBoost and LightGBM stop. `StackingClassifier`, `StackingRegressor` and `HillClimbing` combine models. The tree and forest classifiers take `class_weight`, and every tree model takes `max_leaf_nodes`. Their scores agree with scikit-learn's as two of its own seeds agree.
 - Metrics with scikit-learn's names: `r2_score`, `mean_squared_error`, `accuracy_score`, `balanced_accuracy_score`, `precision_score`, `recall_score`, `f1_score`, `classification_report`, `log_loss`, `roc_auc_score`, `confusion_matrix` and more.
-- Model selection: `GridSearchCV` (scikit-learn's folds, `cv_results_`, `best_params_`, nested names such as `estimator__max_depth`) and `cross_val_score`. The fits run in parallel, and the candidates of a fold share its bins.
-- A fit with the same settings on the same data loads the earlier result from the cache instead of training again. Every fit and score goes into `metadata/{stem}.journal.html`, an offline page with each run's settings, scores and loss curve. `model.load_run(&train, "r03")` brings a run back.
+- Model selection: `GridSearchCV` (scikit-learn's folds, `cv_results_`, `best_params_`, nested names such as `estimator__max_depth`), `cross_val_score`, `cross_val_predict`, `KFold` and `StratifiedKFold`. The fits run in parallel, and the candidates of a fold share its bins.
+- A fit with the same settings on the same data loads the earlier result from the cache instead of training again. Every fit and score goes into `metadata/{stem}.journal.html`, an offline page with each run's settings, scores and loss curve. `model.load_run(&train, "r03")` brings a run back. `model.save(path)` and `Model::load(path)` keep a model in one file, and the XGBoost, LightGBM and CatBoost types also write their library's own model file.
 - Errors name the fix: `feature 'course' is str, not a number: encode it with OneHotEncoder or OrdinalEncoder in the ColumnTransformer`.
 
 Fit times on the same 630,000-row file, against scikit-learn 1.9:
@@ -144,35 +144,14 @@ Fit times on the same 630,000-row file, against scikit-learn 1.9:
 
 ## Roadmap
 
-Done: data loading, stats, charts, the transformers, `ColumnTransformer`, `Pipeline`, `train_test_split`, linear and logistic regression, decision trees, random forests, bagging, AdaBoost, histogram gradient boosting, `GridSearchCV`, `cross_val_score`, the model cache and the journal. Next:
+Done: everything above. Next, for 1.0: a learning-curve chart, more of scikit-learn's settings on each model, and monotone and interaction constraints on the boosters. kNN, naive Bayes and the unsupervised models (k-means, PCA and others) come in 1.2.
 
-1. Data operations that pandas users reach for: saving a dataset (`to_csv`), and filtering and sorting rows. Until then, `ds.dataframe()` is the Polars table, and `Dataset::new` makes a dataset of a changed copy.
-2. About 15 more models:
-   - kNN and Naive Bayes (next), linear SVM, an MLP;
-   - k-means, DBSCAN and agglomerative clustering;
-   - PCA, SVD, LDA and feature selection;
-   - FP-growth and Apriori association rules.
-3. A documentation website.
+## Contributing
 
-How the models will be fast:
-
-- Trees put each feature into at most 255 bins (one byte per value) once, and use the bins for every tree, fold and refit. Gradient boosting follows the design of LightGBM.
-- Linear models, PCA and cross validation share one pass that computes XᵀX. After that pass, they work on a small matrix.
-- Values are stored in narrow types where it is safe (bytes, f32), and every sum and matrix solve uses f64.
-- Work that a fit can reuse (bins, matrices, fitted models) can stay in the cache next to the CSV.
-
-## Development
-
-```sh
-cargo build
-cargo test
-cargo run --example s6e1          # every chart, on the Kaggle Playground S6E1 file in tests/fixtures/s6e1/
-cargo bench                       # criterion suites in benches/ (a cold build takes minutes and uses every core)
-benches/profile.sh metadata '^stats/numeric/exam_score$' 5   # perf, flamegraph and heaptrack for one bench
-```
-
-`.cargo/config.toml` links with [mold](https://github.com/rui314/mold) on x86_64 Linux. Install mold, or remove that file, before you build.
+[CONTRIBUTING.md](CONTRIBUTING.md) explains the setup, where each part of the code lives, the rules it follows, and what to run before a pull request.
 
 ## License
 
 Apache-2.0.
+
+rusmlai is not affiliated with or endorsed by scikit-learn, pandas, seaborn, XGBoost, LightGBM or CatBoost. Types such as `XGBRegressor`, `LGBMClassifier` and `CatBoostRegressor` reimplement those libraries' published algorithms under their names, so their users find the settings they know.

@@ -27,3 +27,7 @@ analysis/
 docs/
 notebooks/
 CLAUDE.md
+
+# Python bytecode
+__pycache__/
+*.pyc

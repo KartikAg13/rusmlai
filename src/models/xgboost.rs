@@ -2,7 +2,7 @@
 //! and split rules, on rusmlai's histogram tree engine (`models/hist.rs`).
 //!
 //! The engine is the one of [`HistGradientBoostingRegressor`](crate::models::HistGradientBoostingRegressor);
-//! these types only map XGBoost's settings onto it ([`Library`]), so code ported from
+//! these types only map XGBoost's settings onto it (`Library`), so code ported from
 //! `xgboost.XGBRegressor` keeps its settings and gets XGBoost's trees: depth-wise trees of
 //! depth 6, a learning rate of 0.3, `reg_lambda` 1 and `min_child_weight` 1. A row goes left
 //! when its value is below the split's value, as in XGBoost, and a node without missing
@@ -59,6 +59,9 @@ pub(crate) struct XgbParams {
     huber_slope: f64,
     quantile_alpha: f64,
     tweedie_variance_power: f64,
+    /// `None`: no early stopping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    early_stopping_rounds: Option<usize>,
 }
 
 impl XgbParams {
@@ -86,6 +89,7 @@ impl XgbParams {
             huber_slope: 1.0,
             quantile_alpha: 0.5,
             tweedie_variance_power: 1.5,
+            early_stopping_rounds: None,
         }
     }
 
@@ -126,10 +130,11 @@ impl Library for XgbParams {
             subsample_freq: 1,
             rules: Rules::Xgboost,
             seed: self.random_state,
-            early_stopping: false,
+            early_stopping: self.early_stopping_rounds.is_some(),
             validation_fraction: 0.1,
-            n_iter_no_change: 10,
+            n_iter_no_change: self.early_stopping_rounds.unwrap_or(10),
             tol: 0.0,
+            keep_best: true,
             base_score: self.base_margin(),
             symmetric: None,
         }
@@ -190,6 +195,16 @@ const CLASSIFICATION: &str = "\"binary:logistic\", \"multi:softprob\" or \"multi
 macro_rules! xgb_settings {
     ($model:ident) => {
         impl $model {
+            /// Stop when the loss on the eval set has not got better for this many rounds,
+            /// then keep the trees up to the best round, as XGBoost does (predict then uses the
+            /// best round). Needs [`Self::fit_eval_set`]. Default: off, every round trains.
+            #[track_caller]
+            pub fn early_stopping_rounds(mut self, early_stopping_rounds: usize) -> Self {
+                check(early_stopping_rounds > 0, "early_stopping_rounds", early_stopping_rounds, "1 or more");
+                self.params.early_stopping_rounds = Some(early_stopping_rounds);
+                self
+            }
+
             /// The rounds of trees. Default 100.
             #[track_caller]
             pub fn n_estimators(mut self, n_estimators: usize) -> Self {
@@ -353,8 +368,7 @@ boosted_model! {
     ///
     /// XGBoost settings with no setter: `n_jobs`, `device`, `tree_method` (always `"hist"`),
     /// `verbosity`, `validate_parameters`, `callbacks`, `importance_type`, `missing` (NaN and
-    /// nulls are missing), `eval_metric`. Not yet: `early_stopping_rounds` (it needs an
-    /// `eval_set`), `booster="dart"`, `monotone_constraints`, `interaction_constraints`,
+    /// nulls are missing), `eval_metric`. Not yet: `booster="dart"`, `monotone_constraints`, `interaction_constraints`,
     /// XGBoost's own split of categories (a text column is split as LightGBM splits it), a
     /// depth-wise order for `max_leaves`, and XGBoost 3's hessian for `"reg:absoluteerror"`
     /// and `"reg:quantileerror"`, which falls as the residual grows (rusmlai's is 1, as in
@@ -709,5 +723,89 @@ pub(crate) mod tests {
             };
             assert_like(name, leaves, &preds, want, 1e-5);
         }
+    }
+    /// Trained on rows 0-299 of `data()` and watching rows 300-399: the rounds kept and the
+    /// predictions on the watched rows, against XGBoost's, LightGBM's and scikit-learn's
+    /// (`analysis/2026-11-27/eval-set/parity.py`).
+    #[test]
+    fn eval_set_stops_where_the_libraries_stop() {
+        use crate::models::boosting::{HistGradientBoostingClassifier, HistGradientBoostingRegressor};
+        use crate::models::lightgbm::{LGBMClassifier, LGBMRegressor};
+        let ds: Dataset = data();
+        let flat = |proba: Dataset, classes: &[String], rows: usize| -> Vec<f64> {
+            let columns: Vec<Vec<f64>> = classes.iter().map(|c| proba.to_list(c)).collect();
+            match classes.len() {
+                2 => columns[1].clone(),
+                _ => (0..rows).flat_map(|r| columns.iter().map(move |c| c[r])).collect(),
+            }
+        };
+        let failed: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+        let check = |name: &str, target: &str, fit: &mut dyn FnMut(&Dataset, &Dataset) -> (usize, Vec<f64>), want: Want| {
+            let x: Dataset = features(&ds, target);
+            let (train, eval): (Dataset, Dataset) = (x.iloc(0..300), x.iloc(300..400));
+            let (n_iter, preds): (usize, Vec<f64>) = fit(&train, &eval);
+            if let Err(error) = std::panic::catch_unwind(|| assert_like(name, n_iter, &preds, want, 1e-4)) {
+                failed.borrow_mut().push(error.downcast_ref::<String>().cloned().unwrap_or_default());
+            }
+        };
+        // The eval rows never reach the trees: stopped at round 28, the model predicts what a
+        // plain fit of 28 rounds predicts. Against XGBoost, 3 of the 100 rows land in other
+        // leaves after about 20 rounds, as a plain fit's do (XGBoost sums its gains in f32), so
+        // this case compares to 5e-3.
+        let x: Dataset = features(&ds, "y");
+        let (train, eval): (Dataset, Dataset) = (x.iloc(0..300), x.iloc(300..400));
+        let mut stopped = XGBRegressor::new().n_estimators(200).learning_rate(0.3).early_stopping_rounds(5);
+        stopped.fit_eval_set(&train, "y", &eval);
+        assert_eq!((stopped.n_iter_, stopped.estimators_.len()), (28, 28));
+        let mut plain = XGBRegressor::new().n_estimators(28).learning_rate(0.3);
+        plain.fit(&train, "y");
+        assert_eq!(stopped.predict(&eval), plain.predict(&eval));
+        let preds: Vec<f64> = stopped.predict(&eval).f64().unwrap().into_no_null_iter().collect();
+        let want: Want = (28, 16.506368956565858, [24.109243392944336, 12.800749778747559, 18.989744186401367, 10.708602905273438]);
+        assert_like("xgb_reg", stopped.n_iter_, &preds, want, 5e-3);
+        for (name, target, want) in [
+            ("xgb_bin", "hit", (31, 0.40615829984424634, [0.007248811889439821, 0.9042564630508423, 0.9043094515800476, 0.7399921417236328])),
+            ("xgb_multi", "class", (24, 0.3333333335603432, [0.017019886523485184, 0.013146349228918552, 0.9698337316513062, 0.07593340426683426])),
+        ] {
+            check(name, target, &mut |train, eval| {
+                let mut model: XGBClassifier = XGBClassifier::new().n_estimators(200).learning_rate(0.3).early_stopping_rounds(5);
+                model.fit_eval_set(train, target, eval);
+                (model.n_iter_, flat(model.predict_proba(eval), &model.classes_, eval.height()))
+            }, want);
+        }
+        check("lgbm_reg", "y", &mut |train, eval| {
+            let mut model: LGBMRegressor = LGBMRegressor::new().n_estimators(200).learning_rate(0.3).early_stopping_rounds(5);
+            model.fit_eval_set(train, "y", eval);
+            (model.n_iter_, model.predict(eval).f64().unwrap().into_no_null_iter().collect())
+        }, (72, 16.328954224721894, [24.57345059520948, 11.787945586882588, 19.561521866403545, 9.472056982523483]));
+        for (name, target, want) in [
+            ("lgbm_bin", "hit", (23, 0.4041993419676062, [0.01956032842647962, 0.7921785105015734, 0.9032555075240889, 0.7188359943941872])),
+            ("lgbm_multi", "class", (19, 0.3333333333333333, [0.03147880476064558, 0.02877588315920942, 0.9397453120801451, 0.24542086276148495])),
+        ] {
+            check(name, target, &mut |train, eval| {
+                let mut model: LGBMClassifier = LGBMClassifier::new().n_estimators(200).learning_rate(0.3).early_stopping_rounds(5);
+                model.fit_eval_set(train, target, eval);
+                (model.n_iter_, flat(model.predict_proba(eval), &model.classes_, eval.height()))
+            }, want);
+        }
+        check("hgb_reg", "y", &mut |train, eval| {
+            let mut model = HistGradientBoostingRegressor::new().max_iter(200).learning_rate(0.3).early_stopping(true).n_iter_no_change(5);
+            model.fit_eval_set(train, "y", eval);
+            (model.n_iter_, model.predict(eval).f64().unwrap().into_no_null_iter().collect())
+        }, (77, 16.32094716234711, [24.778135931609715, 11.898254623446718, 19.407510366651863, 9.598454461333494]));
+        check("hgb_multi", "class", &mut |train, eval| {
+            let mut model = HistGradientBoostingClassifier::new().max_iter(200).learning_rate(0.3).early_stopping(true).n_iter_no_change(5);
+            model.fit_eval_set(train, "class", eval);
+            (model.n_iter_, flat(model.predict_proba(eval), &model.classes_, eval.height()))
+        }, (27, 0.3333333333333333, [0.002710406593326063, 0.015686259377799577, 0.9816033340288743, 0.16983040429319313]));
+        let failed: Vec<String> = failed.into_inner();
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    #[test]
+    fn early_stopping_rounds_needs_an_eval_set() {
+        let x: Dataset = features(&data(), "y");
+        let error: ModelError = XGBRegressor::new().early_stopping_rounds(5).try_fit(&x, "y").unwrap_err();
+        assert!(error.to_string().contains("fit_eval_set"), "{error}");
     }
 }

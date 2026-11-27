@@ -23,29 +23,30 @@
   font-display: swap;
 }
 
+/* Dark only (decided 2026-11-26): the page is the chart's own dark theme. */
 :root {
-  color-scheme: light dark;
-  --ground: #ffffff;
-  --raise: #f4f5f7;
-  --text: #16181d;
-  --muted: #5b606b;
-  --rule: #eceef1;
-  --axis: #c9cdd4;
-  --link: #1f487e;
+  color-scheme: dark;
+  --ground: #15171c;
+  --raise: #1d2027;
+  --text: #f2f3f5;
+  --muted: #9a9ea8;
+  --rule: #24272e;
+  --axis: #353942;
+  --link: #39a9db;
   --brand: #b7410e;
   --brand-hover: #9c370c;
   --c1: #566e3d;
-  --c2: #bda885;
+  --c2: #f5dfbb;
   --c3: #b7410e;
-  --c4: #1f487e;
-  --c5: #018cbc;
-  --c6: #c0851f;
-  --c7: #864c7a;
-  --c8: #519160;
+  --c4: #436da6;
+  --c5: #39a9db;
+  --c6: #d79b3c;
+  --c7: #955a89;
+  --c8: #8ed09c;
 
-  /* The dark chart card. Code and the notebook cell use it in both themes. */
-  --card: #15171c;
-  --card-grid: #24272e;
+  /* The dark chart card, one step up from the page: code and the notebook cell. */
+  --card: #1d2027;
+  --card-grid: #2a2d35;
   --card-axis: #353942;
   --card-tick: #8b8f9a;
   --card-text: #f2f3f5;
@@ -63,28 +64,6 @@
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --gutter: clamp(16px, 4vw, 40px);
   --chapter: var(--c3);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --ground: #15171c;
-    --raise: #1d2027;
-    --text: #f2f3f5;
-    --muted: #9a9ea8;
-    --rule: #24272e;
-    --axis: #353942;
-    --link: #39a9db;
-    --c1: #566e3d;
-    --c2: #f5dfbb;
-    --c3: #b7410e;
-    --c4: #436da6;
-    --c5: #39a9db;
-    --c6: #d79b3c;
-    --c7: #955a89;
-    --c8: #8ed09c;
-    --card: #1d2027;
-    --card-grid: #2a2d35;
-  }
 }
 
 /* Base */
@@ -221,6 +200,7 @@ pre:hover .copy,
 .site-header {
   view-transition-name: site-header;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
@@ -347,13 +327,7 @@ pre:hover .copy,
   border-radius: 14px;
   background: var(--card);
   color: var(--card-text);
-  box-shadow: 0 30px 60px -30px rgb(21 23 28 / 0.55), 0 2px 6px rgb(21 23 28 / 0.12);
-}
-@media (prefers-color-scheme: dark) {
-  .cell {
-    box-shadow: none;
-    outline: 1px solid var(--card-grid);
-  }
+  outline: 1px solid var(--card-grid);
 }
 .cell-in {
   display: grid;
@@ -894,13 +868,355 @@ figure.chart-figure {
   animation-duration: 180ms;
 }
 
+/* Reduced motion: nothing moves or grows, but fades and color changes stay. The animations
+   that move things are all inside the "Motion" block at the end of this file, which only
+   applies when the reader has not asked for reduced motion. */
 @media (prefers-reduced-motion: reduce) {
   @view-transition {
     navigation: none;
   }
-  *,
-  *::before,
-  *::after {
-    transition-duration: 0.01ms !important;
+}
+
+/* Sticky notes: tabs on the right edge of every page that grow into a card. site.js builds them,
+   so a page without JavaScript has none. */
+
+/* Keep the closed tabs off the content on narrow screens. */
+.has-notes {
+  padding-right: 44px;
+}
+.notes {
+  position: fixed;
+  top: 7.5rem;
+  right: 0;
+  z-index: 50;
+  pointer-events: none;
+}
+.notes ul {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.notes li {
+  position: relative;
+  width: 44px;
+  height: var(--h);
+  overflow: hidden;
+  border-radius: 8px 0 0 8px;
+  background: var(--bg);
+  color: var(--fg);
+  pointer-events: auto;
+}
+.notes li[data-state="peek"] {
+  width: 300px;
+  height: max(var(--h), 200px);
+  border-radius: 10px;
+}
+.notes li[data-state="edit"] {
+  width: 320px;
+  height: 470px;
+  border-radius: 10px;
+}
+.notes :focus-visible {
+  outline-color: var(--fg);
+}
+.note-tab {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.note-tab:focus-visible {
+  outline-offset: -4px;
+}
+.notes li[data-state="edit"] .note-tab {
+  visibility: hidden;
+}
+.note-face {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  padding: 8px 0;
+  transition: opacity 140ms ease;
+}
+.note-face span {
+  max-height: 100%;
+  overflow: hidden;
+  writing-mode: vertical-rl;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  font-weight: 700;
+  line-height: 1;
+}
+.notes li.empty .note-face span {
+  opacity: 0.7;
+}
+.notes li:not([data-state="closed"]) .note-face {
+  opacity: 0;
+}
+.note-peek {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 300px;
+  padding: 16px 18px;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.notes li[data-state="peek"] .note-peek {
+  opacity: 1;
+  transition-delay: 120ms;
+}
+.note-peek b {
+  font-size: 1.05rem;
+  font-weight: 750;
+  line-height: 1.25;
+}
+.note-peek span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  font-size: 0.95rem;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+.note-peek small {
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+.note-editor {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 320px;
+  padding: 16px 18px 14px;
+  font-size: 0.75rem;
+}
+.note-editor label,
+.note-editor legend {
+  font-weight: 650;
+}
+.note-editor input,
+.note-editor textarea {
+  width: 100%;
+  margin-top: -4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: 400 0.95rem/1.5 var(--sans);
+  resize: none;
+}
+.note-editor input {
+  padding: 4px 0;
+  border-bottom: 1px solid currentColor;
+  font-size: 1.05rem;
+  font-weight: 750;
+}
+.note-editor fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.note-editor legend {
+  margin-bottom: 6px;
+  padding: 0;
+}
+.note-swatches {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
+}
+.note-swatches button {
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--fg);
+  border-radius: 6px;
+  background: var(--c);
+  cursor: pointer;
+}
+.note-swatches button[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--fg);
+}
+.note-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+.note-actions {
+  display: flex;
+  gap: 6px;
+}
+.note-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+.note-actions [data-close] {
+  border-color: var(--fg);
+  background: var(--fg);
+  color: var(--bg);
+  font-weight: 700;
+}
+.note-editor p {
+  margin: 0;
+  line-height: 1.4;
+}
+@media (max-width: 640px) {
+  .has-notes {
+    padding-right: 28px;
+  }
+  .notes {
+    top: 5rem;
+  }
+  .notes li,
+  .note-face {
+    width: 28px;
+  }
+  .notes li[data-state="peek"],
+  .notes li[data-state="edit"],
+  .note-peek,
+  .note-editor {
+    width: min(320px, calc(100vw - 2rem));
+  }
+}
+
+/* The fit speed-ups: rust bars on a 1× to 100× log scale. */
+.fill.fit {
+  background: var(--c3);
+}
+.scale.fits span:nth-child(2) {
+  display: block;
+  left: 50%;
+}
+.scale.fits span:nth-child(3) {
+  left: 100%;
+  transform: translateX(-100%);
+}
+
+/* Models chapter: type lists that wrap, and right-aligned speed-ups. */
+.article .types code {
+  display: inline-block;
+  margin: 0 0.2rem 0.25rem 0;
+}
+.article .num {
+  text-align: right;
+  white-space: nowrap;
+}
+.article td.num {
+  font-weight: 700;
+}
+
+/* Motion. Everything here moves or grows, so it only runs when the reader has not asked for
+   reduced motion (a desktop with animations turned off asks for it too). Easing is --ease,
+   the site's one curve. */
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(1.5rem);
+  }
+}
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+}
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+@keyframes axis-in {
+  from {
+    background-size: 0 12px, 100% 1px, 100% 6px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  /* Sticky notes: a tab grows into its card, and the tabs slide in from the edge on load,
+     one after another. A new empty tab slides in the same way. */
+  .notes li {
+    transition: width 340ms var(--ease), height 340ms var(--ease), border-radius 340ms var(--ease);
+    animation: slide-in 520ms var(--ease) backwards;
+    animation-delay: calc(250ms + var(--i, 0) * 70ms);
+  }
+
+  /* Docs pages: the title rises and the chapter's bar on the axis grows, like a chart bar. */
+  .article h1 {
+    animation: rise 600ms var(--ease) backwards;
+  }
+  .axis {
+    animation: axis-in 700ms var(--ease) 150ms backwards;
+  }
+  .hero > * {
+    animation: rise 700ms var(--ease) backwards;
+  }
+  .hero > :nth-child(2) { animation-delay: 80ms; }
+  .hero > :nth-child(3) { animation-delay: 160ms; }
+  .hero > :nth-child(4) { animation-delay: 240ms; }
+
+  /* Chart images lift a little under the pointer. */
+  .gallery img,
+  figure.chart-figure img {
+    transition: transform 240ms var(--ease);
+  }
+  .gallery figure:hover img,
+  figure.chart-figure:hover img {
+    transform: translateY(-4px);
+  }
+
+  /* Content rises into place as it scrolls into view, and the timing bars grow from the
+     axis. Scroll-driven, so no script runs; browsers without it show everything at once. */
+  @supports (animation-timeline: view()) {
+    .section > h2,
+    .section > p,
+    .table-wrap,
+    .gallery figure,
+    .split > div,
+    .article > h2,
+    .article > pre,
+    .article > .note,
+    figure.chart-figure {
+      animation: rise linear both;
+      animation-timeline: view();
+      animation-range: entry 0% entry 35%;
+    }
+    .fill {
+      transform-origin: left;
+      animation: grow-x linear both;
+      animation-timeline: view();
+      animation-range: entry 20% cover 45%;
+    }
   }
 }

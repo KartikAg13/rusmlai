@@ -240,7 +240,7 @@ impl RocCurveDisplay {
     ///
     /// # Errors
     ///
-    /// Those of [`try_roc_curve`](crate::metrics::try_roc_curve), as `PlotError::Model`.
+    /// Those of [`try_roc_curve`], as `PlotError::Model`.
     pub fn try_from_predictions(y_true: &Series, y_score: &Series, pos_label: &str) -> Result<Figure, PlotError> {
         Self::figure(y_true, y_score, pos_label, None)
     }
@@ -337,7 +337,7 @@ impl PrecisionRecallDisplay {
     ///
     /// # Errors
     ///
-    /// Those of [`try_precision_recall_curve`](crate::metrics::try_precision_recall_curve),
+    /// Those of [`try_precision_recall_curve`],
     /// as `PlotError::Model`.
     pub fn try_from_predictions(y_true: &Series, y_score: &Series, pos_label: &str) -> Result<Figure, PlotError> {
         Self::figure(y_true, y_score, pos_label, None)
@@ -571,7 +571,7 @@ impl CalibrationDisplay {
     ///
     /// # Errors
     ///
-    /// Those of [`try_calibration_curve`](crate::metrics::try_calibration_curve), as
+    /// Those of [`try_calibration_curve`], as
     /// `PlotError::Model`.
     pub fn try_from_predictions(y_true: &Series, y_prob: &Series, n_bins: usize, strategy: &str, pos_label: &str) -> Result<Figure, PlotError> {
         Self::figure(y_true, y_prob, n_bins, strategy, pos_label, None)

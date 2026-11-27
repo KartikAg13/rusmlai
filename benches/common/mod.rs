@@ -1,3 +1,5 @@
+//! Shared by the benches: the source CSV, a scratch copy of it, and cache clean-up.
+
 #![allow(dead_code)]
 
 use std::{

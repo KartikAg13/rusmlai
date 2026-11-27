@@ -1,3 +1,5 @@
+//! Preprocessing, logistic regression pipelines and charts on the Kaggle Playground S6E2 file (local only).
+
 use rusmlai::prelude::*;
 
 // One color per diagnosis, used on every chart split by it.

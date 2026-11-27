@@ -1,3 +1,5 @@
+//! Shared by the integration tests: scratch copies of the fixtures, and cache file paths.
+
 #![allow(dead_code)]
 
 use std::{

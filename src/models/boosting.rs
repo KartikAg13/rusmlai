@@ -67,6 +67,10 @@ pub(crate) struct Plan {
     pub validation_fraction: f64,
     pub n_iter_no_change: usize,
     pub tol: f64,
+    /// The libraries' rule instead of scikit-learn's (XGBoost's and LightGBM's
+    /// `early_stopping_rounds`): stop after `n_iter_no_change` rounds without a new best
+    /// validation score, then keep only the trees up to the best round. It needs an eval set.
+    pub keep_best: bool,
     /// Where every score starts, instead of the constant with the lowest loss: XGBoost's
     /// `base_score` through the link, 0 for LightGBM's `boost_from_average=False`.
     pub base_score: Option<f64>,
@@ -78,6 +82,9 @@ impl Plan {
     /// Whether the scores of the last `n_iter_no_change` rounds are all no better than the
     /// one before them plus `tol`: scikit-learn's rule. A score is minus a loss.
     fn should_stop(&self, scores: &[f64]) -> bool {
+        if self.keep_best {
+            return scores.len() > 1 && scores.len() - 1 - best_round(scores) >= self.n_iter_no_change;
+        }
         let back: usize = self.n_iter_no_change + 1;
         if scores.len() < back {
             return false;
@@ -87,6 +94,19 @@ impl Plan {
             .iter()
             .any(|score| *score > reference)
     }
+}
+
+/// The round with the best validation score (`scores[0]` is before the first round, so it
+/// never counts), the first of equal ones: a later round must be strictly better, as in
+/// XGBoost's and LightGBM's early stopping.
+fn best_round(scores: &[f64]) -> usize {
+    let mut best: usize = 1;
+    for (round, score) in scores.iter().enumerate().skip(2) {
+        if *score > scores[best] {
+            best = round;
+        }
+    }
+    best
 }
 
 /// One library's settings of a boosted model, under that library's names and defaults: what
@@ -233,6 +253,7 @@ impl Library for Params {
             validation_fraction: self.validation_fraction,
             n_iter_no_change: self.n_iter_no_change,
             tol: self.tol,
+            keep_best: false,
             base_score: None,
             symmetric: None,
         }
@@ -761,7 +782,15 @@ fn walk_columns(dataset: &Dataset, bins: &Bins, rows: Option<&[u32]>) -> Result<
         (0..bins.names.len())
             .into_par_iter()
             .map(|f| match bins.categories(f) {
-                Some(_) => Ok(pick(bins.codes(f))),
+                // An eval set's rows are past the buckets: their codes come from the
+                // categories, as at predict time.
+                Some(categories) => {
+                    let codes: Vec<f64> = bins.codes(f);
+                    match codes.len() == dataset.height() {
+                        true => Ok(pick(codes)),
+                        false => Ok(pick(categories.codes(dataset, &bins.names[f])?)),
+                    }
+                }
                 None => Ok(pick(column(&feature(dataset, &bins.names[f])?).to_vec())),
             })
             .collect()
@@ -788,27 +817,46 @@ fn walked(tree: &Tree, columns: &[Vec<f64>], rows: &[u32]) -> Vec<f64> {
 
 /// Boosts `p.rounds` rounds of trees on the buckets, or fewer when the loss on the rows
 /// held out stops getting better. `weights` is a weight per row (`None`: each counts once).
+/// The last `eval_rows` rows of `dataset` are an eval set: they are the rows held out, and
+/// `bins` holds only the rows before them.
 fn boost(
     dataset: &Dataset,
     bins: &Bins,
     loss: &Loss,
     p: &Plan,
     weights: Option<&[f64]>,
+    eval_rows: usize,
 ) -> Result<Boosted, ModelError> {
     if let Some(symmetric) = &p.symmetric {
+        if eval_rows > 0 {
+            return Err(ModelError::InvalidSetting {
+                setting: "eval_set",
+                value: format!("{eval_rows} rows"),
+                expected: "fit: CatBoost models take no eval set yet",
+            });
+        }
         return Ok(crate::models::catboost::boost_symmetric(bins, loss, p, symmetric, weights));
     }
+    if p.keep_best && p.early_stopping && eval_rows == 0 {
+        return Err(ModelError::MissingSetting {
+            setting: "eval_set",
+            reason: "early_stopping_rounds stops on the eval set's rows; fit with fit_eval_set",
+        });
+    }
     let (n, k, features): (usize, usize, usize) = (dataset.height(), loss.outputs(), bins.names.len());
-    let mut held: Vec<bool> = match p.early_stopping {
-        true => hold_out(loss, n, p),
-        false => vec![false; n],
+    let mut held: Vec<bool> = match (eval_rows, p.early_stopping) {
+        (0, true) => hold_out(loss, n, p),
+        (0, false) => vec![false; n],
+        _ => (0..n).map(|row| row >= n - eval_rows).collect(),
     };
     let held_rows: Vec<u32> = (0..n as u32).filter(|row| held[*row as usize]).collect();
-    // Too few rows to hold one out: no early stopping.
+    // Too few rows to hold one out: no early stopping. With an eval set, its loss is kept
+    // each round, and the rounds stop early only when early stopping is on.
     let early: bool = !held_rows.is_empty() && held_rows.len() < n;
     if !early {
         held.fill(false);
     }
+    let stopping: bool = early && (eval_rows == 0 || p.early_stopping);
     let train: Vec<u32> = (0..n as u32).filter(|row| !held[*row as usize]).collect();
     let sampled: bool = p.subsample < 1.0 && p.subsample_freq > 0;
     // Rows outside a tree's own walk it: the rows held out (their columns in line, made
@@ -859,6 +907,8 @@ fn boost(
         importances: vec![0.0; features],
     };
     let (mut drawn, mut rest): (Vec<u32>, Vec<u32>) = (train.clone(), Vec::new());
+    // The importances after each round, to keep those of the best round.
+    let mut importances_after: Vec<Vec<f64>> = Vec::new();
     loop {
         if !early && boosted.n_iter == p.rounds {
             break;
@@ -868,7 +918,7 @@ fn boost(
         if early {
             boosted.train_score.push(-train_loss / train_weight);
             boosted.validation_score.push(-held_loss / held_weight);
-            if boosted.n_iter == p.rounds || p.should_stop(&boosted.validation_score) {
+            if boosted.n_iter == p.rounds || (stopping && p.should_stop(&boosted.validation_score)) {
                 break;
             }
         }
@@ -959,6 +1009,16 @@ fn boost(
             boosted.trees.push(grown.tree);
         }
         boosted.n_iter += 1;
+        if p.keep_best {
+            importances_after.push(boosted.importances.clone());
+        }
+    }
+    // The libraries keep the trees up to the best round, and their importances.
+    if p.keep_best && stopping && boosted.validation_score.len() > 1 {
+        let best: usize = best_round(&boosted.validation_score);
+        boosted.trees.truncate(best * k);
+        boosted.n_iter = best;
+        boosted.importances = importances_after.swap_remove(best - 1);
     }
     let sum: f64 = boosted.importances.iter().sum();
     if sum > 0.0 {
@@ -1066,21 +1126,35 @@ pub(crate) struct Fitted {
     pub(crate) dtype: Option<DataType>,
 }
 
+/// `dataset` with the rows of `eval` after its own, and how many those are: the rows boosting
+/// holds out to watch, as XGBoost's, LightGBM's and CatBoost's `eval_set` and scikit-learn's
+/// `X_val`.
+fn with_eval(dataset: &Dataset, eval: Option<&Dataset>) -> Result<(Option<Dataset>, usize), ModelError> {
+    match eval {
+        Some(eval) => Ok((Some(Dataset::try_concat(&[dataset, eval])?), eval.height())),
+        None => Ok((None, 0)),
+    }
+}
+
 /// Fits a regressor of settings `p` on `dataset`, each row with its weight in `weights`
-/// (`None`: once).
+/// (`None`: once), watching the rows of `eval` when given. The buckets come from `dataset`
+/// alone.
 pub(crate) fn fit_regressor<L: Library>(
     p: &L,
     dataset: &Dataset,
     target: &str,
     weights: Option<&[f32]>,
+    eval: Option<&Dataset>,
 ) -> Result<Fitted, ModelError> {
-    numeric_target(dataset, target)?;
-    let (y, _): (Series, f64) = prepared(dataset, target)?;
+    let (joined, eval_rows): (Option<Dataset>, usize) = with_eval(dataset, eval)?;
+    let all: &Dataset = joined.as_ref().unwrap_or(dataset);
+    numeric_target(all, target)?;
+    let (y, _): (Series, f64) = prepared(all, target)?;
     let y: &[f64] = column(&y);
     let loss: Loss = p.regression(y)?;
     let (bins, categories): (Bins, Vec<Option<Categories>>) = binned(dataset, target, p)?;
     let weights: Option<Vec<f64>> = widened(weights);
-    let boosted: Boosted = boost(dataset, &bins, &loss, &p.plan(dataset.height()), weights.as_deref())?;
+    let boosted: Boosted = boost(all, &bins, &loss, &p.plan(dataset.height()), weights.as_deref(), eval_rows)?;
     Ok(Fitted { boosted, names: bins.names, categories, classes: Vec::new(), dtype: None })
 }
 
@@ -1091,14 +1165,18 @@ pub(crate) fn fit_classifier<L: Library>(
     dataset: &Dataset,
     target: &str,
     weights: Option<&[f32]>,
+    eval: Option<&Dataset>,
 ) -> Result<Fitted, ModelError> {
-    let (classes, codes): (Vec<String>, Series) = label_target(dataset, target)?;
+    let (joined, eval_rows): (Option<Dataset>, usize) = with_eval(dataset, eval)?;
+    let all: &Dataset = joined.as_ref().unwrap_or(dataset);
+    let (classes, codes): (Vec<String>, Series) = label_target(all, target)?;
     let y: Vec<u32> = column(&codes).iter().map(|code| *code as u32).collect();
     let (bins, categories): (Bins, Vec<Option<Categories>>) = binned(dataset, target, p)?;
-    // A class weight times the caller's weight of the row, in f64 like scikit-learn's.
+    // A class weight times the caller's weight of the row, in f64 like scikit-learn's. The
+    // class weights come from the training rows.
     let weights: Option<Vec<f64>> = match p.class_weight() {
         Some(class_weight) => {
-            let of_classes: Vec<f64> = class_weight.exact(&classes, &y, None)?;
+            let of_classes: Vec<f64> = class_weight.exact(&classes, &y[..dataset.height()], None)?;
             let caller = |row: usize| weights.map_or(1.0, |w| f64::from(w[row]));
             Some(y.iter().enumerate().map(|(row, c)| of_classes[*c as usize] * caller(row)).collect())
         }
@@ -1106,7 +1184,7 @@ pub(crate) fn fit_classifier<L: Library>(
     };
     let loss: Loss = p.classification(&y, classes.len())?;
     let plan: Plan = p.classifier_plan(dataset.height(), classes.len());
-    let boosted: Boosted = boost(dataset, &bins, &loss, &plan, weights.as_deref())?;
+    let boosted: Boosted = boost(all, &bins, &loss, &plan, weights.as_deref(), eval_rows)?;
     let dtype: Option<DataType> = Some(dataset.column(target)?.dtype().clone());
     Ok(Fitted { boosted, names: bins.names, categories, classes, dtype })
 }
@@ -1168,6 +1246,50 @@ macro_rules! boosted_model {
     };
     (@common $name:ident) => {
         impl $name {
+            /// Fits on `train` and watches the rows of `eval_set` after each round: XGBoost's,
+            /// LightGBM's and CatBoost's `fit(X, y, eval_set=[(X_val, y_val)])`, scikit-learn's
+            /// `fit(X, y, X_val=X_val, y_val=y_val)`. `eval_set` has the same columns as
+            /// `train`, target included. Its loss after each round is `validation_score_`.
+            /// With early stopping on, the rounds stop when it stops getting better, and
+            /// `train` alone is used for training: the buckets, the trees and the starting
+            /// score. CatBoost models take no eval set yet: for them it is an error. Panics
+            /// with the error's message at your line.
+            ///
+            /// ```
+            /// use rusmlai::prelude::*;
+            /// let ds = read_csv("tests/fixtures/data/students.csv").select(&["age", "cgpa"]).dropna(&[]);
+            /// let (train, eval) = train_test_split(&ds, 0.25, 42, "");
+            /// let mut model = XGBRegressor::new().n_estimators(200).early_stopping_rounds(5);
+            /// model.fit_eval_set(&train, "cgpa", &eval);
+            /// assert!(model.n_iter_ < 200); // stopped at the best round
+            /// assert_eq!(model.estimators_.len(), model.n_iter_);
+            /// ```
+            ///
+            /// Python:
+            ///
+            /// ```python
+            /// import pandas as pd
+            /// from sklearn.model_selection import train_test_split
+            /// from xgboost import XGBRegressor
+            /// ds = pd.read_csv("tests/fixtures/data/students.csv")[["age", "cgpa"]].dropna()
+            /// train, ev = train_test_split(ds, test_size=0.25, random_state=42)
+            /// model = XGBRegressor(n_estimators=200, early_stopping_rounds=5)
+            /// model.fit(train.drop(columns="cgpa"), train["cgpa"], eval_set=[(ev.drop(columns="cgpa"), ev["cgpa"])], verbose=False)
+            /// assert model.best_iteration + 1 < 200
+            /// ```
+            // ponytail: not cached or journaled (the cache key holds one dataset's hash); add
+            // the eval set's hash to the key when someone needs it.
+            #[track_caller]
+            pub fn fit_eval_set(&mut self, train: &Dataset, target: &str, eval_set: &Dataset) {
+                crate::error::OrFatal::or_fatal(self.try_fit_eval_set(train, target, eval_set))
+            }
+
+            /// [`Self::fit_eval_set`] that returns the error.
+            pub fn try_fit_eval_set(&mut self, train: &Dataset, target: &str, eval_set: &Dataset) -> Result<(), ModelError> {
+                crate::models::Model::set_run(self, None);
+                self.train(train, target, None, Some(eval_set))
+            }
+
             fn take(&mut self, fitted: Fitted, target: &str) {
                 let Fitted { boosted, names, categories, .. } = fitted;
                 self.n_features_in_ = names.len();
@@ -1208,7 +1330,7 @@ macro_rules! boosted_model {
     };
     (@model $classifier:literal) => {
         fn try_train(&mut self, dataset: &Dataset, target: &str) -> Result<(), ModelError> {
-            self.train(dataset, target, None)
+            self.train(dataset, target, None, None)
         }
 
         fn try_train_weighted(
@@ -1217,7 +1339,7 @@ macro_rules! boosted_model {
             target: &str,
             weights: &[f32],
         ) -> Option<Result<(), ModelError>> {
-            Some(self.train(dataset, target, Some(weights)))
+            Some(self.train(dataset, target, Some(weights), None))
         }
 
         fn params(&self) -> Value {
@@ -1295,8 +1417,14 @@ macro_rules! boosted_model {
         boosted_model!(@common $name);
 
         impl $name {
-            fn train(&mut self, dataset: &Dataset, target: &str, weights: Option<&[f32]>) -> Result<(), ModelError> {
-                let fitted: Fitted = fit_regressor(&self.params, dataset, target, weights)?;
+            fn train(
+                &mut self,
+                dataset: &Dataset,
+                target: &str,
+                weights: Option<&[f32]>,
+                eval: Option<&Dataset>,
+            ) -> Result<(), ModelError> {
+                let fitted: Fitted = fit_regressor(&self.params, dataset, target, weights, eval)?;
                 self.take(fitted, target);
                 Ok(())
             }
@@ -1375,8 +1503,14 @@ macro_rules! boosted_model {
         boosted_model!(@common $name);
 
         impl $name {
-            fn train(&mut self, dataset: &Dataset, target: &str, weights: Option<&[f32]>) -> Result<(), ModelError> {
-                let mut fitted: Fitted = fit_classifier(&self.params, dataset, target, weights)?;
+            fn train(
+                &mut self,
+                dataset: &Dataset,
+                target: &str,
+                weights: Option<&[f32]>,
+                eval: Option<&Dataset>,
+            ) -> Result<(), ModelError> {
+                let mut fitted: Fitted = fit_classifier(&self.params, dataset, target, weights, eval)?;
                 (self.classes_, self.dtype) = (std::mem::take(&mut fitted.classes), fitted.dtype.take());
                 self.take(fitted, target);
                 Ok(())
